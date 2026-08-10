@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/desktop/src-tauri",
+    "crates/a1mini-adapter",
+    "crates/application",
+    "crates/color-engine",
+    "crates/converter-cli",
+    "crates/orca-adapter",
+    "crates/planner",
+    "crates/three-mf",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+authors = ["U1 3MF Color Planner contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+hex = "0.4"
+libc = "0.2"
+quick-xml = "0.38"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
+zip = { version = "4", default-features = false, features = ["deflate", "deflate-flate2-zlib-rs"] }
+
+# The 200 MB acceptance project is CPU-bound in XML/mesh traversal. Rust's
+# unoptimized dev profile takes roughly two minutes, while release takes about
+# five seconds. Level 3 keeps debug symbols and useful development builds while
+# making analysis representative enough for interactive Tauri use.
+[profile.dev]
+opt-level = 3

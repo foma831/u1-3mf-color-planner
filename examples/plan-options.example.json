@@ -1,0 +1,30 @@
+{
+  "confirmed_spools": [
+    {
+      "id": "user-orange-pla",
+      "display_name": "User Orange PLA",
+      "material": "pla",
+      "nominal_color": {
+        "red": 217,
+        "green": 120,
+        "blue": 19
+      },
+      "measured_color": null,
+      "profile_id": "my-orange-pla-profile",
+      "available": true
+    }
+  ],
+  "scope_overrides": [
+    {
+      "scope_id": "plate-1",
+      "strategy": "direct_spools",
+      "direct_assignments": [
+        {
+          "requirement_id": "plate-1-requirement-1",
+          "spool_id": "user-orange-pla",
+          "toolhead": "t1"
+        }
+      ]
+    }
+  ]
+}

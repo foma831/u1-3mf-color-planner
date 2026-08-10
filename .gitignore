@@ -1,0 +1,25 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / Tauri
+node_modules/
+dist/
+*.tsbuildinfo
+apps/desktop/vite.config.js
+apps/desktop/vite.config.d.ts
+apps/desktop/src-tauri/gen/
+.playwright-cli/
+.playwright-mcp/
+
+# Local reports and generated projects
+/output/
+*.partial
+*.log
+
+# Sample models are user fixtures and should not be committed by default.
+/Sample/*.3mf

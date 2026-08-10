@@ -1,0 +1,24 @@
+[package]
+name = "u1-converter-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "u1-converter"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+u1-a1mini-adapter = { path = "../a1mini-adapter" }
+u1-application = { path = "../application" }
+u1-orca-adapter = { path = "../orca-adapter" }
+u1-planner = { path = "../planner" }
+u1-three-mf = { path = "../three-mf" }
+
+[dev-dependencies]
+tempfile.workspace = true

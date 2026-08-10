@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "U1 3MF Color Planner",
+  "version": "0.1.0",
+  "identifier": "com.u1planner.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "U1 3MF Color Planner",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "devCsp": null,
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "DeveloperTool",
+    "shortDescription": "Plan and convert multicolor 3MF projects for Snapmaker U1 and Bambu Lab A1 mini.",
+    "longDescription": "Analyze Bambu and Orca project 3MF files, resolve physical filament assignments, and create qualified native Snapmaker U1 or Bambu Lab A1 mini project bundles.",
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

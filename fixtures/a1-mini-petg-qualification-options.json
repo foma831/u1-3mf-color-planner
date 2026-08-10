@@ -1,0 +1,207 @@
+{
+  "scope_strategy": "cmyx_full_spectrum",
+  "confirmed_spools": [
+    {
+      "id": "qualification-a1-petg",
+      "display_name": "Qualification A1 PETG",
+      "color_name": "Blue",
+      "material": "petg",
+      "nominal_color": {
+        "red": 0,
+        "green": 86,
+        "blue": 214
+      },
+      "measured_color": null,
+      "sku": null,
+      "profile_id": null,
+      "available": true
+    }
+  ],
+  "scope_overrides": [
+    {
+      "scope_id": "plate-1",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-1-requirement-2",
+          "candidate_id": "cmyx-fallback-v1-03ed48f93380b43f1b0a22bffd1cadc895d057d5aebad78ca8d57f23fdf92107"
+        },
+        {
+          "requirement_id": "plate-1-requirement-3",
+          "candidate_id": "cmyx-fallback-v1-4692431711be5bb44a0172de5ae712e07de1b35d4abb0c9f23ddecd7d93ab468"
+        },
+        {
+          "requirement_id": "plate-1-requirement-4",
+          "candidate_id": "cmyx-fallback-v1-1f4544d5b0c58cf62f0705cc875dcb49226d64d6c5bc8c10203fa14323a3198e"
+        },
+        {
+          "requirement_id": "plate-1-requirement-5",
+          "candidate_id": "cmyx-fallback-v1-c5a865f25504698d2e3b5a13b144b5462f9440bff5cf512514b392cd94ac207c"
+        },
+        {
+          "requirement_id": "plate-1-requirement-6",
+          "candidate_id": "cmyx-fallback-v1-aee4d9844349e32c47c8fa0eb38ca753289eeac3f9e76d7a775cb4c89901149f"
+        },
+        {
+          "requirement_id": "plate-1-requirement-7",
+          "candidate_id": "cmyx-fallback-v1-eea31e0dafe6c67b6e25122ddf691b84e8656e4826e33c0b5a09262095af712f"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-2",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-2-requirement-2",
+          "candidate_id": "cmyx-fallback-v1-0109be0bb4e634d1b6f74aaa1da114da567bec6de6d8942de018f929609fe504"
+        },
+        {
+          "requirement_id": "plate-2-requirement-3",
+          "candidate_id": "cmyx-fallback-v1-2171085735db61d40837927891ddb9b84fb7c24fddc63f8bbf408bb232abb33c"
+        },
+        {
+          "requirement_id": "plate-2-requirement-4",
+          "candidate_id": "cmyx-fallback-v1-79e55970262c1b298115f3ec35c31dcf2ce1bbece5b3a3355c8669bc55408235"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-3",
+      "strategy": "direct_spools",
+      "direct_assignments": [
+        {
+          "requirement_id": "plate-3-requirement-1",
+          "spool_id": "qualification-a1-petg",
+          "toolhead": "t1",
+          "allow_material_substitution": false
+        },
+        {
+          "requirement_id": "plate-3-requirement-2",
+          "spool_id": "qualification-a1-petg",
+          "toolhead": "t1",
+          "allow_material_substitution": false
+        }
+      ],
+      "approved_cmyx_fallbacks": [],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-4",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-4-requirement-2",
+          "candidate_id": "cmyx-fallback-v1-8adff89359cc301e64807b740cd2ae533928927b0f258409dc74fae2751ec535"
+        },
+        {
+          "requirement_id": "plate-4-requirement-3",
+          "candidate_id": "cmyx-fallback-v1-840387d6769aef10b094a3a0c01d628c31d24edc8f24079234bafeee52de4d50"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-5",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-5-requirement-2",
+          "candidate_id": "cmyx-fallback-v1-5bbfe23a926fe873559ecd41b414f3f12fd278d5a83287b30dd60916f8106e24"
+        },
+        {
+          "requirement_id": "plate-5-requirement-3",
+          "candidate_id": "cmyx-fallback-v1-98314d42f3188dbeff3bdac325a78c5de8587229a9cad191c4c4b99466eda87b"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-6",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-6-requirement-1",
+          "candidate_id": "cmyx-fallback-v1-bbe80d95f07a7b28f4c914e6d2f41ec0fa63c296b0731ec6d0a26761a3b56e73"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-8",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-8-requirement-1",
+          "candidate_id": "cmyx-fallback-v1-552c8764f9ebc3d1488f5d12db8ade1a41109d0a9953ea33dd203bcc1c1baff0"
+        }
+      ],
+      "approved_material_substitutions": []
+    },
+    {
+      "scope_id": "plate-9",
+      "strategy": "cmyx_full_spectrum",
+      "approved_cmyx_fallbacks": [
+        {
+          "requirement_id": "plate-9-requirement-2",
+          "candidate_id": "cmyx-fallback-v1-6eeae98e2cf3e5e0bd5a74b974de613a6f8463f45c091b03d95de663a592d510"
+        },
+        {
+          "requirement_id": "plate-9-requirement-3",
+          "candidate_id": "cmyx-fallback-v1-239c7b48307d0726c6b8f156c8ec9eb86ed87f0acbe8df92618f28e7743d42e1"
+        },
+        {
+          "requirement_id": "plate-9-requirement-4",
+          "candidate_id": "cmyx-fallback-v1-f2dc13d83f762742e3e2cf544076e4340c671be06d132cc22b136ccfece94aed"
+        },
+        {
+          "requirement_id": "plate-9-requirement-5",
+          "candidate_id": "cmyx-fallback-v1-59e23bff2eb84c82ba9ae4acd8140a7abb8896913f42f0192d48b83ee2d39e1c"
+        }
+      ],
+      "approved_material_substitutions": []
+    }
+  ],
+  "unit_printer_overrides": [
+    {
+      "source_unit_id": "source-build-item-7",
+      "preference": "a1_mini"
+    },
+    {
+      "source_unit_id": "source-build-item-9",
+      "preference": "a1_mini"
+    },
+    {
+      "source_unit_id": "source-build-item-13",
+      "preference": "a1_mini"
+    },
+    {
+      "source_unit_id": "source-build-item-17",
+      "preference": "a1_mini"
+    },
+    {
+      "source_unit_id": "source-build-item-21",
+      "preference": "a1_mini"
+    },
+    {
+      "source_unit_id": "source-build-item-24",
+      "preference": "a1_mini"
+    }
+  ],
+  "a1_mini": {
+    "enabled": true,
+    "route_fast_mono": true,
+    "build_volume": {
+      "width": 180.0,
+      "depth": 180.0,
+      "height": 180.0
+    },
+    "supported_materials": [
+      "pla",
+      "petg"
+    ],
+    "reserved_spool_ids": []
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "confirmed_spools": [
+    {
+      "id": "qualification-a1-pla",
+      "display_name": "Qualification Generic PLA",
+      "material": "pla",
+      "nominal_color": {
+        "red": 142,
+        "green": 144,
+        "blue": 137
+      },
+      "measured_color": null,
+      "profile_id": null,
+      "available": true
+    }
+  ],
+  "a1_mini": {
+    "enabled": true,
+    "route_fast_mono": true,
+    "build_volume": {
+      "width": 180.0,
+      "depth": 180.0,
+      "height": 180.0
+    },
+    "supported_materials": ["pla", "petg"],
+    "reserved_spool_ids": []
+  }
+}

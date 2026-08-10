@@ -1,0 +1,21 @@
+[package]
+name = "u1-orca-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+u1-planner = { path = "../planner" }
+u1-three-mf = { path = "../three-mf" }
+uuid.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

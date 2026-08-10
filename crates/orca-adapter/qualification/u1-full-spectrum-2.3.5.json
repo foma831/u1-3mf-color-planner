@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "adapterId": "snapmaker-orca/2.3.5/u1-0.4-full-spectrum",
+  "applicationVersion": "2.3.5",
+  "executableSha256": "4c30e59cf582dcc4f12e43741fcab2f97045e972065d465481ed3760678d0fbe",
+  "writerQualificationScope": "native_project_structure_and_gui_round_trip",
+  "recipeAccuracyPolicy": "per_user_measured_calibration_or_explicit_color_approval",
+  "guiRoundTripPassed": true,
+  "status": "qualified",
+  "evidence": {
+    "fixtureName": "Withered_Foxy.3mf",
+    "sourceFixtureSha256": "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81",
+    "writerCandidateSha256": "df06f2f2ce4ac7a564066c13b2fe05ae579be7cfbd08832473268911c4fd997e",
+    "firstGuiSavedSha256": "6cee93e41fe5b03fbd47f499decb97dd71ef453dc34f661a95be797fb74e42ed",
+    "reopenedGuiSavedSha256": "50ef509e9e5bfadf834200ec110a2ff1cfa61569150a1cb6ed39100964a4dafa",
+    "qualificationReportSha256": "5ccec6519a7fb90698845447fdf0fc758ac7c390e6c655b7514bf20ec4f4aa37",
+    "opened": true,
+    "sliced": true,
+    "saved": true,
+    "closed": true,
+    "reopened": true,
+    "resliced": true,
+    "resaved": true,
+    "qualifiedAtUtc": "2026-08-03T21:32:53Z"
+  },
+  "note": "The exact Snapmaker Orca 2.3.5 installation completed the six-plate Full Spectrum writer open, slice-all, save, full close, reopen, re-slice-all, and re-save qualification cycle on 2026-08-03. This record qualifies native writer structure and GUI interoperability, not physical color accuracy."
+}

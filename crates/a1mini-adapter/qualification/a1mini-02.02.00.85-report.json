@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "bambu-studio/02.02.00.85/a1-mini-0.4-no-ams",
+  "applicationVersion": "02.02.00.85",
+  "executableSha256": "88b72ac8523f36f4be0c5aafe99337baa6f596f502f9dfb4356ad2617c1b7458",
+  "profileSource": "installed_system",
+  "profilePackVersion": "02.02.00.02",
+  "profileManifestSha256": "2b34f3a24718cee1dcbd83250d840010d95d5bb08d27fb0fc0c8da4c02b39feb",
+  "status": "qualified",
+  "qualification": {
+    "pla": {
+      "fixtureName": "Withered_Foxy_A1_mini_No_AMS.3mf",
+      "sourceFixtureSha256": "78a613193c05f96c77e0db5c7a5a0ce0eb051936752ae2b0def09ae8202cab8c",
+      "writerCandidateSha256": "6ebe63cd19e12fec30b11e910bbf30f9abba0a37e8b3028c031e411be2d53c85",
+      "firstGuiSavedSha256": "9561ee677e75710c22f01b1e01d925ec5cabdb70e525d8256f0cc11ad3646bdc",
+      "reopenedGuiSavedSha256": "c1cb69848f3396fa9d649fcd31df32de662060cf3187c4b59af5e63187536f41",
+      "opened": true,
+      "sliced": true,
+      "saved": true,
+      "closed": true,
+      "reopened": true,
+      "resliced": true,
+      "resaved": true
+    },
+    "petg": {
+      "fixtureName": "Withered_Foxy.3mf",
+      "sourceFixtureSha256": "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81",
+      "writerCandidateSha256": "4c737de3a6b36ef453744f4fc2f4bf370b4c7a283ba1867e051cd033edf3d075",
+      "firstGuiSavedSha256": "ca87bcb9baeaee56f1b01e378ed40216b5e231fbfd78962df5f4de0592835efd",
+      "reopenedGuiSavedSha256": "a88feec5bd2490025191f001d00d943e51219f32c062bf96752facfee019f3ad",
+      "opened": true,
+      "sliced": true,
+      "saved": true,
+      "closed": true,
+      "reopened": true,
+      "resliced": true,
+      "resaved": true
+    },
+    "profiles": [
+      {
+        "relativePath": "machine/Bambu Lab A1 mini 0.4 nozzle.json",
+        "sha256": "eb2503620defa46a7564a92b66f59c7bb27eaa8a40afbc87dcc84908fd81fa0a"
+      },
+      {
+        "relativePath": "machine/fdm_bbl_3dp_001_common.json",
+        "sha256": "428e85a328d7f04310db6b88c5c85d7e888ce61aa41a7dac26bdd110df36a7f2"
+      },
+      {
+        "relativePath": "machine/fdm_machine_common.json",
+        "sha256": "a0eaa507084eb9ba69207498b9c84766912e1521f668828181685e9fcb45b8a0"
+      },
+      {
+        "relativePath": "process/0.20mm Standard @BBL A1M.json",
+        "sha256": "e804557e4d014d1e726ad6c0101f3bb627466b9c7adbf445ece060dfb4af4415"
+      },
+      {
+        "relativePath": "process/0.20mm Standard @BBL P1P.json",
+        "sha256": "eb93e7d484b07b2a4b104786d3bee4b9abb02cd027245106b3936ee1671a7e48"
+      },
+      {
+        "relativePath": "process/fdm_process_single_0.20.json",
+        "sha256": "cdda8d56d67f62a0faa892cb6efc605ebb5c745bf742f6ead4daaeb6627c182a"
+      },
+      {
+        "relativePath": "process/fdm_process_single_common.json",
+        "sha256": "05b38ac1318e465e817978b36da51754f928da0172738a20bb3a8d4a69eb4769"
+      },
+      {
+        "relativePath": "process/fdm_process_common.json",
+        "sha256": "68a0dde1513c863bae9b5bbd017e333b7a4361e7d6d0d13773be05695b9dbe91"
+      },
+      {
+        "relativePath": "filament/Generic PLA @BBL A1M.json",
+        "sha256": "24286e1c65a757bfc400cec200aa66af99c61b099b271bc399cc176417e627f1"
+      },
+      {
+        "relativePath": "filament/Generic PLA @base.json",
+        "sha256": "530b745e2062c4c577d7acce3601ac7586fc65de394726252354bec0ade3e4c5"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pla.json",
+        "sha256": "3ae5cdf6f02587cac56b7ba358b56d14ebe119295dfd17a3a3a57717a2fa0f79"
+      },
+      {
+        "relativePath": "filament/Generic PETG @BBL A1M.json",
+        "sha256": "6190f0d0085a94c521692389d5961fa082c414ef9c07acb44d54805a34e3c636"
+      },
+      {
+        "relativePath": "filament/Generic PETG @base.json",
+        "sha256": "6f6c6f213537cf75ab87f5eae7454a876ca268208d70f6b241c5396224a95b1a"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pet.json",
+        "sha256": "1b15d3c8f7ca64c79ee5e68eee5368e1ee8b128f9c381f076832f0123d1b6023"
+      },
+      {
+        "relativePath": "filament/fdm_filament_common.json",
+        "sha256": "da928e89a0694867187a346edce8eb8af515e8ebe598e18929cb2666192a19d9"
+      }
+    ],
+    "checks": {
+      "machineProfileLoaded": true,
+      "processProfileLoaded": true,
+      "singleExternalSpoolVerified": true,
+      "noAmsVerified": true,
+      "onePlatePerOutputVerified": true,
+      "geometryAndPlacementsStable": true,
+      "materialIdentityStable": true,
+      "noRepairWarning": true,
+      "noIncompatibleProfileWarning": true,
+      "noMissingProfileWarning": true,
+      "noCustomProfileWarning": true,
+      "noStaleSliceArtifacts": true
+    }
+  },
+  "note": "PLA and PETG single-spool candidates completed independent open, slice, save, full close, reopen, re-slice, and re-save cycles in the exact Bambu Studio 02.02.00.85 installation on 2026-08-03. Both three-file semantic validators returned isValid=true."
+}

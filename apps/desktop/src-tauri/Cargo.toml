@@ -1,0 +1,28 @@
+[package]
+name = "u1-planner-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "u1_planner_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tempfile.workspace = true
+u1-a1mini-adapter = { path = "../../../crates/a1mini-adapter" }
+u1-application = { path = "../../../crates/application" }
+u1-color-engine = { path = "../../../crates/color-engine" }
+u1-orca-adapter = { path = "../../../crates/orca-adapter" }
+u1-planner = { path = "../../../crates/planner" }
+u1-three-mf = { path = "../../../crates/three-mf" }
+uuid.workspace = true

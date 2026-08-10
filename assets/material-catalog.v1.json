@@ -1,0 +1,85 @@
+{
+  "$schema": "./material-catalog.schema.json",
+  "schemaVersion": 1,
+  "catalogId": "u1-planner-builtins-2026-08-01",
+  "source": {
+    "name": "Polymaker Panchroma product catalog",
+    "url": "https://shop.polymaker.com/collections/panchroma",
+    "retrievedOn": "2026-08-01"
+  },
+  "disclaimer": "Catalog HEX values identify nominal product colors. They are not measured Full Spectrum print colors and do not replace a calibration chart.",
+  "spools": [
+    {
+      "id": "panchroma-translucent-cyan",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Translucent PLA",
+      "colorName": "Translucent Cyan",
+      "hex": "#08ABFB",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "fixed_cyan",
+      "mixingPolicy": "fixed_component",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-translucent"
+    },
+    {
+      "id": "panchroma-translucent-magenta",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Translucent PLA",
+      "colorName": "Translucent Magenta",
+      "hex": "#D93B90",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "fixed_magenta",
+      "mixingPolicy": "fixed_component",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-translucent"
+    },
+    {
+      "id": "panchroma-translucent-yellow",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Translucent PLA",
+      "colorName": "Translucent Yellow",
+      "hex": "#F9ED3D",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "fixed_yellow",
+      "mixingPolicy": "fixed_component",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-translucent"
+    },
+    {
+      "id": "panchroma-translucent-grey",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Translucent PLA",
+      "colorName": "Translucent Grey",
+      "hex": "#9199A4",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "default_t4",
+      "mixingPolicy": "full_spectrum",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-translucent"
+    },
+    {
+      "id": "panchroma-basic-white",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Basic PLA",
+      "colorName": "White",
+      "hex": "#EBF7FF",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "optional",
+      "mixingPolicy": "solid_only_until_calibrated",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-pla"
+    },
+    {
+      "id": "panchroma-basic-black",
+      "manufacturer": "Polymaker",
+      "product": "Panchroma Basic PLA",
+      "colorName": "Black",
+      "hex": "#080A0D",
+      "material": "PLA",
+      "colorBasis": "nominal",
+      "defaultRole": "optional",
+      "mixingPolicy": "solid_only_until_calibrated",
+      "sourceUrl": "https://shop.polymaker.com/products/panchroma-pla"
+    }
+  ]
+}

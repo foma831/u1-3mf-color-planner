@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "bambu-studio/02.02.00.85/a1-mini-0.4-no-ams",
+  "applicationVersion": "02.02.00.85",
+  "executableSha256": "88b72ac8523f36f4be0c5aafe99337baa6f596f502f9dfb4356ad2617c1b7458",
+  "profileSource": "installed_system",
+  "profilePackVersion": "02.02.00.02",
+  "profileManifestSha256": "2b34f3a24718cee1dcbd83250d840010d95d5bb08d27fb0fc0c8da4c02b39feb",
+  "guiRoundTripPassed": true,
+  "status": "qualified",
+  "evidence": {
+    "qualificationReportSha256": "0d63ff24192cb327a368741cf48c1fdcac216b6f8e5e0d0b1e8807e3b4d97a32",
+    "qualifiedAtUtc": "2026-08-03T20:58:05Z"
+  },
+  "note": "The exact Bambu Studio 02.02.00.85 installation completed independent PLA and PETG open, slice, save, full close, reopen, re-slice, and re-save qualification cycles on 2026-08-03."
+}

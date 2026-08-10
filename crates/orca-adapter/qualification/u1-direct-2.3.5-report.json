@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 2,
+  "adapterId": "snapmaker-orca/2.3.5/u1-0.4-direct",
+  "applicationVersion": "2.3.5",
+  "executableSha256": "4c30e59cf582dcc4f12e43741fcab2f97045e972065d465481ed3760678d0fbe",
+  "profileSource": "installed_system",
+  "profilePackVersion": "02.02.53.02",
+  "profileManifestSha256": "08d2e3a4450f07fa75f123c691495b3cd3c354c3c29697ceb8a35d6407186cb9",
+  "status": "qualified",
+  "qualification": {
+    "fixtureName": "Sailfin Dragon - Articulated Lizard by Raki-Box.3mf",
+    "sourceFixtureSha256": "1b20d6124353d3bc31c4ea554e482ba6f8ef281dd23e2df6bbc0d561b4f6e0d7",
+    "writerCandidateSha256": "7bd3668d143dabc57643b820c49b9ba1130534b2b1d5555e4a7c8fe80059aa30",
+    "firstGuiSavedSha256": "1796ca7e2c18ad89579e13024197de8e0f84a715d806d39fbed18b538178fb31",
+    "reopenedGuiSavedSha256": "5a7cca46b77650b6c86328e1b287cbf2f87ab0007c48e77970222da83d1295b3",
+    "opened": true,
+    "sliced": true,
+    "saved": true,
+    "closed": true,
+    "reopened": true,
+    "resliced": true,
+    "resaved": true,
+    "qualifiedAtUtc": "2026-08-03T22:05:28Z",
+    "profiles": [
+      {
+        "relativePath": "machine/Snapmaker U1 (0.4 nozzle).json",
+        "sha256": "545e4456b78cc58e701ed257e4024b0ed9e2461cccc1046e6f901ce3c020ee0d"
+      },
+      {
+        "relativePath": "machine/fdm_U1.json",
+        "sha256": "ff0724000b1436fcc3d77ffa74bb623a9b322474fc20c8a8d5a26ee164077046"
+      },
+      {
+        "relativePath": "machine/fdm_toolchanger.json",
+        "sha256": "b2ee2d2c31a26ddee7b0c8bd84c58934d9c01e84e1b8f7ae45e14acfd1f7b52a"
+      },
+      {
+        "relativePath": "machine/fdm_klipper.json",
+        "sha256": "78dd750211347543368a8a0f136441ef7e23b3a4a09a9e33a370c91dbda273b9"
+      },
+      {
+        "relativePath": "process/0.20 Standard @Snapmaker U1 (0.4 nozzle).json",
+        "sha256": "3342dbe3e995b66ab5700245c676f446a88d35f56498b074ab6fe14039d67763"
+      },
+      {
+        "relativePath": "process/fdm_process_U1_0.20.json",
+        "sha256": "2df28dc2474b6aeb77d5416043b3a67e54ff7ea1cdf5a5daa9e97db7e5b034a6"
+      },
+      {
+        "relativePath": "process/fdm_process_U1_common.json",
+        "sha256": "43fba9fe359864b265ffa8682cf404c2b935d12164ffe3d0048e5dcb0691db74"
+      },
+      {
+        "relativePath": "process/fdm_process_U1.json",
+        "sha256": "66e9e51c4bd04cbbec49fa1a3a043bc3c6e329396c2b38a18db5a66b6e72b4e2"
+      },
+      {
+        "relativePath": "filament/Generic PLA.json",
+        "sha256": "1b67ca20832ec5f72e90d8f5ec76e17bc1c150e45fed1d833412310e8a4378ab"
+      },
+      {
+        "relativePath": "filament/Generic PLA @base.json",
+        "sha256": "bfee7e83f1d76c862e36680ae3bccba55d45c88bc84bfdc489272f881fad9564"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pla_generic.json",
+        "sha256": "b815ff418638712ac57f740b5d735e231147128fcd13dc16a16c69011d3bd75a"
+      },
+      {
+        "relativePath": "filament/fdm_filament_common_generic.json",
+        "sha256": "24e4920907489bfdeb250ba749b005c97571d7a547416989af10df502896e99d"
+      },
+      {
+        "relativePath": "filament/Polymaker General PLA Family @U1.json",
+        "sha256": "37f61ec15169713050f6ace92da102fc5ad39b05556965f364db941b3a8f9729"
+      },
+      {
+        "relativePath": "filament/Polymaker PLA @U1 base.json",
+        "sha256": "f9770b13c948e0249c09741babda89f8a6b16a0302f1a9f5e86cc2d3e57e3f96"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pla_poly.json",
+        "sha256": "b3aa7fda86cec0cb9c6bee3bb600aa44a54f962fc7c8350bfd6e82d1295bc533"
+      },
+      {
+        "relativePath": "filament/fdm_filament_common_poly.json",
+        "sha256": "ea111ac929ad6d131237c25eba3af23f802a61afee3bea099eea6c93212ecbbc"
+      },
+      {
+        "relativePath": "filament/Generic PETG.json",
+        "sha256": "9887427bf889b4364b49b401aa69a1f874ff484e530a09a54be5e77a0bd5ad9b"
+      },
+      {
+        "relativePath": "filament/Generic PETG @base.json",
+        "sha256": "e46b5aac9d983eff69a18f6f2453fc2e5a28f1d581370195ef01c9d0d7032e57"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pet_generic.json",
+        "sha256": "33f78fc9a87c83976a635d23c0303797bc9468c8a1c27ab2d1ef769ea66ac2d1"
+      }
+    ],
+    "auxiliaryProfiles": [
+      {
+        "relativePath": "filament/filament_hot_bed_nozzles.json",
+        "sha256": "a824576f8d9fc26f0d9c32ad386ecd86f182ed907025aec0aa6df74b0d2c08e7"
+      },
+      {
+        "relativePath": "filament/filament_compatibility.json",
+        "sha256": "daf9fa227f2aaa118e021a51b942180baf8a322002b4294cc4ec0b6000ebc472"
+      }
+    ],
+    "checks": {
+      "machineProfileLoaded": true,
+      "processProfileLoaded": true,
+      "t1T4MappingVerified": true,
+      "primeTowerVerified": true,
+      "plateCountStable": true,
+      "objectCountStable": true,
+      "sliceCompletedWithoutRepairWarning": true,
+      "noIncompatibleProfileWarning": true,
+      "noMissingProfileWarning": true,
+      "noCustomProfileWarning": true,
+      "firstGuiSavedStructurallyValid": true,
+      "reopenedGuiSavedStructurallyValid": true,
+      "noEmbeddedPresetsAfterFirstSave": true,
+      "noEmbeddedPresetsAfterReopenedSave": true,
+      "geometryAndPlacementsStable": true,
+      "targetGlobalsStable": true,
+      "writerCandidateIdentifyIdsPositiveAndUnique": true,
+      "writerCandidateSourceIdentifyIdsPreserved": true,
+      "guiIdentifyIdsUnique": true,
+      "instanceIdentityBijectionStable": true,
+      "derivedProfileIdentityStable": true
+    }
+  },
+  "note": "The Sailfin Stage-B Direct candidate completed two clean Snapmaker Orca 2.3.5 GUI open, slice, and save cycles. Version-scoped structural and semantic validation confirmed stable U1 globals, T1-T4 profiles, prime tower, geometry, placements, and source identity."
+}

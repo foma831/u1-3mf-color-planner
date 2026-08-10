@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "acceptancePlanId": "withered-foxy-full-spectrum-2026-08-03",
+  "source": {
+    "path": "Sample/Withered_Foxy.3mf",
+    "sha256": "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81",
+    "byteSize": 202162511,
+    "application": "BambuStudio",
+    "applicationVersion": "02.06.00.51",
+    "dialect": "bambu_studio_project",
+    "dialectVersion": "1"
+  },
+  "planningOptions": {
+    "path": "fixtures/full-spectrum-foxy-qualification-options.json",
+    "sha256": "3645770861d81bb21bda95d6ae6e7b7400ae7b74959f089685d5bf7006a112be"
+  },
+  "inventory": {
+    "catalogPath": "assets/material-catalog.v1.json",
+    "catalogSha256": "4877abf0f403e6f84f77cf37b381a1c5b26c6fba49cf1a3af88a75ca762c55ea",
+    "userSpools": [],
+    "initialToolheads": {
+      "T1": "panchroma-translucent-cyan",
+      "T2": "panchroma-translucent-magenta",
+      "T3": "panchroma-translucent-yellow",
+      "T4": "panchroma-translucent-grey"
+    }
+  },
+  "calibration": {
+    "records": [],
+    "planningGeometry": {
+      "orientation": "unknown",
+      "geometryClass": "unknown"
+    },
+    "confidencePolicy": "Nominal Full Spectrum estimates require explicit fallback approval and do not count as measured color evidence.",
+    "deltaE00Thresholds": {
+      "goodMaximum": 3.0,
+      "reviewMaximum": 6.0
+    }
+  },
+  "sourcePlatePolicy": {
+    "includedSourcePlateIds": [1, 2, 3, 4, 5, 6, 8, 9],
+    "excludedAlternativeSourcePlateIds": [7, 10, 11, 12],
+    "reason": "The detected joint plates are mutually alternative sets and remain excluded until one set is explicitly selected."
+  },
+  "materialDecisions": {
+    "policy": "The qualification scenario explicitly accepts the PETG-to-PLA substitutions recorded in the referenced planning options. This is not a silent production default.",
+    "sourceScopesWithApprovedSubstitution": ["plate-3", "plate-6"]
+  },
+  "expectedPlan": {
+    "hardErrorCount": 0,
+    "jobCount": 8,
+    "targetPlateCount": 8,
+    "u1TargetPlateCount": 8,
+    "a1MiniTargetPlateCount": 0,
+    "batchCount": 3,
+    "t4SwapCount": 1,
+    "a1SpoolChangeCount": 0,
+    "strategyCounts": {
+      "cmyx_full_spectrum": 8,
+      "cmyx_solid": 0,
+      "direct_spools": 0,
+      "a1_mono": 0
+    },
+    "warningCounts": {
+      "approved_color_fallback": 48,
+      "approved_material_substitution": 22,
+      "direct_alternative_unavailable": 4
+    },
+    "batches": [
+      {
+        "id": "batch-001",
+        "targetPlateIds": ["plate-008"],
+        "T4": "panchroma-translucent-grey",
+        "swapBefore": false
+      },
+      {
+        "id": "batch-002",
+        "targetPlateIds": ["plate-001"],
+        "T4": null,
+        "swapBefore": false
+      },
+      {
+        "id": "batch-003",
+        "targetPlateIds": ["plate-002", "plate-003", "plate-004", "plate-005", "plate-006", "plate-007"],
+        "T4": "panchroma-basic-black",
+        "swapBefore": true
+      }
+    ],
+    "finalToolheads": {
+      "T1": "panchroma-translucent-cyan",
+      "T2": "panchroma-translucent-magenta",
+      "T3": "panchroma-translucent-yellow",
+      "T4": "panchroma-basic-black"
+    }
+  },
+  "targetInstallations": {
+    "SnapmakerOrca": {
+      "version": "2.3.5",
+      "directAdapterStatus": "qualified",
+      "fullSpectrumAdapterStatus": "pending_gui_round_trip_and_physical_coupon"
+    },
+    "BambuStudio": {
+      "version": "02.02.00.85",
+      "a1MiniAdapterStatus": "pending_separate_pla_and_petg_gui_round_trips"
+    }
+  }
+}

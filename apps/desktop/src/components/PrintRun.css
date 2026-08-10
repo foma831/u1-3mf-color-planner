@@ -1,0 +1,694 @@
+.print-run {
+  display: grid;
+  gap: var(--space-4);
+  margin-block: var(--space-5);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  padding: var(--space-5);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+}
+
+.print-run__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.print-run__heading h2 {
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.print-run__heading p {
+  max-width: 65ch;
+  margin-block-start: var(--space-1);
+  color: var(--color-muted);
+}
+
+.print-run-eyebrow {
+  display: block;
+  margin-block-end: 0.15rem;
+  color: #3f596a;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.print-run__count {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  background: var(--color-surface-subtle);
+  color: #3f4850;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.print-run-exclusions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid #d68a2b;
+  border-radius: var(--radius-panel);
+  background: #fff8ec;
+}
+
+.print-run-exclusions > svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.1rem;
+  color: #9a5a00;
+}
+
+.print-run-exclusions > div {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.print-run-exclusions h3,
+.print-run-exclusions p {
+  margin: 0;
+}
+
+.print-run-exclusions h3 {
+  color: #7b4700;
+  font-size: 0.875rem;
+}
+
+.print-run-exclusions > div > p,
+.print-run-exclusions li p,
+.print-run-exclusions li span {
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.print-run-exclusions ul {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.print-run-exclusions li {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #ead9ba;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.print-run-exclusions li > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.print-run-progress {
+  overflow: auto;
+  border-block: 1px solid var(--color-border);
+  padding-block: var(--space-3);
+}
+
+.print-run-progress ol {
+  min-width: 34rem;
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.print-run-progress__step {
+  min-height: 3.25rem;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 0.55rem 0.7rem;
+  background: #fafbfc;
+}
+
+.print-run-progress__step > svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  color: #59656e;
+}
+
+.print-run-progress__step--current,
+.print-run-progress__step--ready {
+  border-color: #087fcc;
+  box-shadow: inset 0.1875rem 0 0 #087fcc;
+  background: #f2f9fd;
+}
+
+.print-run-progress__step--complete {
+  border-color: #75b793;
+  background: #f1faf5;
+}
+
+.print-run-progress__step--complete > svg {
+  color: var(--color-success-text);
+}
+
+.print-run-progress__step--waiting {
+  color: #64707a;
+}
+
+.print-run-progress__copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.print-run-progress__copy strong,
+.print-run-progress__copy small {
+  overflow-wrap: anywhere;
+}
+
+.print-run-progress__copy strong {
+  font-size: 0.8125rem;
+}
+
+.print-run-progress__copy small {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-step-status {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.2rem 0.45rem;
+  color: #59656e;
+  font-size: 0.625rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.print-run-step-status--complete {
+  color: var(--color-success-text);
+}
+
+.print-run-step-status--current,
+.print-run-step-status--ready {
+  color: #006cae;
+}
+
+.print-run-current,
+.print-run-checkpoint,
+.print-run-start,
+.print-run-complete,
+.print-run-locked {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  padding: var(--space-4);
+}
+
+.print-run-current {
+  display: grid;
+  gap: var(--space-4);
+  border-color: #8bbbd7;
+  background: #fbfdff;
+}
+
+.print-run-current__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.print-run-current__heading h3,
+.print-run-checkpoint__heading h3,
+.print-run-start h3,
+.print-run-complete h3,
+.print-run-locked h3 {
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.print-run-action-heading:focus {
+  border-radius: 0.2rem;
+  outline: 0.1875rem solid #087fcc;
+  outline-offset: 0.2rem;
+}
+
+.print-run-current__heading p {
+  margin-block-start: var(--space-1);
+  color: var(--color-muted);
+}
+
+.print-run-printer {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  border: 1px solid #6a8798;
+  border-radius: 999px;
+  padding: 0.3rem 0.55rem;
+  color: #324e5f;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.print-run-printer svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.print-run-target-details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.print-run-target-details > div {
+  min-width: 0;
+  padding: var(--space-3);
+}
+
+.print-run-target-details > div + div {
+  border-inline-start: 1px solid var(--color-border);
+}
+
+.print-run-target-details dt {
+  color: var(--color-muted);
+  font-size: 0.625rem;
+  font-weight: 750;
+}
+
+.print-run-target-details dd {
+  margin: 0.15rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.print-run-instruction {
+  border-inline-start: 0.25rem solid #087fcc;
+  padding-inline-start: var(--space-3);
+}
+
+.print-run-instruction p {
+  max-width: 70ch;
+  margin-block-start: var(--space-1);
+  color: #4f5a63;
+}
+
+.print-run-current > .button,
+.print-run-checkpoint > .button {
+  justify-self: start;
+  min-height: 3rem;
+}
+
+.print-run-artifact {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+  border: 1px solid #8bbbd7;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+  background: #f2f9fd;
+}
+
+.print-run-artifact > span {
+  font-weight: 750;
+}
+
+.print-run-artifact code,
+.print-run-files code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: #304a5a;
+  font-size: 0.6875rem;
+  white-space: normal;
+}
+
+.print-run-artifact small {
+  color: var(--color-muted);
+}
+
+.print-run-artifact > .button {
+  justify-self: start;
+  margin-block-start: var(--space-2);
+}
+
+.print-run-files {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  padding: var(--space-4);
+  background: var(--color-surface-subtle);
+}
+
+.print-run-files h3 {
+  font-size: 0.875rem;
+}
+
+.print-run-files p {
+  margin-block-start: var(--space-1);
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.print-run-files ol {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.print-run-files li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.4fr) minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: var(--space-2);
+}
+
+.print-run-files li > .button {
+  align-self: center;
+}
+
+.print-run-files li > span {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.print-run-files li strong {
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+
+.print-run-files li small {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-button-help {
+  max-width: 70ch;
+  margin-block-start: calc(var(--space-3) * -1);
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-checkpoint {
+  display: grid;
+  gap: var(--space-4);
+  border-width: 0.125rem;
+  border-color: #bf7800;
+  background: #fffaf0;
+}
+
+.print-run-checkpoint__heading {
+  display: flex;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.print-run-checkpoint__heading > svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: #8b5800;
+}
+
+.print-run-checkpoint > p {
+  max-width: 75ch;
+}
+
+.print-run-change-actions {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.print-run-change-actions li {
+  min-height: 2.75rem;
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  border: 1px solid #d7b77d;
+  border-radius: var(--radius-control);
+  padding: 0.55rem 0.7rem;
+  background: var(--color-surface);
+}
+
+.print-run-change-actions li > span:first-child {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #6f4800;
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 850;
+}
+
+.print-run-change-actions__instruction {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.print-run-checkpoint__gate {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: #714900;
+  font-weight: 750;
+}
+
+.print-run-checkpoint__gate svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.print-run-start,
+.print-run-complete,
+.print-run-locked {
+  display: flex;
+  gap: var(--space-4);
+  align-items: start;
+  background: #fafbfc;
+}
+
+.print-run-start > svg,
+.print-run-complete > svg,
+.print-run-locked > svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.print-run-start p,
+.print-run-complete p,
+.print-run-locked p {
+  max-width: 65ch;
+  margin-block: var(--space-1) var(--space-3);
+  color: var(--color-muted);
+}
+
+.print-run-complete {
+  border-color: #75b793;
+  background: #f1faf5;
+}
+
+.print-run-complete > svg {
+  color: var(--color-success-text);
+}
+
+.print-run-locked {
+  border-color: #d4a543;
+  background: #fffaf0;
+}
+
+.print-run-locked > svg {
+  color: #8b5800;
+}
+
+.print-run-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.print-run-footer > p {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-footer > p svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.print-run-log {
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: var(--space-3);
+  color: #3f4850;
+}
+
+.print-run-log summary {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.print-run-log ol {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-inline-start: 1.5rem;
+}
+
+.print-run-log li {
+  padding-inline-start: var(--space-1);
+}
+
+.print-run-log li span,
+.print-run-log time {
+  display: block;
+}
+
+.print-run-log time {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-storage-warning {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  border: 1px solid #d4a543;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+  background: #fffaf0;
+  color: #714900;
+  font-weight: 700;
+}
+
+.print-run-storage-warning svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+@media (max-width: 56.25rem) {
+  .print-run-target-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .print-run-target-details > div + div {
+    border-inline-start: 0;
+  }
+
+  .print-run-target-details > div:nth-child(even) {
+    border-inline-start: 1px solid var(--color-border);
+  }
+
+  .print-run-target-details > div:nth-child(n + 3) {
+    border-block-start: 1px solid var(--color-border);
+  }
+}
+
+@media (max-width: 40rem) {
+  .print-run {
+    padding: var(--space-4);
+  }
+
+  .print-run__heading,
+  .print-run-current__heading,
+  .print-run-footer {
+    flex-direction: column;
+  }
+
+  .print-run__count {
+    align-self: start;
+  }
+
+  .print-run-target-details {
+    grid-template-columns: 1fr;
+  }
+
+  .print-run-files li {
+    grid-template-columns: 1fr;
+  }
+
+  .print-run-target-details > div:nth-child(even) {
+    border-inline-start: 0;
+  }
+
+  .print-run-target-details > div:nth-child(n + 2) {
+    border-block-start: 1px solid var(--color-border);
+  }
+
+  .print-run-current > .button,
+  .print-run-checkpoint > .button,
+  .print-run-footer > .button {
+    width: 100%;
+  }
+}
+
+@media (pointer: coarse) {
+  .print-run-current > .button,
+  .print-run-checkpoint > .button,
+  .print-run-footer > .button,
+  .print-run-log summary {
+    min-height: 3rem;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .print-run-progress__step,
+  .print-run-current,
+  .print-run-checkpoint,
+  .print-run-start,
+  .print-run-complete,
+  .print-run-locked,
+  .print-run-target-details,
+  .print-run-change-actions li {
+    border-width: 0.125rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .print-run-progress__step,
+  .print-run-current,
+  .print-run-checkpoint,
+  .print-run-start,
+  .print-run-complete,
+  .print-run-locked,
+  .print-run-change-actions li,
+  .print-run-step-status {
+    border: 1px solid CanvasText;
+  }
+
+  .print-run-progress__step[aria-current="step"] {
+    outline: 0.1875rem solid Highlight;
+    outline-offset: 0.125rem;
+  }
+}
