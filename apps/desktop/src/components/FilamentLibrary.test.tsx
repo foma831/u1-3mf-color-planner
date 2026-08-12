@@ -79,7 +79,7 @@ function renderLibrary(
 afterEach(cleanup);
 
 describe("FilamentLibrary", () => {
-  it("keeps the permanent catalogue visible with textual stock status and filters", () => {
+  it("keeps the permanent catalogue visible with physical availability and filters", () => {
     const { onAvailabilityChange } = renderLibrary();
 
     expect(
@@ -92,24 +92,26 @@ describe("FilamentLibrary", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("row", {
-        name: /PolyLite PETG Black.*PETG.*Out of stock/i,
+        name: /PolyLite PETG Black.*PETG.*Not available/i,
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getAllByText("In stock", { selector: ".filament-status" }),
+      screen.getAllByText("Available now", { selector: ".filament-status" }),
     ).toHaveLength(2);
     expect(screen.getByText("Polymaker · Panchroma")).toBeInTheDocument();
     expect(screen.getByText("Optical: Opaque matte")).toBeInTheDocument();
     expect(screen.getByText("Nozzle 200–230 °C")).toBeInTheDocument();
-    expect(screen.getByText("Lot LOT-RED-7 · Calibration flat-red-v1")).toBeInTheDocument();
+    expect(
+      screen.getByText("Lot LOT-RED-7 · Calibration flat-red-v1"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Notes")).toBeInTheDocument();
     expect(
-      screen.getByText("Out of stock", { selector: ".filament-status" }),
+      screen.getByText("Not available", { selector: ".filament-status" }),
     ).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Mark in stock: PolyLite PETG Black",
+        name: "Mark available: PolyLite PETG Black",
       }),
     );
     expect(onAvailabilityChange).toHaveBeenCalledWith("black-petg", true);
@@ -122,12 +124,16 @@ describe("FilamentLibrary", () => {
         name: "Showing 1 of 3 catalogued spools.",
       }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Panchroma Translucent Cyan")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Panchroma Translucent Cyan"),
+    ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Search library"), {
       target: { value: "does not exist" },
     });
-    expect(screen.getByText(/No spools match these filters/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No spools match these filters/i),
+    ).toBeInTheDocument();
   });
 
   it("edits and deletes user spools while keeping built-ins read-only", async () => {
@@ -155,6 +161,7 @@ describe("FilamentLibrary", () => {
     const editHeading = screen.getByRole("heading", {
       name: "Edit Workshop Signal Red",
     });
+    expect(editHeading).toHaveFocus();
     const editRegion = editHeading.closest("section");
     expect(editRegion).not.toBeNull();
     const editForm = within(editRegion!);
@@ -168,6 +175,11 @@ describe("FilamentLibrary", () => {
         name: "Workshop Deep Red",
         colorName: "Signal Red",
       }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Edit Workshop Signal Red" }),
+      ).toHaveFocus(),
     );
 
     fireEvent.click(
@@ -298,7 +310,9 @@ describe("FilamentLibrary", () => {
         "The spool was not deleted. Review the storage error and try again.",
       ),
     ).toHaveAttribute("role", "alert");
-    expect(screen.getAllByText("Workshop Signal Red").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Workshop Signal Red").length).toBeGreaterThan(
+      0,
+    );
     expect(
       screen.getByRole("button", {
         name: "Confirm delete Workshop Signal Red",
@@ -311,7 +325,9 @@ describe("FilamentLibrary", () => {
     renderLibrary({ onAddSpool });
 
     fireEvent.click(screen.getByText("Add spool to library"));
-    const addHeading = screen.getByRole("heading", { name: "Add a user spool" });
+    const addHeading = screen.getByRole("heading", {
+      name: "Add a user spool",
+    });
     const addRegion = addHeading.closest("section");
     expect(addRegion).not.toBeNull();
     const addForm = within(addRegion!);
@@ -344,12 +360,29 @@ describe("FilamentLibrary", () => {
     });
   });
 
+  it("keeps optional traceability fields behind an advanced disclosure", () => {
+    renderLibrary();
+
+    fireEvent.click(screen.getByText("Add spool to library"));
+    const advanced = screen
+      .getByText("Advanced traceability & calibration")
+      .closest("details");
+    expect(advanced).not.toHaveAttribute("open");
+    expect(screen.getByLabelText("Vendor (optional)")).not.toBeVisible();
+
+    fireEvent.click(screen.getByText("Advanced traceability & calibration"));
+    expect(advanced).toHaveAttribute("open");
+    expect(screen.getByLabelText("Vendor (optional)")).toBeVisible();
+  });
+
   it("accepts a valid HEX value after an earlier invalid attempt", () => {
     const onAddSpool = vi.fn();
     renderLibrary({ onAddSpool });
 
     fireEvent.click(screen.getByText("Add spool to library"));
-    const addHeading = screen.getByRole("heading", { name: "Add a user spool" });
+    const addHeading = screen.getByRole("heading", {
+      name: "Add a user spool",
+    });
     const addRegion = addHeading.closest("section");
     expect(addRegion).not.toBeNull();
     const addForm = within(addRegion!);
@@ -411,6 +444,11 @@ describe("FilamentLibrary", () => {
     fireEvent.change(form.getByLabelText(/HEX color/i), {
       target: { value: "#9199A4" },
     });
+    const advancedSummary = form.getByText(
+      "Advanced traceability & calibration",
+    );
+    const advancedDetails = advancedSummary.closest("details");
+    fireEvent.click(advancedSummary);
     fireEvent.change(form.getByLabelText("Vendor (optional)"), {
       target: { value: " Polymaker " },
     });
@@ -440,11 +478,14 @@ describe("FilamentLibrary", () => {
       target: { value: " Dry at 55 C. " },
     });
 
+    fireEvent.click(advancedSummary);
+    expect(advancedDetails).not.toHaveAttribute("open");
     fireEvent.click(form.getByRole("button", { name: "Add spool" }));
     expect(onAddSpool).not.toHaveBeenCalled();
     expect(form.getByRole("alert")).toHaveTextContent(
       "Maximum nozzle temperature must be greater than or equal to the minimum.",
     );
+    expect(advancedDetails).toHaveAttribute("open");
     expect(maximumTemperature).toHaveFocus();
 
     fireEvent.change(maximumTemperature, { target: { value: "250" } });
@@ -465,6 +506,41 @@ describe("FilamentLibrary", () => {
 });
 
 describe("stock-aware spool selectors", () => {
+  it("shows the selected physical spool color beside the native selector", () => {
+    const plan = createDemoPlan();
+    const mapping = plan.plates[0].mappings![0];
+    const selected = plan.spools.find(
+      (spool) => spool.id === mapping.selectedSpoolId,
+    )!;
+
+    render(
+      <DirectSpoolEditor
+        plateId="visible-selected-color"
+        mappings={[mapping]}
+        spools={plan.spools}
+        currentLoadout={plan.currentLoadout}
+        restoreCmy={false}
+        onRestoreChange={vi.fn()}
+        onToolheadChange={vi.fn()}
+        onSpoolChange={vi.fn()}
+        onMaterialSubstitutionChange={vi.fn()}
+        onAddSpool={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("img", {
+        name: `Selected spool color ${selected.colorName} ${selected.hex}`,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: `${selected.colorName} · ${selected.material} — ${selected.name}`,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Available spool colors")).not.toBeInTheDocument();
+  });
+
   it("does not offer an out-of-stock spool for a Direct mapping", () => {
     const plan = createDemoPlan();
     plan.spools = plan.spools.map((spool) =>

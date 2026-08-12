@@ -95,13 +95,17 @@ export function DirectSpoolEditor({
   const currentByToolhead = new Map(
     currentLoadout.map((entry) => [entry.toolhead, spoolById.get(entry.spoolId)]),
   );
-  const paletteDescriptionId = `${plateId}-available-spool-colors-description`;
   const physicalIdentityIds = mappings
     .map((mapping) => mapping.physicalIdentityId)
     .filter((id, index, values) => values.indexOf(id) === index);
   const physicalIdentityLabels = new Map(
     physicalIdentityIds.map((id, index) => [id, index + 1]),
   );
+  const selectedPhysicalSpoolCount = new Set(
+    mappings
+      .map((mapping) => mapping.selectedSpoolId)
+      .filter((spoolId) => spoolId.length > 0),
+  ).size;
   const physicalIdentityUseCounts = new Map<string, number>();
   for (const mapping of mappings) {
     physicalIdentityUseCounts.set(
@@ -142,28 +146,18 @@ export function DirectSpoolEditor({
         onAddSpool={onAddSpool}
       />
 
-      <section className="available-spool-palette" aria-labelledby={`${plateId}-available-spool-colors`}>
-        <div>
-          <h4 id={`${plateId}-available-spool-colors`}>Available spool colors</h4>
-          <p id={paletteDescriptionId}>
-            Use these physical swatches and HEX values when choosing a spool below.
+      {physicalIdentityIds.length > 4 ? (
+        <section className="mapping-merge-notice" aria-labelledby={`${plateId}-custom-palette-summary`}>
+          <h4 id={`${plateId}-custom-palette-summary`}>Custom four-spool palette</h4>
+          <p>
+            This plate has {physicalIdentityIds.length} source physical identities.
+            They are currently mapped to {selectedPhysicalSpoolCount} in-stock physical{" "}
+            {selectedPhysicalSpoolCount === 1 ? "spool" : "spools"}. You may assign the
+            same spool to several source colors, but the visible differences between
+            those colors will be intentionally removed.
           </p>
-        </div>
-        <ul>
-          {selectableSpools.map((candidate) => (
-            <li key={candidate.id}>
-              <ColorSwatch hex={candidate.hex} size="medium" />
-              <span>
-                <strong>{candidate.colorName}</strong>
-                <small>
-                  {candidate.material} · {candidate.name}
-                </small>
-              </span>
-              <code>{candidate.hex}</code>
-            </li>
-          ))}
-        </ul>
-      </section>
+        </section>
+      ) : null}
 
       {mergedSpoolGroups.length > 0 ? (
         <section
@@ -192,8 +186,9 @@ export function DirectSpoolEditor({
             )}
           </ul>
           <p>
-            Recalculate the plan to validate this palette reduction as a single-spool
-            A1 Mono job.
+            Recalculate the plan to validate the reduced loadout. If every source
+            identity uses one compatible spool, the plate can also become eligible for
+            A1 Mono routing.
           </p>
         </section>
       ) : null}
@@ -263,20 +258,35 @@ export function DirectSpoolEditor({
                 </div>
                 <div className="field field--spool">
                   <label htmlFor={spoolId}>Selected spool</label>
-                  <select
-                    id={spoolId}
-                    name={`spool-${mapping.id}`}
-                    value={spool ? mapping.selectedSpoolId : ""}
-                    aria-describedby={paletteDescriptionId}
-                    onChange={(event) => onSpoolChange(mapping.id, event.target.value)}
-                  >
-                    <option value="">Unassigned — choose a physical spool</option>
-                    {selectableSpools.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {candidate.colorName} · {candidate.material} — {candidate.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="spool-select-control">
+                    <span
+                      className={`spool-select-control__swatch${spool ? "" : " is-empty"}`}
+                      role="img"
+                      aria-label={
+                        spool
+                          ? `Selected spool color ${spool.colorName} ${spool.hex}`
+                          : "No spool color selected"
+                      }
+                      title={spool ? `${spool.colorName} · ${spool.hex}` : "Unassigned"}
+                    >
+                      {spool ? <ColorSwatch hex={spool.hex} size="small" /> : null}
+                    </span>
+                    <select
+                      id={spoolId}
+                      name={`spool-${mapping.id}`}
+                      value={spool ? mapping.selectedSpoolId : ""}
+                      onChange={(event) =>
+                        onSpoolChange(mapping.id, event.target.value)
+                      }
+                    >
+                      <option value="">Unassigned — choose a physical spool</option>
+                      {selectableSpools.map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.colorName} · {candidate.material} — {candidate.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 

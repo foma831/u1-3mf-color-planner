@@ -19,11 +19,14 @@ function renderInspector(isFastMono: boolean) {
   };
   plan.plates = [plate, ...plan.plates.slice(1)];
   const onPrinterPreferenceChange = vi.fn();
+  const onClose = vi.fn();
 
   render(
     <PlateInspector
       plan={plan}
       plate={plate}
+      isOpen
+      onClose={onClose}
       restoreCmy={false}
       onStrategyChange={vi.fn()}
       onRestoreChange={vi.fn()}
@@ -33,14 +36,17 @@ function renderInspector(isFastMono: boolean) {
       a1MiniEnabled
       onPrinterPreferenceChange={onPrinterPreferenceChange}
       onAddSpool={vi.fn()}
+      customDirectPalettesEnabled={false}
+      isPreparingCustomPalette={false}
+      onOpenFilamentLibrary={vi.fn()}
     />,
   );
-  return onPrinterPreferenceChange;
+  return { onPrinterPreferenceChange, onClose };
 }
 
 describe("PlateInspector A1 mini routing", () => {
   it("allows a multi-source-color plate that resolves to one physical spool", () => {
-    const onPrinterPreferenceChange = renderInspector(true);
+    const { onPrinterPreferenceChange } = renderInspector(true);
 
     expect(
       screen.getByText("Prepare this plate for", { selector: "legend" }),
@@ -63,5 +69,15 @@ describe("PlateInspector A1 mini routing", () => {
     expect(
       screen.getByText(/assign the same compatible spool.*then recalculate/i),
     ).toBeInTheDocument();
+  });
+
+  it("focuses the selected plate heading and exposes a drawer close action", () => {
+    const { onClose } = renderInspector(true);
+
+    expect(screen.getByRole("heading", { level: 2 })).toHaveFocus();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close plate details" }),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

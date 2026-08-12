@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import {
   ArrowRight,
   CheckCircle2,
@@ -15,8 +15,11 @@ import {
 
 import type {
   ExcludedSourceUnit,
+  LoadedToolhead,
   PlatePlan,
+  PhysicalSpool,
   PublishedConversionArtifact,
+  ToolheadId,
 } from "../types";
 import {
   clearPrintRunProgress,
@@ -53,6 +56,13 @@ export interface PrintRunProps {
   /** Lets the host keep its plate inspector synchronized with this workflow. */
   onCurrentTargetChange?: (plateId: string) => void;
   onProgressChange?: (progress: PrintRunProgress) => void;
+  /** Explicitly persists the verified physical state after the run is complete. */
+  onSaveFinalLoadout?: (snapshot: {
+    currentLoadout: LoadedToolhead[];
+    currentA1SpoolId: string | null;
+  }) => void;
+  /** Controlled confirmation that the final physical state was persisted. */
+  finalLoadoutSaved?: boolean;
   /** Opens only a backend-registered artifact from the validated bundle. */
   onOpenArtifact?: (artifact: PublishedConversionArtifact) => Promise<void>;
   /** Injectable clock for deterministic tests. */
@@ -62,6 +72,115 @@ export interface PrintRunProps {
 interface KeyedProgress {
   storageKey: string;
   progress: PrintRunProgress;
+}
+
+const U1_TOOLHEADS: ToolheadId[] = ["T1", "T2", "T3", "T4"];
+
+function FinalSpool({
+  spoolId,
+  spools,
+}: {
+  spoolId: string | null;
+  spools: PhysicalSpool[];
+}) {
+  if (!spoolId) return <span>No loaded spool recorded</span>;
+  const spool = spools.find((candidate) => candidate.id === spoolId);
+  if (!spool) {
+    return (
+      <>
+        <strong>{spoolId}</strong>
+        <small>Saved spool is no longer in the filament library</small>
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>{spool.name}</strong>
+      <small>
+        {spool.colorName} · {spool.material}
+      </small>
+    </>
+  );
+}
+
+function FinalLoadoutPreview({
+  plan,
+  saved,
+  onSave,
+}: {
+  plan: PrintRunPlan;
+  saved: boolean;
+  onSave?: PrintRunProps["onSaveFinalLoadout"];
+}) {
+  const loadedByToolhead = new Map(
+    plan.plannedFinalLoadout.map((entry) => [entry.toolhead, entry.spoolId]),
+  );
+  const instanceId = useId().replace(/:/g, "");
+  const headingId = `${instanceId}-print-run-final-loadout-heading`;
+  const helpId = `${instanceId}-print-run-final-loadout-help`;
+
+  return (
+    <section className="print-run-final-loadout" aria-labelledby={headingId}>
+      <div>
+        <h4 id={headingId}>Final printer loadout</h4>
+        <p id={helpId}>
+          Confirm that the physical printers still match this recorded state
+          before using it for the next project.
+        </p>
+      </div>
+      <dl className="print-run-final-loadout__slots">
+        {U1_TOOLHEADS.map((toolhead) => (
+          <div key={toolhead}>
+            <dt>Snapmaker U1 · {toolhead}</dt>
+            <dd>
+              <FinalSpool
+                spoolId={loadedByToolhead.get(toolhead) ?? null}
+                spools={plan.spools}
+              />
+            </dd>
+          </div>
+        ))}
+        <div>
+          <dt>Bambu Lab A1 mini</dt>
+          <dd>
+            <FinalSpool
+              spoolId={plan.plannedFinalA1SpoolId}
+              spools={plan.spools}
+            />
+          </dd>
+        </div>
+      </dl>
+      {onSave ? (
+        <div className="print-run-final-loadout__action">
+          <button
+            className="button button--primary"
+            type="button"
+            aria-describedby={helpId}
+            aria-disabled={saved}
+            onClick={() => {
+              if (saved) return;
+              onSave({
+                currentLoadout: plan.plannedFinalLoadout.map((entry) => ({
+                  ...entry,
+                })),
+                currentA1SpoolId: plan.plannedFinalA1SpoolId,
+              });
+            }}
+          >
+            <CheckCircle2 aria-hidden="true" />
+            {saved
+              ? "Current printer loadout saved"
+              : "Use as current printer loadout"}
+          </button>
+          {saved ? (
+            <p className="print-run-final-loadout__saved" role="status">
+              This loadout will be used to optimize the next project.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function defaultStorage() {
@@ -193,7 +312,8 @@ function PartialRunExclusions({
       <TriangleAlert aria-hidden="true" />
       <div>
         <h3 id="print-run-exclusions-heading">
-          Partial print run · {exclusions.length} source {exclusions.length === 1 ? "unit" : "units"} excluded
+          Partial print run · {exclusions.length} source{" "}
+          {exclusions.length === 1 ? "unit" : "units"} excluded
         </h3>
         <p>
           {published
@@ -256,7 +376,9 @@ function ProgressNavigation({
                     : checkpointSummary(step)}
                 </small>
               </span>
-              <span className={`print-run-step-status print-run-step-status--${state}`}>
+              <span
+                className={`print-run-step-status print-run-step-status--${state}`}
+              >
                 {stateLabel(state)}
               </span>
             </li>
@@ -286,7 +408,10 @@ function CurrentPlate({
 }) {
   const label = targetPlateLabel(plate.order);
   return (
-    <article className="print-run-current" aria-labelledby="current-target-heading">
+    <article
+      className="print-run-current"
+      aria-labelledby="current-target-heading"
+    >
       <div className="print-run-current__heading">
         <div>
           <span className="print-run-eyebrow">Current target</span>
@@ -343,7 +468,9 @@ function CurrentPlate({
           ) : (
             <ExternalLink aria-hidden="true" />
           )}
-          {isOpening ? `Opening in ${artifact.slicer}…` : `Open in ${artifact.slicer}`}
+          {isOpening
+            ? `Opening in ${artifact.slicer}…`
+            : `Open in ${artifact.slicer}`}
         </button>
       </div>
 
@@ -355,7 +482,11 @@ function CurrentPlate({
         </p>
       </div>
 
-      <button className="button button--primary" type="button" onClick={onComplete}>
+      <button
+        className="button button--primary"
+        type="button"
+        onClick={onComplete}
+      >
         <CheckCircle2 aria-hidden="true" />
         Mark {label} complete
       </button>
@@ -457,7 +588,9 @@ function A1SpoolCheckpoint({
       <div className="print-run-checkpoint__heading">
         <TriangleAlert aria-hidden="true" />
         <div>
-          <span className="print-run-eyebrow">Blocking operator checkpoint</span>
+          <span className="print-run-eyebrow">
+            Blocking operator checkpoint
+          </span>
           <h3
             className="print-run-action-heading"
             id="a1-spool-checkpoint-heading"
@@ -480,7 +613,9 @@ function A1SpoolCheckpoint({
         </div>
         <div>
           <dt>Spool ID</dt>
-          <dd><code>{step.spool.spoolId}</code></dd>
+          <dd>
+            <code>{step.spool.spoolId}</code>
+          </dd>
         </div>
         <div>
           <dt>Material</dt>
@@ -503,7 +638,10 @@ function A1SpoolCheckpoint({
       </dl>
 
       {step.actions.length > 0 ? (
-        <ol className="print-run-change-actions" aria-label="Published A1 setup actions">
+        <ol
+          className="print-run-change-actions"
+          aria-label="Published A1 setup actions"
+        >
           {step.actions.map((action, index) => (
             <li key={`${step.id}:action:${index}`}>
               <span>{index + 1}</span>
@@ -525,7 +663,8 @@ function A1SpoolCheckpoint({
         Confirm {spoolName} is loaded on A1 mini
       </button>
       <p className="print-run-button-help">
-        This records your confirmation. It does not control or verify the printer.
+        This records your confirmation. It does not control or verify the
+        printer.
       </p>
     </article>
   );
@@ -554,7 +693,9 @@ function FilamentCheckpoint({
       <div className="print-run-checkpoint__heading">
         <TriangleAlert aria-hidden="true" />
         <div>
-          <span className="print-run-eyebrow">Blocking operator checkpoint</span>
+          <span className="print-run-eyebrow">
+            Blocking operator checkpoint
+          </span>
           <h3
             className="print-run-action-heading"
             id="filament-checkpoint-heading"
@@ -580,8 +721,8 @@ function FilamentCheckpoint({
         </li>
         <li>
           <span>2</span>
-          Load <strong>{step.toLabel}</strong> into T4 and finish the printer's load
-          procedure.
+          Load <strong>{step.toLabel}</strong> into T4 and finish the printer's
+          load procedure.
         </li>
         <li>
           <span>3</span>
@@ -598,7 +739,8 @@ function FilamentCheckpoint({
         Confirm T4 {step.toLabel} is loaded
       </button>
       <p className="print-run-button-help">
-        This records your confirmation. It does not control or verify the printer.
+        This records your confirmation. It does not control or verify the
+        printer.
       </p>
     </article>
   );
@@ -640,7 +782,9 @@ function SetupCheckpoint({
       <div className="print-run-checkpoint__heading">
         <TriangleAlert aria-hidden="true" />
         <div>
-          <span className="print-run-eyebrow">Blocking operator checkpoint</span>
+          <span className="print-run-eyebrow">
+            Blocking operator checkpoint
+          </span>
           <h3
             className="print-run-action-heading"
             id="setup-checkpoint-heading"
@@ -675,7 +819,8 @@ function SetupCheckpoint({
         {buttonLabel}
       </button>
       <p className="print-run-button-help">
-        This records your confirmation. It does not control or verify the printer.
+        This records your confirmation. It does not control or verify the
+        printer.
       </p>
     </article>
   );
@@ -690,7 +835,9 @@ function OperatorLog({ events }: { events: PrintRunEvent[] }) {
         {events.map((event, index) => (
           <li key={`${event.type}-${event.recordedAt}-${index}`}>
             <span>{event.message}</span>
-            <time dateTime={event.recordedAt}>{formatTimestamp(event.recordedAt)}</time>
+            <time dateTime={event.recordedAt}>
+              {formatTimestamp(event.recordedAt)}
+            </time>
           </li>
         ))}
       </ol>
@@ -705,6 +852,8 @@ export function PrintRun({
   storage,
   onCurrentTargetChange,
   onProgressChange,
+  onSaveFinalLoadout,
+  finalLoadoutSaved = false,
   onOpenArtifact,
   now = () => new Date().toISOString(),
 }: PrintRunProps) {
@@ -724,7 +873,9 @@ export function PrintRun({
   }));
   const [liveMessage, setLiveMessage] = useState("");
   const [storageWarning, setStorageWarning] = useState("");
-  const [openingArtifactPath, setOpeningArtifactPath] = useState<string | null>(null);
+  const [openingArtifactPath, setOpeningArtifactPath] = useState<string | null>(
+    null,
+  );
   const [artifactOpenError, setArtifactOpenError] = useState("");
   const [focusRequest, setFocusRequest] = useState(0);
   const actionHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -760,7 +911,7 @@ export function PrintRun({
   const currentTargetPlateId =
     currentStep?.kind === "plate"
       ? currentStep.plate.id
-      : currentStep?.beforePlateId ?? null;
+      : (currentStep?.beforePlateId ?? null);
   useEffect(() => {
     if (
       executable &&
@@ -879,7 +1030,11 @@ export function PrintRun({
   };
 
   const confirmCheckpoint = () => {
-    if (progress.status !== "active" || !currentStep || currentStep.kind === "plate") {
+    if (
+      progress.status !== "active" ||
+      !currentStep ||
+      currentStep.kind === "plate"
+    ) {
       return;
     }
     const nextIndex = progress.currentStepIndex + 1;
@@ -890,9 +1045,9 @@ export function PrintRun({
         ? `T4 ${currentStep.toLabel} load confirmed before ${targetPlateLabel(currentStep.beforeTargetOrder)}.`
         : currentStep.kind === "a1-spool-checkpoint"
           ? `A1 mini spool ${currentStep.spool.spoolName} confirmed before ${targetPlateLabel(currentStep.beforeTargetOrder)}.`
-        : currentStep.phase === "before-batch"
-          ? `Printer setup confirmed${currentStep.beforeTargetOrder === null ? "." : ` before ${targetPlateLabel(currentStep.beforeTargetOrder)}.`}`
-          : `Restore actions confirmed${currentStep.afterTargetOrder === null ? "." : ` after ${targetPlateLabel(currentStep.afterTargetOrder)}.`}`;
+          : currentStep.phase === "before-batch"
+            ? `Printer setup confirmed${currentStep.beforeTargetOrder === null ? "." : ` before ${targetPlateLabel(currentStep.beforeTargetOrder)}.`}`
+            : `Restore actions confirmed${currentStep.afterTargetOrder === null ? "." : ` after ${targetPlateLabel(currentStep.afterTargetOrder)}.`}`;
     commitProgress(
       {
         ...progress,
@@ -911,7 +1066,9 @@ export function PrintRun({
           },
         ],
       },
-      isComplete ? `${message} The print run is complete.` : `${message} ${nextStepMessage(nextStep)}`,
+      isComplete
+        ? `${message} The print run is complete.`
+        : `${message} ${nextStepMessage(nextStep)}`,
     );
   };
 
@@ -944,8 +1101,8 @@ export function PrintRun({
           <span className="print-run-eyebrow">Operator workflow</span>
           <h2 id="print-run-heading">Print Run</h2>
           <p>
-            Record completed target plates and required spool changes between print
-            jobs.
+            Record completed target plates and required spool changes between
+            print jobs.
           </p>
         </div>
         <span className="print-run__count">
@@ -967,12 +1124,12 @@ export function PrintRun({
               {!isPlanValidated
                 ? "Recalculate and validate pending plan changes before starting or resuming."
                 : !publishedBundle
-                    ? "Convert this native plan successfully before starting. Print Run uses only validated, published project files."
-                    : !bundleReady
-                      ? "The published files, source-unit coverage, or exclusion evidence do not match this exact plan. Run conversion again before starting."
-                      : !planExecutable
-                        ? "The current plan is not a complete plan or an exactly approved partial plan. Review its exclusions and convert again."
-                        : "The last published files do not match this exact plan. Run conversion again before starting."}
+                  ? "Convert this native plan successfully before starting. Print Run uses only validated, published project files."
+                  : !bundleReady
+                    ? "The published files, source-unit coverage, or exclusion evidence do not match this exact plan. Run conversion again before starting."
+                    : !planExecutable
+                      ? "The current plan is not a complete plan or an exactly approved partial plan. Review its exclusions and convert again."
+                      : "The last published files do not match this exact plan. Run conversion again before starting."}
             </p>
           </div>
         </div>
@@ -991,7 +1148,10 @@ export function PrintRun({
           <ProgressNavigation descriptor={descriptor} progress={progress} />
 
           {progress.status === "not-started" ? (
-            <article className="print-run-start" aria-labelledby="print-run-start-heading">
+            <article
+              className="print-run-start"
+              aria-labelledby="print-run-start-heading"
+            >
               <Play aria-hidden="true" />
               <div>
                 <h3
@@ -1003,9 +1163,9 @@ export function PrintRun({
                   Ready to begin
                 </h3>
                 <p>
-                  Start only when these published project files are the ones loaded
-                  in their listed slicers. Progress is saved for this source file,
-                  exact plan, manifest, and artifact checksums.
+                  Start only when these published project files are the ones
+                  loaded in their listed slicers. Progress is saved for this
+                  source file, exact plan, manifest, and artifact checksums.
                 </p>
                 <button
                   className="button button--primary"
@@ -1018,7 +1178,10 @@ export function PrintRun({
               </div>
             </article>
           ) : progress.status === "complete" ? (
-            <article className="print-run-complete" aria-labelledby="print-run-complete-heading">
+            <article
+              className="print-run-complete"
+              aria-labelledby="print-run-complete-heading"
+            >
               <CheckCircle2 aria-hidden="true" />
               <div>
                 <h3
@@ -1029,7 +1192,15 @@ export function PrintRun({
                 >
                   Print run complete
                 </h3>
-                <p>All {plan.plates.length} target plates are recorded as complete.</p>
+                <p>
+                  All {plan.plates.length} target plates are recorded as
+                  complete.
+                </p>
+                <FinalLoadoutPreview
+                  plan={plan}
+                  saved={finalLoadoutSaved}
+                  onSave={onSaveFinalLoadout}
+                />
               </div>
             </article>
           ) : currentStep?.kind === "filament-change" ? (
@@ -1057,9 +1228,16 @@ export function PrintRun({
                 artifact={artifactsByPlate.get(currentStep.plate.id)!}
                 focusRef={actionHeadingRef}
                 onComplete={completePlate}
-                isOpening={openingArtifactPath === artifactsByPlate.get(currentStep.plate.id)!.path}
-                openingDisabled={openingArtifactPath !== null || !onOpenArtifact}
-                onOpen={() => void openArtifact(artifactsByPlate.get(currentStep.plate.id)!)}
+                isOpening={
+                  openingArtifactPath ===
+                  artifactsByPlate.get(currentStep.plate.id)!.path
+                }
+                openingDisabled={
+                  openingArtifactPath !== null || !onOpenArtifact
+                }
+                onOpen={() =>
+                  void openArtifact(artifactsByPlate.get(currentStep.plate.id)!)
+                }
               />
             ) : null
           ) : null}
@@ -1067,8 +1245,8 @@ export function PrintRun({
           <div className="print-run-footer">
             <p>
               <ArrowRight aria-hidden="true" />
-              All actions happen between complete plate jobs. There are no mid-print
-              filament-change instructions.
+              All actions happen between complete plate jobs. There are no
+              mid-print filament-change instructions.
             </p>
             {progress.status !== "not-started" ? (
               <button
@@ -1098,7 +1276,12 @@ export function PrintRun({
           {artifactOpenError}
         </p>
       ) : null}
-      <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+      <p
+        className="visually-hidden"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {liveMessage}
       </p>
     </section>

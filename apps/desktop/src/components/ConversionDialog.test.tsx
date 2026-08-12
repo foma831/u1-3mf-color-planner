@@ -141,6 +141,7 @@ function defaultProps(): ComponentProps<typeof ConversionDialog> {
     onOpenOutput: vi.fn(),
     onShowOutputInFinder: vi.fn(),
     onRetryPreflight: vi.fn(),
+    onOpenPrintRun: vi.fn(),
     onClose: vi.fn(),
   };
 }
@@ -191,14 +192,21 @@ describe("ConversionDialog", () => {
       screen.getByText(/Open each file in the slicer shown/i),
     ).toBeInTheDocument();
 
-    expect(
-      screen.getByRole("button", { name: "Review warnings to convert" }),
-    ).toBeDisabled();
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: /I have reviewed these warnings and want to continue/i,
-      }),
+    const blockedConvert = screen.getByRole("button", {
+      name: "Review warnings to convert",
+    });
+    const acknowledgement = screen.getByRole("checkbox", {
+      name: /I have reviewed these warnings and want to continue/i,
+    });
+    expect(blockedConvert).not.toBeDisabled();
+    expect(blockedConvert).toHaveAttribute("aria-disabled", "true");
+    expect(blockedConvert).toHaveAccessibleDescription(
+      /I have reviewed these warnings and want to continue/i,
     );
+    fireEvent.click(blockedConvert);
+    expect(acknowledgement).toHaveFocus();
+    expect(props.onConvert).not.toHaveBeenCalled();
+    fireEvent.click(acknowledgement);
     fireEvent.click(screen.getByRole("button", { name: "Convert projects" }));
     expect(props.onConvert).toHaveBeenCalledWith(true);
   });
@@ -257,7 +265,7 @@ describe("ConversionDialog", () => {
     ).not.toBeChecked();
     expect(
       screen.getByRole("button", { name: "Review warnings to convert" }),
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
   });
 
   it("shows preflight exclusions without requiring a warning acknowledgement", () => {
@@ -357,6 +365,12 @@ describe("ConversionDialog", () => {
       screen.getByText("projects/fixture__a1_mini.3mf"),
     ).toBeInTheDocument();
     expect(screen.getAllByText(/Passed validation/)).toHaveLength(2);
+    expect(screen.getByText("Printer filament has not changed")).toBeVisible();
+    expect(
+      screen.getByText(
+        /Conversion creates project files only.*Print Run.*next project/i,
+      ),
+    ).toBeVisible();
     expect(
       screen.getByText("Review the Bambu Studio plate order."),
     ).toBeInTheDocument();
@@ -373,6 +387,9 @@ describe("ConversionDialog", () => {
       screen.getByText(
         "Warnings were explicitly acknowledged before conversion.",
       ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open Print Run" }),
     ).toBeInTheDocument();
 
     const bambuArtifact = result.artifacts[1];
@@ -391,6 +408,8 @@ describe("ConversionDialog", () => {
     expect(actionProps.onShowOutputInFinder).toHaveBeenCalledWith(
       bambuArtifact,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Open Print Run" }));
+    expect(actionProps.onOpenPrintRun).toHaveBeenCalledOnce();
   });
 
   it("restores focus when the dialog fallback closes", () => {

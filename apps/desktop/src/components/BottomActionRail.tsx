@@ -1,9 +1,11 @@
+import { useId } from "react";
 import {
   CheckCircle2,
   Download,
+  Ellipsis,
+  FolderOutput,
   ListChecks,
   LoaderCircle,
-  LockKeyhole,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
@@ -19,15 +21,9 @@ interface BottomActionRailProps {
   onExport: () => void;
   onValidate: () => void;
   validationAvailable: boolean;
-  a1MiniEnabled: boolean;
-  a1MiniNeedsRecalculation: boolean;
-  a1MiniRoutingFixed: boolean;
   planNeedsRecalculation: boolean;
   colorNeedsRecalculation: boolean;
-  onA1MiniChange: (enabled: boolean) => void;
-  currentT4SpoolId: string;
-  t4Options: Array<{ id: string; label: string }>;
-  onCurrentT4Change: (spoolId: string) => void;
+  conversionStageAvailable: boolean;
   conversionAvailable: boolean;
   conversionAdapters: ConversionAdapterCapability[];
   isCheckingConversion: boolean;
@@ -45,15 +41,9 @@ export function BottomActionRail({
   onExport,
   onValidate,
   validationAvailable,
-  a1MiniEnabled,
-  a1MiniNeedsRecalculation,
-  a1MiniRoutingFixed,
   planNeedsRecalculation,
   colorNeedsRecalculation,
-  onA1MiniChange,
-  currentT4SpoolId,
-  t4Options,
-  onCurrentT4Change,
+  conversionStageAvailable,
   conversionAvailable,
   conversionAdapters,
   isCheckingConversion,
@@ -61,230 +51,203 @@ export function BottomActionRail({
   conversionBlockReason,
   onApprove,
 }: BottomActionRailProps) {
-  const recalculationNeeded =
-    planNeedsRecalculation || colorNeedsRecalculation;
+  const instanceId = useId().replace(/:/g, "");
+  const recalculationNeeded = planNeedsRecalculation || colorNeedsRecalculation;
+  const showValidationAction = recalculationNeeded || !conversionStageAvailable;
+  const validationLabelId = `${instanceId}-validation-label`;
+  const validationReasonId = `${instanceId}-validation-reason`;
+  const conversionLabelId = `${instanceId}-conversion-label`;
+  const conversionReasonId = `${instanceId}-conversion-reason`;
+  const exportLabelId = `${instanceId}-export-label`;
+  const exportReasonId = `${instanceId}-export-reason`;
   return (
     <footer className="bottom-action-rail">
-      <div className="bottom-plan-controls">
-        <label className="current-t4-control">
-          <span>Currently loaded T4</span>
-          <select
-            aria-label="Currently loaded T4 spool"
-            value={currentT4SpoolId}
-            disabled={isBusy || !planAvailable}
-            onChange={(event) => onCurrentT4Change(event.target.value)}
-          >
-            <option value="">Unknown / not confirmed</option>
-            {t4Options.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <fieldset className="a1-mini-routing">
-          <legend className="visually-hidden">Optional A1 mini routing</legend>
-          <div className="a1-mini-routing__controls">
-            <label className="a1-mini-toggle">
-              <input
-                type="checkbox"
-                name="a1-mini-enabled"
-                checked={a1MiniEnabled}
-                disabled={isBusy || !planAvailable || a1MiniRoutingFixed}
-                aria-describedby="a1-mini-routing-status"
-                onChange={(event) => onA1MiniChange(event.target.checked)}
-              />
-              <span>Use Bambu Lab A1 mini for eligible mono parts</span>
-            </label>
-            {a1MiniNeedsRecalculation ? (
-              <button
-                className="button button--secondary a1-mini-recalculate"
-                type="button"
-                onClick={onValidate}
-                disabled={isBusy || !validationAvailable}
-              >
-                {isValidating ? (
-                  <LoaderCircle className="spin" aria-hidden="true" />
-                ) : (
-                  <RefreshCw aria-hidden="true" />
-                )}
-                {isValidating ? "Recalculating…" : "Recalculate plan"}
-              </button>
-            ) : null}
-          </div>
-          <p
-            id="a1-mini-routing-status"
-            className={
-              a1MiniNeedsRecalculation
-                ? "a1-mini-routing__status is-pending"
-                : "a1-mini-routing__status"
-            }
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {a1MiniRoutingFixed
-              ? a1MiniEnabled
-                ? "Browser demo routing is fixed to the included A1 mini preview. Open the desktop app to change printer assignments."
-                : "Browser demo routing is fixed to the U1 preview. Open the desktop app to change printer assignments."
-              : a1MiniNeedsRecalculation
-              ? "Pending recalculation. Printer assignments still show the previous plan."
-              : a1MiniEnabled
-                ? "A1 mini routing is applied to this plan."
-                : "Eligible mono parts stay on the U1."}
-          </p>
-        </fieldset>
-        <p className="mapping-warning">
-          <TriangleAlert aria-hidden="true" />
-          Filament mapping must be verified in each target slicer before
-          printing.
-        </p>
-      </div>
       <div className="bottom-actions">
-        {isCheckingConversion || conversionAdapters.length > 0 ? (
-          <details className="adapter-capabilities">
-            <summary>
-              {isCheckingConversion ? (
-                <LoaderCircle className="spin" aria-hidden="true" />
-              ) : conversionAdapters.every((adapter) => adapter.available) ? (
-                <CheckCircle2 aria-hidden="true" />
-              ) : (
-                <TriangleAlert aria-hidden="true" />
-              )}
-              Writer adapter checks
-            </summary>
-            {isCheckingConversion ? (
-              <p>Checking installed slicers, profiles, and qualification evidence…</p>
+        <details className="more-actions">
+          <summary className="button button--secondary">
+            <Ellipsis aria-hidden="true" />
+            More actions
+          </summary>
+          <div className="more-actions__panel">
+            {isCheckingConversion || conversionAdapters.length > 0 ? (
+              <details className="adapter-capabilities">
+                <summary>
+                  {isCheckingConversion ? (
+                    <LoaderCircle className="spin" aria-hidden="true" />
+                  ) : conversionAdapters.every(
+                      (adapter) => adapter.available,
+                    ) ? (
+                    <CheckCircle2 aria-hidden="true" />
+                  ) : (
+                    <TriangleAlert aria-hidden="true" />
+                  )}
+                  Writer adapter checks
+                </summary>
+                {isCheckingConversion ? (
+                  <p>
+                    Checking installed slicers, profiles, and qualification
+                    evidence…
+                  </p>
+                ) : (
+                  <ul>
+                    {conversionAdapters.map((adapter) => {
+                      const report = adapterReportSummary(adapter.report);
+                      return (
+                        <li key={`${adapter.target}-${adapter.adapterId}`}>
+                          <div>
+                            <strong>{adapterTargetName(adapter.target)}</strong>
+                            <span
+                              className={
+                                adapter.available
+                                  ? "adapter-capabilities__status is-ready"
+                                  : "adapter-capabilities__status is-blocked"
+                              }
+                            >
+                              {adapter.available ? "Ready" : "Blocked"}
+                            </span>
+                          </div>
+                          <p>{adapter.reason}</p>
+                          <dl>
+                            <div>
+                              <dt>Slicer</dt>
+                              <dd>
+                                {adapter.slicer}
+                                {report.version ? ` ${report.version}` : ""}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Adapter</dt>
+                              <dd>{adapter.adapterId}</dd>
+                            </div>
+                            {report.executableHash ? (
+                              <div>
+                                <dt>Executable</dt>
+                                <dd title={report.executableHash}>
+                                  {shortHash(report.executableHash)}
+                                </dd>
+                              </div>
+                            ) : null}
+                            {report.profileVersion ? (
+                              <div>
+                                <dt>Profiles</dt>
+                                <dd>{report.profileVersion}</dd>
+                              </div>
+                            ) : null}
+                          </dl>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </details>
+            ) : null}
+            <button
+              className="button button--secondary"
+              type="button"
+              aria-labelledby={exportLabelId}
+              aria-disabled={!exportAvailable || undefined}
+              aria-describedby={!exportAvailable ? exportReasonId : undefined}
+              onClick={(event) => {
+                if (!exportAvailable) {
+                  event.preventDefault();
+                  return;
+                }
+                onExport();
+              }}
+              disabled={isBusy}
+            >
+              <Download aria-hidden="true" />
+              <span className="validation-button-copy">
+                <span id={exportLabelId}>Export JSON plan</span>
+                {planAvailable && !exportAvailable ? (
+                  <small id={exportReasonId}>
+                    {exportBlockReason ?? "Validate pending edits first"}
+                  </small>
+                ) : null}
+              </span>
+            </button>
+          </div>
+        </details>
+
+        {showValidationAction ? (
+          <button
+            className="button button--primary button--large"
+            type="button"
+            aria-labelledby={validationLabelId}
+            aria-describedby={
+              !validationAvailable ? validationReasonId : undefined
+            }
+            aria-disabled={!validationAvailable || undefined}
+            onClick={(event) => {
+              if (!validationAvailable) {
+                event.preventDefault();
+                return;
+              }
+              onValidate();
+            }}
+            disabled={isBusy}
+          >
+            {isValidating ? (
+              <LoaderCircle className="spin" aria-hidden="true" />
+            ) : recalculationNeeded ? (
+              <RefreshCw aria-hidden="true" />
             ) : (
-              <ul>
-                {conversionAdapters.map((adapter) => {
-                  const report = adapterReportSummary(adapter.report);
-                  return (
-                    <li key={`${adapter.target}-${adapter.adapterId}`}>
-                      <div>
-                        <strong>{adapterTargetName(adapter.target)}</strong>
-                        <span
-                          className={
-                            adapter.available
-                              ? "adapter-capabilities__status is-ready"
-                              : "adapter-capabilities__status is-blocked"
-                          }
-                        >
-                          {adapter.available ? "Ready" : "Blocked"}
-                        </span>
-                      </div>
-                      <p>{adapter.reason}</p>
-                      <dl>
-                        <div>
-                          <dt>Slicer</dt>
-                          <dd>
-                            {adapter.slicer}
-                            {report.version ? ` ${report.version}` : ""}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Adapter</dt>
-                          <dd>{adapter.adapterId}</dd>
-                        </div>
-                        {report.executableHash ? (
-                          <div>
-                            <dt>Executable</dt>
-                            <dd title={report.executableHash}>
-                              {shortHash(report.executableHash)}
-                            </dd>
-                          </div>
-                        ) : null}
-                        {report.profileVersion ? (
-                          <div>
-                            <dt>Profiles</dt>
-                            <dd>{report.profileVersion}</dd>
-                          </div>
-                        ) : null}
-                      </dl>
-                    </li>
-                  );
-                })}
-              </ul>
+              <ListChecks aria-hidden="true" />
             )}
-          </details>
-        ) : null}
-        <button
-          className="button button--secondary button--large"
-          type="button"
-          onClick={onExport}
-          disabled={isBusy || !exportAvailable}
-        >
-          <Download aria-hidden="true" />
-          <span className="validation-button-copy">
-            <span>Export JSON Plan</span>
-            {planAvailable && !exportAvailable ? (
-              <small>{exportBlockReason ?? "Validate pending edits first"}</small>
-            ) : null}
-          </span>
-        </button>
-        <button
-          className="button button--dark button--large"
-          type="button"
-          aria-disabled={!validationAvailable}
-          onClick={(event) => {
-            if (!validationAvailable) {
-              event.preventDefault();
-              return;
-            }
-            onValidate();
-          }}
-          disabled={isBusy || !validationAvailable}
-        >
-          {isValidating ? (
-            <LoaderCircle className="spin" aria-hidden="true" />
-          ) : recalculationNeeded ? (
-            <RefreshCw aria-hidden="true" />
-          ) : (
-            <ListChecks aria-hidden="true" />
-          )}
-          <span className="validation-button-copy">
-            <span>
-              {isValidating
-                ? recalculationNeeded
-                  ? "Recalculating…"
-                  : "Validating…"
-                : recalculationNeeded
-                  ? "Recalculate Plan"
-                  : "Validate Choices"}
+            <span className="validation-button-copy">
+              <span id={validationLabelId}>
+                {isValidating
+                  ? recalculationNeeded
+                    ? "Recalculating…"
+                    : "Validating…"
+                  : recalculationNeeded
+                    ? "Recalculate plan"
+                    : "Validate plan"}
+              </span>
+              {recalculationNeeded ? (
+                <small>
+                  {colorNeedsRecalculation
+                    ? "Apply approved color decisions"
+                    : "Apply pending printer, spool, or plan changes"}
+                </small>
+              ) : null}
+              {!validationAvailable ? (
+                <small id={validationReasonId}>
+                  Resolve the library or source-file requirement first
+                </small>
+              ) : null}
             </span>
-            {recalculationNeeded ? (
-              <small>
-                {colorNeedsRecalculation
-                  ? "Apply approved color decisions"
-                  : "Apply pending printer, spool, or plan changes"}
-              </small>
-            ) : null}
-            {!validationAvailable ? <small>Analyze a project first</small> : null}
-          </span>
-        </button>
-        <button
-          className="button button--primary button--large button--conversion"
-          type="button"
-          aria-disabled={!conversionAvailable}
-          onClick={(event) => {
-            if (!conversionAvailable) {
-              event.preventDefault();
-              return;
+          </button>
+        ) : (
+          <button
+            className="button button--primary button--large button--conversion"
+            type="button"
+            aria-labelledby={conversionLabelId}
+            aria-describedby={
+              !conversionAvailable ? conversionReasonId : undefined
             }
-            onApprove?.();
-          }}
-          disabled={isBusy && conversionAvailable}
-        >
-          <LockKeyhole aria-hidden="true" />
-          <span className="conversion-button-copy">
-            <span>{conversionLabel}</span>
-            {!conversionAvailable ? (
-              <small>
-                {conversionBlockReason ??
-                  "Conversion is unavailable: no qualified writer adapter is installed."}
-              </small>
-            ) : null}
-          </span>
-        </button>
+            aria-disabled={!conversionAvailable || undefined}
+            onClick={(event) => {
+              if (!conversionAvailable) {
+                event.preventDefault();
+                return;
+              }
+              onApprove?.();
+            }}
+            disabled={isBusy}
+          >
+            <FolderOutput aria-hidden="true" />
+            <span className="conversion-button-copy">
+              <span id={conversionLabelId}>{conversionLabel}</span>
+              {!conversionAvailable ? (
+                <small id={conversionReasonId}>
+                  {conversionBlockReason ??
+                    "Conversion is unavailable: no qualified writer adapter is installed."}
+                </small>
+              ) : null}
+            </span>
+          </button>
+        )}
       </div>
     </footer>
   );

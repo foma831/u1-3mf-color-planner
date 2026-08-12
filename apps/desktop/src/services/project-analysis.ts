@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { createDemoPlan } from "../data/mock-plan";
+import type { PlanningIntent } from "./planning-intent";
+import type { PrinterLoadoutProfile } from "./printer-loadout";
 import type {
   AnalysisResult,
   CancelAnalysisResult,
@@ -44,16 +46,25 @@ export async function chooseProjectPath(): Promise<ProjectSelection | null> {
 
 export async function analyzeProject(
   selection: ProjectSelection,
+  planningIntent: PlanningIntent,
+  printerLoadout: PrinterLoadoutProfile,
 ): Promise<AnalysisResult> {
   if (isTauriRuntime() && selection.sourcePath) {
     const plan = await invoke<ProjectPlan>("analyze_project", {
       sourcePath: selection.sourcePath,
+      planningIntent: {
+        ...planningIntent,
+        currentLoadout: printerLoadout.currentLoadout,
+        currentA1SpoolId: printerLoadout.currentA1SpoolId,
+      },
     });
 
     return { plan, source: "tauri" };
   }
 
-  await new Promise((resolve) => window.setTimeout(resolve, DEMO_ANALYSIS_DELAY_MS));
+  await new Promise((resolve) =>
+    window.setTimeout(resolve, DEMO_ANALYSIS_DELAY_MS),
+  );
   return {
     plan: createDemoPlan(selection.fileName),
     source: "browser-demo",
@@ -172,9 +183,11 @@ export function showConvertedOutputInFinder(
 export function listenToConversionProgress(
   handler: (progress: ConversionProgress) => void,
 ): Promise<UnlistenFn> {
-  const internals = (window as Window & {
-    __TAURI_INTERNALS__?: { transformCallback?: unknown };
-  }).__TAURI_INTERNALS__;
+  const internals = (
+    window as Window & {
+      __TAURI_INTERNALS__?: { transformCallback?: unknown };
+    }
+  ).__TAURI_INTERNALS__;
   if (typeof internals?.transformCallback !== "function") {
     return Promise.resolve(() => undefined);
   }

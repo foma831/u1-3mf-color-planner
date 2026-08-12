@@ -99,8 +99,7 @@ export function FilamentLibrary({
 }: FilamentLibraryProps) {
   const instanceId = useId().replace(/:/g, "");
   const [query, setQuery] = useState("");
-  const [availability, setAvailability] =
-    useState<AvailabilityFilter>("all");
+  const [availability, setAvailability] = useState<AvailabilityFilter>("all");
   const [material, setMaterial] = useState<MaterialFilter>("all");
   const [editingSpoolId, setEditingSpoolId] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<PhysicalSpool | null>(
@@ -108,6 +107,7 @@ export function FilamentLibrary({
   );
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const editButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const deleteButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const deleteDialogRef = useRef<HTMLDialogElement | null>(null);
   const deleteCancelRef = useRef<HTMLButtonElement | null>(null);
@@ -136,6 +136,15 @@ export function FilamentLibrary({
 
   const preventSearchNavigation = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+  };
+
+  const finishEditing = (spoolId: string) => {
+    setEditingSpoolId(null);
+    window.setTimeout(() => {
+      const editButton = editButtonRefs.current.get(spoolId);
+      if (editButton) editButton.focus();
+      else libraryHeadingRef.current?.focus();
+    }, 0);
   };
 
   useEffect(() => {
@@ -247,8 +256,9 @@ export function FilamentLibrary({
               Filament Library
             </h2>
             <p>
-              Keep your complete spool catalogue here. Only in-stock spools are
-              offered to the print planner.
+              Keep your complete spool catalogue here. Mark only the spools you
+              physically have as Available now; only those are offered to the
+              print planner.
             </p>
           </div>
         </div>
@@ -258,11 +268,11 @@ export function FilamentLibrary({
             <dd>{spools.length}</dd>
           </div>
           <div>
-            <dt>In stock</dt>
+            <dt>Available now</dt>
             <dd>{stockCount}</dd>
           </div>
           <div>
-            <dt>Out of stock</dt>
+            <dt>Not available</dt>
             <dd>{outOfStockCount}</dd>
           </div>
         </dl>
@@ -273,7 +283,7 @@ export function FilamentLibrary({
         spoolCount={stockCount}
         onAddSpool={onAddSpool}
         heading="Add a user spool"
-        description="Add it once, then change its stock status whenever the spool runs out or is replaced."
+        description="Add it once, then update its physical availability whenever the spool runs out or is replaced."
         summaryLabel="Add spool to library"
       />
 
@@ -313,8 +323,8 @@ export function FilamentLibrary({
               }
             >
               <option value="all">All statuses</option>
-              <option value="in-stock">In stock</option>
-              <option value="out-of-stock">Out of stock</option>
+              <option value="in-stock">Available now</option>
+              <option value="out-of-stock">Not available</option>
             </select>
           </div>
           <div className="field">
@@ -430,14 +440,16 @@ export function FilamentLibrary({
                             ? "filament-status--available"
                             : "filament-status--unavailable"
                         }`}
-                        aria-label={spool.available ? "In stock" : "Out of stock"}
+                        aria-label={
+                          spool.available ? "Available now" : "Not available"
+                        }
                       >
                         {spool.available ? (
                           <CheckCircle2 aria-hidden="true" />
                         ) : (
                           <CircleOff aria-hidden="true" />
                         )}
-                        {spool.available ? "In stock" : "Out of stock"}
+                        {spool.available ? "Available now" : "Not available"}
                       </span>
                     </td>
                     <td>
@@ -447,8 +459,8 @@ export function FilamentLibrary({
                           type="button"
                           aria-label={`${
                             spool.available
-                              ? "Mark out of stock"
-                              : "Mark in stock"
+                              ? "Mark unavailable"
+                              : "Mark available"
                           }: ${spool.name}`}
                           onClick={() =>
                             onAvailabilityChange(spool.id, !spool.available)
@@ -460,12 +472,19 @@ export function FilamentLibrary({
                             <CheckCircle2 aria-hidden="true" />
                           )}
                           {spool.available
-                            ? "Mark out of stock"
-                            : "Mark in stock"}
+                            ? "Mark unavailable"
+                            : "Mark available"}
                         </button>
                         {spool.source === "user" ? (
                           <>
                             <button
+                              ref={(element) => {
+                                if (element) {
+                                  editButtonRefs.current.set(spool.id, element);
+                                } else {
+                                  editButtonRefs.current.delete(spool.id);
+                                }
+                              }}
                               className="button button--secondary button--compact"
                               type="button"
                               aria-label={`Edit ${spool.name}`}
@@ -503,7 +522,7 @@ export function FilamentLibrary({
                         ) : (
                           <small className="filament-library__built-in-note">
                             Built-in details cannot be edited or deleted. Mark
-                            the spool out of stock to exclude it from planning.
+                            it unavailable to exclude it from planning.
                           </small>
                         )}
                       </div>
@@ -524,15 +543,16 @@ export function FilamentLibrary({
             spoolCount={stockCount}
             onAddSpool={(input) => {
               onUpdateSpool(editingSpool.id, input);
-              setEditingSpoolId(null);
+              finishEditing(editingSpool.id);
             }}
             heading={`Edit ${editingSpool.name}`}
             description="Update this user spool's metadata and slicer profile. Changing its lot or calibration reference safely retires earlier measured CMY+X evidence. Availability is controlled from the table."
             summaryLabel="Edit spool details"
             initialValues={editInput(editingSpool)}
             initiallyOpen
+            focusOnMount
             submitLabel="Save changes"
-            onCancel={() => setEditingSpoolId(null)}
+            onCancel={() => finishEditing(editingSpool.id)}
           />
         </div>
       ) : null}

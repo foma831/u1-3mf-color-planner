@@ -286,8 +286,7 @@ function publishedBundleFor(plan: ProjectPlan): PublishedPrintRunBundle {
             plate.printer === "A1 mini"
               ? "bambu/a1-mini"
               : "snapmaker/u1-direct",
-          target:
-            plate.printer === "A1 mini" ? "a1_mini_mono" : "u1_direct",
+          target: plate.printer === "A1 mini" ? "a1_mini_mono" : "u1_direct",
           printer: plate.printer,
           strategy: plate.strategy,
           slicer:
@@ -328,6 +327,24 @@ function publishedBundleFor(plan: ProjectPlan): PublishedPrintRunBundle {
   };
 }
 
+function saveCompletedRun(plan: ProjectPlan) {
+  const descriptor = createPrintRunDescriptor(plan, publishedBundleFor(plan));
+  const progress = {
+    ...createEmptyPrintRunProgress(descriptor),
+    status: "complete" as const,
+    currentStepIndex: descriptor.steps.length,
+    completedPlateIds: descriptor.steps.flatMap((step) =>
+      step.kind === "plate" ? [step.plate.id] : [],
+    ),
+    confirmedCheckpointIds: descriptor.steps.flatMap((step) =>
+      step.kind === "plate" ? [] : [step.id],
+    ),
+  };
+  expect(savePrintRunProgress(window.localStorage, descriptor, progress)).toBe(
+    true,
+  );
+}
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
@@ -335,20 +352,83 @@ afterEach(() => {
 });
 
 describe("PrintRun", () => {
+  it("offers the recorded final loadout only after completion and saves it explicitly", () => {
+    const plan = executionPlan();
+    const onSaveFinalLoadout = vi.fn();
+    saveCompletedRun(plan);
+
+    renderPrintRun(plan, { onSaveFinalLoadout });
+
+    expect(onSaveFinalLoadout).not.toHaveBeenCalled();
+    const preview = screen.getByRole("region", {
+      name: "Final printer loadout",
+    });
+    expect(
+      within(preview).getByText("Snapmaker U1 · T1").closest("div"),
+    ).toHaveTextContent("Panchroma Translucent CyanCyan · PLA");
+    expect(
+      within(preview).getByText("Snapmaker U1 · T4").closest("div"),
+    ).toHaveTextContent("No loaded spool recorded");
+    expect(
+      within(preview).getByText("Bambu Lab A1 mini").closest("div"),
+    ).toHaveTextContent("PolyLite PETG BlackBlack · PETG");
+
+    fireEvent.click(
+      within(preview).getByRole("button", {
+        name: "Use as current printer loadout",
+      }),
+    );
+    expect(onSaveFinalLoadout).toHaveBeenCalledOnce();
+    expect(onSaveFinalLoadout).toHaveBeenCalledWith({
+      currentLoadout: plan.plannedFinalLoadout,
+      currentA1SpoolId: plan.plannedFinalA1SpoolId,
+    });
+  });
+
+  it("keeps the saved final-loadout confirmation visible and prevents duplicate saves", () => {
+    const plan = executionPlan();
+    const onSaveFinalLoadout = vi.fn();
+    saveCompletedRun(plan);
+
+    renderPrintRun(plan, {
+      onSaveFinalLoadout,
+      finalLoadoutSaved: true,
+    });
+
+    expect(
+      screen.getByText(
+        "This loadout will be used to optimize the next project.",
+      ),
+    ).toBeVisible();
+    const savedButton = screen.getByRole("button", {
+      name: "Current printer loadout saved",
+    });
+    expect(savedButton).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(savedButton);
+    expect(onSaveFinalLoadout).not.toHaveBeenCalled();
+  });
+
   it("blocks the next target plate at a T4 boundary until the exact load is confirmed", () => {
     const onCurrentTargetChange = vi.fn();
     renderPrintRun(executionPlan(), { onCurrentTargetChange });
+    expect(
+      screen.queryByRole("region", { name: "Final printer loadout" }),
+    ).not.toBeInTheDocument();
 
     const progress = screen.getByRole("navigation", {
       name: "Print run progress",
     });
     expect(within(progress).getAllByRole("listitem")).toHaveLength(6);
     expect(within(progress).getByText("Target Plate 01")).toBeInTheDocument();
-    expect(within(progress).getByText("U1 · Source: Source Plate 04")).toBeInTheDocument();
+    expect(
+      within(progress).getByText("U1 · Source: Source Plate 04"),
+    ).toBeInTheDocument();
     expect(within(progress).getByText("Ready to start")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Start print run" }));
-    expect(screen.getByRole("heading", { name: "Target Plate 01" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 01" }),
+    ).toBeInTheDocument();
     const current = screen.getByRole("article", { name: "Target Plate 01" });
     expect(within(current).getByText("Source model plate")).toBeInTheDocument();
     expect(within(current).getByText("Source Plate 04")).toBeInTheDocument();
@@ -379,7 +459,9 @@ describe("PrintRun", () => {
         name: "Filament change required before Target Plate 04",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/after Target Plate 02 has finished/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/after Target Plate 02 has finished/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Unload/).closest("li")).toHaveTextContent(
       "Unload Translucent Grey from T4.",
     );
@@ -393,7 +475,9 @@ describe("PrintRun", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Confirm T4 Black is loaded" }),
     );
-    expect(screen.getByRole("heading", { name: "Target Plate 04" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 04" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Mark Target Plate 04 complete" }),
     ).toBeEnabled();
@@ -402,8 +486,15 @@ describe("PrintRun", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Mark Target Plate 04 complete" }),
     );
-    expect(screen.getByRole("heading", { name: "Print run complete" })).toBeInTheDocument();
-    expect(screen.getByText("4 of 4 target plates complete")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Print run complete" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Final printer loadout" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("4 of 4 target plates complete"),
+    ).toBeInTheDocument();
   });
 
   it("moves focus to the new current action after every operator transition", () => {
@@ -469,7 +560,9 @@ describe("PrintRun", () => {
   });
 
   it("does not move focus on initial render, resume, or plan changes", () => {
-    const sentinelRender = render(<button type="button">Outside Print Run</button>);
+    const sentinelRender = render(
+      <button type="button">Outside Print Run</button>,
+    );
     const sentinel = screen.getByRole("button", { name: "Outside Print Run" });
     sentinel.focus();
 
@@ -539,15 +632,21 @@ describe("PrintRun", () => {
         name: "Filament change required before Target Plate 04",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("3 of 4 target plates complete")).toBeInTheDocument();
-    expect(screen.getByText(/Operator log · 5 recorded actions/)).toBeInTheDocument();
+    expect(
+      screen.getByText("3 of 4 target plates complete"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Operator log · 5 recorded actions/),
+    ).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Confirm T4 Black is loaded" }),
     );
     resumed.unmount();
     renderPrintRun(executionPlan());
-    expect(screen.getByRole("heading", { name: "Target Plate 04" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 04" }),
+    ).toBeInTheDocument();
   });
 
   it("requires full Direct setup before its plate and all restore actions immediately after it", () => {
@@ -574,7 +673,9 @@ describe("PrintRun", () => {
       }),
     ).toHaveFocus();
     expect(screen.getByText("Before batch: T1 — load Red")).toBeInTheDocument();
-    expect(screen.getByText("Before batch: T4 — load White")).toBeInTheDocument();
+    expect(
+      screen.getByText("Before batch: T4 — load White"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Mark Target Plate 01 complete" }),
     ).not.toBeInTheDocument();
@@ -653,7 +754,9 @@ describe("PrintRun", () => {
         name: "Confirm T4 Translucent Grey is loaded",
       }),
     );
-    expect(screen.getByRole("heading", { name: "Target Plate 01" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 01" }),
+    ).toBeInTheDocument();
   });
 
   it("invalidates stale progress when execution-critical plan data changes", () => {
@@ -670,8 +773,12 @@ describe("PrintRun", () => {
     changed.plates[0].loadoutLabel = "CMY + White";
     renderPrintRun(changed);
 
-    expect(screen.getByRole("heading", { name: "Ready to begin" })).toBeInTheDocument();
-    expect(screen.getByText("0 of 4 target plates complete")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Ready to begin" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("0 of 4 target plates complete"),
+    ).toBeInTheDocument();
     expect(window.localStorage.length).toBe(0);
   });
 
@@ -684,8 +791,12 @@ describe("PrintRun", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reset print run" }));
 
-    expect(screen.getByRole("heading", { name: "Ready to begin" })).toBeInTheDocument();
-    expect(screen.getByText("0 of 4 target plates complete")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Ready to begin" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("0 of 4 target plates complete"),
+    ).toBeInTheDocument();
     expect(window.localStorage.length).toBe(0);
   });
 
@@ -699,14 +810,20 @@ describe("PrintRun", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reset print run" }));
 
-    expect(screen.getByRole("heading", { name: "Target Plate 02" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 02" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/saved progress could not be cleared/i, {
         selector: ".print-run-storage-warning",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("1 of 4 target plates complete")).toBeInTheDocument();
-    expect(screen.queryByText(/Saved progress was cleared/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("1 of 4 target plates complete"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Saved progress was cleared/i),
+    ).not.toBeInTheDocument();
   });
 
   it("does not advance when local progress persistence fails and lets the operator retry", () => {
@@ -716,7 +833,9 @@ describe("PrintRun", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start print run" }));
 
-    expect(screen.getByRole("heading", { name: "Ready to begin" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Ready to begin" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
       /action was not recorded and the workflow did not advance/i,
     );
@@ -725,14 +844,20 @@ describe("PrintRun", () => {
     storage.allowWrites = true;
     fireEvent.click(screen.getByRole("button", { name: "Start print run" }));
 
-    expect(screen.getByRole("heading", { name: "Target Plate 01" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Target Plate 01" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(onProgressChange).toHaveBeenCalledTimes(1);
   });
 
   it("opens only validated published artifacts through the host callback and reports failures", async () => {
     const onOpenArtifact = vi
-      .fn<(artifact: PublishedPrintRunBundle["result"]["artifacts"][number]) => Promise<void>>()
+      .fn<
+        (
+          artifact: PublishedPrintRunBundle["result"]["artifacts"][number],
+        ) => Promise<void>
+      >()
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("Backend registry rejected the file"));
     renderPrintRun(executionPlan(), { onOpenArtifact });
@@ -745,9 +870,13 @@ describe("PrintRun", () => {
     expect(onOpenArtifact.mock.calls[0][0].path).toContain("target-01.3mf");
 
     fireEvent.click(screen.getByRole("button", { name: "Start print run" }));
-    const currentTarget = screen.getByRole("article", { name: "Target Plate 01" });
+    const currentTarget = screen.getByRole("article", {
+      name: "Target Plate 01",
+    });
     fireEvent.click(
-      within(currentTarget).getByRole("button", { name: "Open in Snapmaker Orca" }),
+      within(currentTarget).getByRole("button", {
+        name: "Open in Snapmaker Orca",
+      }),
     );
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(
@@ -767,24 +896,34 @@ describe("PrintRun", () => {
 
     renderPrintRun(plan, { publishedBundle: bundle });
 
-    expect(screen.getByRole("heading", { name: "Print Run is locked" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start print run" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Print Run is locked" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start print run" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps Print Run locked while choices are pending validation", () => {
     renderPrintRun(executionPlan(), { isPlanValidated: false });
 
-    expect(screen.getByRole("heading", { name: "Print Run is locked" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Print Run is locked" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/Recalculate and validate pending plan changes/i),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start print run" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start print run" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps a validated native plan locked until its files are published", () => {
     renderPrintRun(executionPlan(), { publishedBundle: null });
 
-    expect(screen.getByRole("heading", { name: "Print Run is locked" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Print Run is locked" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/Convert this native plan successfully/i),
     ).toBeInTheDocument();
@@ -804,9 +943,13 @@ describe("PrintRun", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("excluded-model-42")).toBeInTheDocument();
     expect(
-      screen.getByText(/They have no target-plate step and cannot be marked complete/i),
+      screen.getByText(
+        /They have no target-plate step and cannot be marked complete/i,
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start print run" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Start print run" }),
+    ).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: /excluded-model-42/i }),
     ).not.toBeInTheDocument();
@@ -831,7 +974,9 @@ describe("PrintRun", () => {
     expect(
       screen.getByRole("heading", { name: "Print Run is locked" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start print run" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start print run" }),
+    ).not.toBeInTheDocument();
     first.unmount();
 
     const staleBundle = publishedBundleFor(plan);
@@ -863,7 +1008,9 @@ describe("PrintRun", () => {
     expect(
       screen.getByText(/source-unit coverage.*do not match this exact plan/i),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start print run" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start print run" }),
+    ).not.toBeInTheDocument();
   });
 
   it("states that actions happen between whole plate jobs", () => {

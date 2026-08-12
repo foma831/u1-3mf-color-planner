@@ -15,6 +15,7 @@ describe("TitleBar", () => {
       <TitleBar
         onOpenFilamentLibrary={vi.fn()}
         onOpenColorCalibration={vi.fn()}
+        onOpenPrintingSetup={vi.fn()}
       />,
     );
 
@@ -32,6 +33,7 @@ describe("TitleBar", () => {
       <TitleBar
         onOpenFilamentLibrary={vi.fn()}
         onOpenColorCalibration={vi.fn()}
+        onOpenPrintingSetup={vi.fn()}
       />,
     );
 
@@ -43,8 +45,12 @@ describe("TitleBar", () => {
       screen.getByRole("heading", { name: "Plan, convert, and print" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Color accuracy boundary")).toBeInTheDocument();
-    expect(screen.getByText(/Export JSON Plan saves a report only/i)).toBeInTheDocument();
-    expect(screen.getByText(/after the previous job finishes/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Export JSON Plan saves a report only/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/after the previous job finishes/i),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Close help dialog" }));
 
@@ -57,26 +63,41 @@ describe("TitleBar", () => {
   it("routes settings actions to the corresponding application views", () => {
     const onOpenFilamentLibrary = vi.fn();
     const onOpenColorCalibration = vi.fn();
+    const onOpenPrintingSetup = vi.fn();
     render(
       <TitleBar
         onOpenFilamentLibrary={onOpenFilamentLibrary}
         onOpenColorCalibration={onOpenColorCalibration}
+        onOpenPrintingSetup={onOpenPrintingSetup}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
-    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open application setup" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Application setup" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Snapmaker U1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Available printers" }));
+    expect(onOpenPrintingSetup).toHaveBeenCalledOnce();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open application setup" }),
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: "Open Filament Library" }),
     );
     expect(onOpenFilamentLibrary).toHaveBeenCalledOnce();
     expect(
-      screen.queryByRole("heading", { name: "Settings" }),
+      screen.queryByRole("heading", { name: "Application setup" }),
     ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open application setup" }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Open Color Calibration" }),
     );

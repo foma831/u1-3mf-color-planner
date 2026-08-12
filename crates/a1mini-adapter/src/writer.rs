@@ -777,7 +777,7 @@ fn build_artifact_plans(
             .any(|reserved| reserved == &spool.id)
         {
             return Err(A1MiniError::Plan(format!(
-                "A1 mini spool {} is reserved for the U1 schedule",
+                "A1 mini spool {} is explicitly marked unavailable to the A1 mini",
                 spool.id
             )));
         }

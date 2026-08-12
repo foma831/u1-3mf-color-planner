@@ -20,6 +20,12 @@ import { DirectSpoolEditor } from "./components/DirectSpoolEditor";
 import { PlateTable } from "./components/PlateTable";
 import { createDemoPlan } from "./data/mock-plan";
 import { FILAMENT_LIBRARY_STORAGE_KEY } from "./services/filament-library";
+import type { DefaultPlanningStrategy } from "./services/planning-intent";
+import {
+  PRINTING_SETUP_STORAGE_KEY,
+  savePrintingSetup,
+  type PrintingSetup,
+} from "./services/printing-setup";
 import type {
   ColorResolution,
   CmyxCalibrationLibraryDocument,
@@ -46,8 +52,7 @@ const BROWSER_OUT_OF_STOCK_ERROR_FOR_TEST =
 
 const removableUserSpool: PhysicalSpool = {
   id: "user-workshop-orange",
-  calibrationIdentity:
-    "spool-calibration:22222222-2222-4222-8222-222222222222",
+  calibrationIdentity: "spool-calibration:22222222-2222-4222-8222-222222222222",
   source: "user",
   name: "Workshop Orange",
   colorName: "Orange",
@@ -71,6 +76,18 @@ const exactA1PreparedLoadout = [
   },
 ];
 
+const twoPrinterSetup: PrintingSetup = {
+  schemaVersion: 1,
+  primaryPrinter: "u1",
+  secondaryPrinter: "a1-mini",
+};
+
+const u1OnlySetup: PrintingSetup = {
+  schemaVersion: 1,
+  primaryPrinter: "u1",
+  secondaryPrinter: null,
+};
+
 function publishedPrintRunBundleFixture(
   plan: ProjectPlan,
   backendPlanFingerprint = "restart-plan-fingerprint",
@@ -92,12 +109,9 @@ function publishedPrintRunBundleFixture(
             plate.printer === "A1 mini"
               ? "bambu/a1-mini"
               : "snapmaker/u1-direct",
-          target:
-            plate.printer === "A1 mini" ? "a1_mini_mono" : "u1_direct",
+          target: plate.printer === "A1 mini" ? "a1_mini_mono" : "u1_direct",
           printer:
-            plate.printer === "A1 mini"
-              ? "Bambu Lab A1 mini"
-              : "Snapmaker U1",
+            plate.printer === "A1 mini" ? "Bambu Lab A1 mini" : "Snapmaker U1",
           strategy: plate.strategy,
           slicer:
             plate.printer === "A1 mini" ? "Bambu Studio" : "Snapmaker Orca",
@@ -110,23 +124,21 @@ function publishedPrintRunBundleFixture(
           plateCount: 1,
           targetPlateIds: [plate.id],
           sourceUnitIds: plate.sourceUnitIds,
-          loadout:
-            plate.printer === "A1 mini" ? exactA1PreparedLoadout : [],
+          loadout: plate.printer === "A1 mini" ? exactA1PreparedLoadout : [],
           setupActions: [],
           validationStatus: "Passed",
           adapterEvidence: { status: "passed" },
         };
       }),
       warnings: [],
-      excludedSourceUnits: structuredClone(
-        plan.partialConversion.exclusions,
-      ),
+      excludedSourceUnits: structuredClone(plan.partialConversion.exclusions),
       warningsAcknowledged: false,
     },
   };
 }
 
 async function analyzeBrowserDemo(fileName = "Withered_Foxy.3mf") {
+  await confirmProjectSetup();
   const input = document.querySelector<HTMLInputElement>("#project-file-input");
   expect(input).not.toBeNull();
   fireEvent.change(input!, {
@@ -134,14 +146,97 @@ async function analyzeBrowserDemo(fileName = "Withered_Foxy.3mf") {
   });
   fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
   await waitFor(
-    () => expect(screen.getByText("Demo analysis complete")).toBeInTheDocument(),
+    () =>
+      expect(screen.getByText("Demo analysis complete")).toBeInTheDocument(),
     { timeout: 2_000 },
   );
+}
+
+async function confirmProjectSetup({
+  strategy = "auto",
+  a1MiniEnabled,
+}: {
+  strategy?: DefaultPlanningStrategy;
+  a1MiniEnabled?: boolean;
+} = {}) {
+  const confirmButton = await screen.findByRole("button", {
+    name: "Confirm project setup",
+  });
+
+  if (a1MiniEnabled !== undefined) {
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: a1MiniEnabled
+          ? /Snapmaker U1 \+ Bambu Lab A1 mini/i
+          : /Snapmaker U1 only/i,
+      }),
+    );
+  }
+  if (strategy !== "auto") {
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name:
+          strategy === "direct"
+            ? /Direct Spools only/i
+            : /CMY\+X Full Spectrum only/i,
+      }),
+    );
+  }
+  fireEvent.click(confirmButton);
+}
+
+function openProjectSetupEditor() {
+  const changeButton = screen.queryByRole("button", { name: "Change setup" });
+  if (changeButton) fireEvent.click(changeButton);
+}
+
+function chooseProjectPrinter(a1MiniEnabled: boolean) {
+  openProjectSetupEditor();
+  fireEvent.click(
+    screen.getByRole("radio", {
+      name: a1MiniEnabled
+        ? /Snapmaker U1 \+ Bambu Lab A1 mini/i
+        : /Snapmaker U1 only/i,
+    }),
+  );
+}
+
+function applyProjectSetupChanges() {
+  fireEvent.click(screen.getByRole("button", { name: "Apply & recalculate" }));
+}
+
+function getCurrentT4Select() {
+  const select = document.querySelector<HTMLSelectElement>(
+    'select[name="current-t4-spool"]',
+  );
+  expect(select).not.toBeNull();
+  return select!;
+}
+
+function getCurrentA1SpoolSelect() {
+  const select = document.querySelector<HTMLSelectElement>(
+    'select[name="current-a1-spool"]',
+  );
+  expect(select).not.toBeNull();
+  return select!;
 }
 
 async function renderAnalyzedApp() {
   render(<App />);
   await analyzeBrowserDemo();
+}
+
+function openDisclosure(label: string) {
+  const summary = screen.getByText(label).closest("summary");
+  expect(summary).not.toBeNull();
+  const details = summary!.closest("details");
+  expect(details).not.toBeNull();
+  if (!details!.open) fireEvent.click(summary!);
+}
+
+function getExportPlanButton() {
+  openDisclosure("More actions");
+  return screen.getByRole("button", { name: "Export JSON plan" });
 }
 
 function createA1RoutingOffNativePlan() {
@@ -400,24 +495,129 @@ function createPerPlateRoleSharedNativePlan() {
   return plan;
 }
 
+function createCustomFourSpoolNativePlan() {
+  const plan = createDemoPlan();
+  const templates = plan.plates[0].mappings!;
+  const spoolIds = [
+    "panchroma-cyan",
+    "panchroma-magenta",
+    "panchroma-yellow",
+    "graphite",
+  ];
+  const colors = [
+    "#101010",
+    "#B3261E",
+    "#F9A825",
+    "#FDD835",
+    "#43A047",
+    "#1E88E5",
+    "#8E24AA",
+  ];
+  const mappingsForScope = (scopeId: string) =>
+    colors.map((sourceHex, index) => ({
+      ...structuredClone(templates[index % templates.length]),
+      id: `${scopeId}-source-${index + 1}`,
+      inheritanceKey: `PLA|${sourceHex}|declared:custom-profile-${index + 1}`,
+      physicalIdentityId: `${scopeId}-physical-${index + 1}`,
+      sourceSlot: `F${index + 1}`,
+      sourceName: `Custom source ${index + 1}`,
+      sourceHex,
+      usedBy: scopeId,
+      directToolhead: (["T1", "T2", "T3", "T4"] as ToolheadId[])[index % 4],
+      selectedSpoolId: spoolIds[index % 4],
+    }));
+  plan.plates = ["plate-1", "plate-2"].map((scopeId, index) => ({
+    ...plan.plates[index],
+    id: `custom-target-${index + 1}`,
+    scopeId,
+    order: index + 1,
+    title: `Custom ${index === 0 ? "First" : "Second"} — Plate 0${index + 1}`,
+    strategy: "cmyx" as const,
+    logicalColorCount: 7,
+    effectivePairCount: 7,
+    directPairCount: 7,
+    directEligible: true,
+    directEligibilityReason: undefined,
+    mappings: mappingsForScope(scopeId),
+  }));
+  plan.scopeSelections = ["plate-1", "plate-2"].map((scopeId) => ({
+    scopeId,
+    strategy: "cmyx" as const,
+    assignments: [],
+    approvedColorFallbacks: [],
+    materialSubstitutions: [],
+  }));
+  plan.unitPrinterSelections = plan.unitPrinterSelections.slice(0, 2);
+  plan.customDirectPalettesEnabled = true;
+  plan.batches = deriveBatches(plan.plates);
+  plan.a1SpoolChangeCount = 0;
+  plan.t4SwapCount = 0;
+  return plan;
+}
+
+function createCustomFourSpoolRecoveryPlans() {
+  const replanned = createCustomFourSpoolNativePlan();
+  replanned.plates[0] = {
+    ...replanned.plates[0],
+    title: "Head — Plate 01",
+    strategy: "direct",
+  };
+  replanned.scopeSelections[0] = {
+    ...replanned.scopeSelections[0],
+    strategy: "direct",
+  };
+  replanned.omittedUnitCount = 0;
+  replanned.planReady = true;
+  replanned.batches = deriveBatches(replanned.plates);
+
+  const initialPlan = structuredClone(replanned);
+  initialPlan.customDirectPalettesEnabled = false;
+  initialPlan.plates[0] = {
+    ...initialPlan.plates[0],
+    title: "Head — omitted units",
+    strategy: "direct",
+    directEligible: false,
+    directEligibilityReason:
+      "Direct Spools is unavailable because this scope requires 7 physical Direct identities; the maximum is 4.",
+    mappings: undefined,
+  };
+  initialPlan.scopeSelections[0] = {
+    ...initialPlan.scopeSelections[0],
+    strategy: "direct",
+    assignments: [],
+  };
+  initialPlan.omittedUnitCount = 1;
+  initialPlan.planReady = false;
+  initialPlan.batches = deriveBatches(initialPlan.plates);
+
+  return { initialPlan, replanned };
+}
+
 async function renderAnalyzedNativeApp(
   analyzePlan: ProjectPlan,
-  replanPlans: ProjectPlan[] = [],
+  replanPlans: Array<ProjectPlan | Error> = [],
+  savedPrintingSetup: PrintingSetup = twoPrinterSetup,
+  initialProjectSetup: Parameters<typeof confirmProjectSetup>[0] = {},
 ) {
-  (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+    {};
   vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
   mockNativeInvoke({ analyzePlan, replanPlans });
+  savePrintingSetup(window.localStorage, savedPrintingSetup);
   render(<App />);
-  fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+  await confirmProjectSetup(initialProjectSetup);
+  fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
   await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
   fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
-  await screen.findByRole("table", { name: /U1 Plates in planned print order/i });
+  await screen.findByRole("table", {
+    name: /U1 Plates in planned print order/i,
+  });
 }
 
 interface NativeInvokeFixtures {
   analyzePlan: ProjectPlan;
   analyzeProject?: () => Promise<ProjectPlan>;
-  replanPlans?: ProjectPlan[];
+  replanPlans?: Array<ProjectPlan | Error>;
   calibrationLibrary?: CmyxCalibrationLibraryDocument;
 }
 
@@ -455,8 +655,11 @@ function mockNativeInvoke({
         currentCalibrationLibrary = {
           ...currentCalibrationLibrary,
           planningGeometryContext: structuredClone(
-            (args as { geometryContext: CmyxCalibrationLibraryDocument["planningGeometryContext"] })
-              .geometryContext,
+            (
+              args as {
+                geometryContext: CmyxCalibrationLibraryDocument["planningGeometryContext"];
+              }
+            ).geometryContext,
           ),
         };
         return structuredClone(currentCalibrationLibrary);
@@ -470,6 +673,7 @@ function mockNativeInvoke({
         if (!replanned) {
           throw new Error("No native replan fixture remains.");
         }
+        if (replanned instanceof Error) throw replanned;
         return structuredClone(replanned);
       }
       case "export_plan":
@@ -507,7 +711,8 @@ const colorResolutionFixtures: ColorResolution[] = [
     materialApproved: false,
     requiresMaterialSubstitution: false,
     canAddDedicatedSpool: true,
-    recommendation: "Closest available CMY + Grey result; visible difference expected.",
+    recommendation:
+      "Closest available CMY + Grey result; visible difference expected.",
   },
   {
     scopeId: "plate-6",
@@ -529,7 +734,8 @@ const colorResolutionFixtures: ColorResolution[] = [
     materialApproved: false,
     requiresMaterialSubstitution: true,
     canAddDedicatedSpool: true,
-    recommendation: "Add PETG Grey or explicitly accept PLA for this frame part.",
+    recommendation:
+      "Add PETG Grey or explicitly accept PLA for this frame part.",
   },
 ];
 
@@ -547,27 +753,178 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   window.localStorage.clear();
-  delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  delete (window as Window & { __TAURI_INTERNALS__?: unknown })
+    .__TAURI_INTERNALS__;
 });
 
 describe("Print Plan workflow", () => {
+  it("requires the visible Step 2 project setup before opening a project", async () => {
+    render(<App />);
+
+    expect(
+      await screen.findByText("Project setup", { selector: "strong" }),
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("heading", { name: "Choose how to print this project" })
+        .closest("li"),
+    ).toHaveAttribute("aria-current", "step");
+    expect(
+      screen.queryByRole("button", { name: "Open 3MF from Step 3" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", { name: /Snapmaker U1 only/i }),
+    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Automatic/i })).toBeChecked();
+
+    await confirmProjectSetup();
+
+    expect(
+      screen.getByRole("button", { name: "Open 3MF from Step 3" }),
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem(PRINTING_SETUP_STORAGE_KEY)).toBeNull();
+  });
+
+  it("reopens Step 2 setup before analysis after it has been confirmed", async () => {
+    render(<App />);
+
+    await screen.findByText("Project setup", { selector: "strong" });
+    await confirmProjectSetup();
+
+    const changeSetup = screen.getByRole("button", {
+      name: "Change setup",
+    });
+    expect(changeSetup).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("group", { name: "Printers for this project" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(changeSetup);
+
+    expect(
+      screen.getByRole("group", { name: "Printers for this project" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("group", { name: "U1 printing method" }),
+    ).toBeVisible();
+  });
+
+  it("continues through Step 3 without returning to the header actions", async () => {
+    savePrintingSetup(window.localStorage, u1OnlySetup);
+    render(<App />);
+    await confirmProjectSetup();
+
+    const openFromStep = await screen.findByRole("button", {
+      name: "Open 3MF from Step 3",
+    });
+    expect(
+      screen
+        .getByRole("heading", { name: "Open and analyze a 3MF" })
+        .closest("li"),
+    ).toHaveAttribute("aria-current", "step");
+
+    const input = document.querySelector<HTMLInputElement>(
+      "#project-file-input",
+    );
+    expect(input).not.toBeNull();
+    const inputClick = vi.spyOn(input!, "click");
+    fireEvent.click(openFromStep);
+    expect(inputClick).toHaveBeenCalledOnce();
+
+    fireEvent.change(input!, {
+      target: {
+        files: [new File(["demo"], "Withered_Foxy.3mf", { type: "model/3mf" })],
+      },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Analyze Project from Step 3",
+      }),
+    );
+
+    expect(
+      await screen.findByText("Demo analysis complete"),
+    ).toBeInTheDocument();
+  });
+
+  it("passes saved A1 equipment and Direct intent to the first native analysis", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
+    vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
+    mockNativeInvoke({ analyzePlan: createDemoPlan() });
+    savePrintingSetup(window.localStorage, twoPrinterSetup);
+
+    render(<App />);
+    expect(
+      await screen.findByRole("radio", {
+        name: /Snapmaker U1 \+ Bambu Lab A1 mini/i,
+      }),
+    ).toBeChecked();
+    fireEvent.change(screen.getByLabelText("U1 T1"), {
+      target: { value: "panchroma-cyan" },
+    });
+    fireEvent.change(screen.getByLabelText("U1 T2"), {
+      target: { value: "panchroma-magenta" },
+    });
+    fireEvent.change(screen.getByLabelText("U1 T3"), {
+      target: { value: "panchroma-yellow" },
+    });
+    fireEvent.change(screen.getByLabelText("U1 T4"), {
+      target: { value: "matte-grey" },
+    });
+    fireEvent.change(screen.getByLabelText("A1 mini external spool"), {
+      target: { value: "burnt-orange" },
+    });
+    await confirmProjectSetup({ strategy: "direct" });
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
+    await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("analyze_project")).toHaveLength(1),
+    );
+    expect(nativeCommandCalls("analyze_project")[0]).toEqual([
+      "analyze_project",
+      {
+        sourcePath: "/tmp/Withered_Foxy.3mf",
+        planningIntent: {
+          defaultStrategy: "direct",
+          a1MiniEnabled: true,
+          currentLoadout: [
+            { toolhead: "T1", spoolId: "panchroma-cyan" },
+            { toolhead: "T2", spoolId: "panchroma-magenta" },
+            { toolhead: "T3", spoolId: "panchroma-yellow" },
+            { toolhead: "T4", spoolId: "matte-grey" },
+          ],
+          currentA1SpoolId: "burnt-orange",
+        },
+      },
+    ]);
+    expect(nativeCommandCalls("replan_project")).toHaveLength(0);
+  });
+
   it("starts without a false-ready plan and gates plan actions", () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "No project selected" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "No analyzed print plan" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "No project selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Create a print-ready plan" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open 3MF" })).toBeEnabled();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeDisabled();
     expect(
-      screen.getByRole("button", {
-        name: /Validate Choices.*Analyze a project first/i,
-      }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: /Export JSON plan/i }),
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("checkbox", {
+      screen.queryByRole("button", { name: /Validate plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", {
         name: "Use Bambu Lab A1 mini for eligible mono parts",
       }),
-    ).toBeDisabled();
+    ).not.toBeInTheDocument();
   });
 
   it("opens the browser calibration workflow without implying native persistence", async () => {
@@ -592,7 +949,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("shows a recoverable calibration loading error without replacing stored data", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const filamentLibrary: FilamentLibraryDocument = {
       schemaVersion: 2,
       spools: createDemoPlan().spools,
@@ -608,9 +966,7 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Color Calibration" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Color Calibration" }));
 
     expect(
       await screen.findByRole("heading", {
@@ -620,19 +976,19 @@ describe("Print Plan workflow", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "fixture calibration storage unavailable",
     );
-    expect(
-      screen.getByRole("button", { name: "Retry loading" }),
-    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry loading" })).toBeEnabled();
   });
 
   it("invalidates an analyzed native plan after planning geometry changes", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
     mockNativeInvoke({ analyzePlan: nativePlan });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
@@ -641,7 +997,9 @@ describe("Print Plan workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
 
@@ -673,18 +1031,15 @@ describe("Print Plan workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Print Plan" }));
     expect(
       screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply approved color decisions/i,
+        name: "Recalculate plan",
       }),
     ).toBeEnabled();
-    expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Validate pending edits first/i,
-      }),
-    ).toBeDisabled();
+    expect(getExportPlanButton()).toHaveAttribute("aria-disabled", "true");
   });
 
   it("cancels native analysis without surfacing a late worker error", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const pendingAnalysis = deferred<ProjectPlan>();
     vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
     mockNativeInvoke({
@@ -693,7 +1048,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
@@ -727,7 +1083,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("keeps a newer native analysis when a cancelled promise resolves late", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const firstAnalysis = deferred<ProjectPlan>();
     const freshPlan = createDemoPlan();
     freshPlan.summary.fileName = "Fresh_Result.3mf";
@@ -746,7 +1103,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
@@ -777,7 +1135,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("keeps filament editing unavailable until the persistent library loads", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
       spools: createDemoPlan().spools,
@@ -808,7 +1167,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("keeps a failed filament library load unavailable without claiming it is saved", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     vi.mocked(invoke).mockRejectedValue(new Error("Library JSON is corrupt."));
 
     render(<App />);
@@ -831,7 +1191,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("reports an unsaved filament library instead of a false saved status", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
       spools: createDemoPlan().spools,
@@ -853,7 +1214,7 @@ describe("Print Plan workflow", () => {
     );
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Mark out of stock: PolyLite Graphite",
+        name: "Mark unavailable: PolyLite Graphite",
       }),
     );
 
@@ -870,7 +1231,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("keeps a user spool visible when its persistent deletion fails", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
       spools: [...createDemoPlan().spools, removableUserSpool],
@@ -900,7 +1262,9 @@ describe("Print Plan workflow", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(/Filament library could not be saved.*Disk is read-only/i),
+        screen.getByText(
+          /Filament library could not be saved.*Disk is read-only/i,
+        ),
       ).toBeInTheDocument(),
     );
     expect(screen.getAllByText("Workshop Orange").length).toBeGreaterThan(0);
@@ -912,7 +1276,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("removes a user spool only after the replacement library is saved", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
       spools: [...createDemoPlan().spools, removableUserSpool],
@@ -947,9 +1312,8 @@ describe("Print Plan workflow", () => {
     );
     const saveCalls = nativeCommandCalls("save_filament_library");
     expect(saveCalls).toHaveLength(1);
-    const saved = (
-      saveCalls[0][1] as { library: FilamentLibraryDocument }
-    ).library;
+    const saved = (saveCalls[0][1] as { library: FilamentLibraryDocument })
+      .library;
     expect(saved.spools).not.toContainEqual(
       expect.objectContaining({ id: removableUserSpool.id }),
     );
@@ -972,7 +1336,7 @@ describe("Print Plan workflow", () => {
     });
 
     expect(libraryNavigation).toBeEnabled();
-    expect(printRunNavigation).toBeDisabled();
+    expect(printRunNavigation).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(libraryNavigation);
     await waitFor(() =>
       expect(
@@ -982,12 +1346,12 @@ describe("Print Plan workflow", () => {
 
     fireEvent.click(printPlanNavigation);
     await analyzeBrowserDemo();
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
+    expect(getExportPlanButton()).toBeEnabled();
 
     fireEvent.click(libraryNavigation);
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Mark out of stock: PolyLite Graphite",
+        name: "Mark unavailable: PolyLite Graphite",
       }),
     );
 
@@ -1010,36 +1374,32 @@ describe("Print Plan workflow", () => {
         }),
       ).not.toBeInTheDocument();
     }
-    const currentT4 = screen.getByLabelText("Currently loaded T4 spool");
-    expect(currentT4).toHaveValue("matte-grey");
+    openProjectSetupEditor();
+    const currentT4 = getCurrentT4Select();
+    expect(currentT4).toHaveValue("");
     expect(
-      within(currentT4).queryByRole("option", { name: "Graphite · PLA" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Resolve blocking choices first/i,
+      within(currentT4).queryByRole("option", {
+        name: "Graphite · PLA · PolyLite Graphite",
       }),
-    ).toBeDisabled();
-    expect(printRunNavigation).toBeDisabled();
+    ).not.toBeInTheDocument();
+    expect(getExportPlanButton()).toHaveAttribute("aria-disabled", "true");
+    expect(printRunNavigation).toHaveAttribute("aria-disabled", "true");
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Recalculate Plan/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
     await waitFor(() =>
       expect(
         screen.getByText(/Choices validated locally using demo data/i),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByText(BROWSER_OUT_OF_STOCK_ERROR_FOR_TEST)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Resolve blocking choices first/i,
-      }),
-    ).toBeDisabled();
+      screen.getByText(BROWSER_OUT_OF_STOCK_ERROR_FOR_TEST),
+    ).toBeInTheDocument();
+    expect(getExportPlanButton()).toHaveAttribute("aria-disabled", "true");
   });
 
   it("keeps a validated native print run locked until conversion publishes its files", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
     mockNativeInvoke({
@@ -1048,7 +1408,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
@@ -1057,23 +1418,18 @@ describe("Print Plan workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Validate Choices" }));
-    await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent(
-        "Choices validated. 8 target plates replanned.",
-      ),
-    );
-
     const appNavigation = screen.getByRole("navigation", {
       name: "Application views",
     });
     const printRunNavigation = within(appNavigation).getByRole("button", {
       name: "Print Run",
     });
-    expect(printRunNavigation).toBeDisabled();
+    expect(printRunNavigation).toHaveAttribute("aria-disabled", "true");
     expect(printRunNavigation).toHaveAccessibleDescription(
       /successfully convert a native print plan/i,
     );
@@ -1083,7 +1439,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("does not expose a T4 print workflow before its exact files are published", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.plates = nativePlan.plates.slice(0, 2);
     nativePlan.batches = [
@@ -1120,7 +1477,8 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
@@ -1129,14 +1487,16 @@ describe("Print Plan workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
 
     const printRunNavigation = within(
       screen.getByRole("navigation", { name: "Application views" }),
     ).getByRole("button", { name: "Print Run" });
-    expect(printRunNavigation).toBeDisabled();
+    expect(printRunNavigation).toHaveAttribute("aria-disabled", "true");
     expect(
       screen.queryByRole("heading", {
         name: "Filament change required before Target Plate 02",
@@ -1147,8 +1507,14 @@ describe("Print Plan workflow", () => {
   it("renders the semantic plan and keeps A1 mini rows strictly mono", async () => {
     await renderAnalyzedApp();
 
-    expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument();
-    expect(screen.getByText("Browser demo · Bambu Studio 3MF · sha256:8f3a…91c2")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Browser demo · Bambu Studio 3MF"),
+    ).toBeInTheDocument();
+    openDisclosure("Analysis details");
+    expect(screen.getByText("sha256:8f3a…91c2")).toBeInTheDocument();
     expect(
       screen.getByRole("table", {
         name: /U1 Plates in planned print order/i,
@@ -1159,7 +1525,9 @@ describe("Print Plan workflow", () => {
         name: /A1 mini Plates in planned print order/i,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "U1 Plates" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "U1 Plates" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "A1 mini Plates" }),
     ).toBeInTheDocument();
@@ -1169,7 +1537,9 @@ describe("Print Plan workflow", () => {
       .closest("tr");
     expect(standRow).not.toBeNull();
     expect(within(standRow!).getByText("A1 Mono")).toBeInTheDocument();
-    expect(within(standRow!).queryByText("CMY+X Full Spectrum")).not.toBeInTheDocument();
+    expect(
+      within(standRow!).queryByText("CMY+X Full Spectrum"),
+    ).not.toBeInTheDocument();
   });
 
   it("explains empty U1 and A1 mini plate queues", () => {
@@ -1183,11 +1553,14 @@ describe("Print Plan workflow", () => {
         onSelectPlate={vi.fn()}
         a1MiniEnabled={true}
         hasPendingPlanChanges={false}
+        onBulkStrategyChange={vi.fn()}
       />,
     );
 
     expect(
-      screen.getByText("No plates are assigned to the Snapmaker U1 in this plan."),
+      screen.getByText(
+        "No plates are assigned to the Snapmaker U1 in this plan.",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText("No eligible mono plates were assigned to the A1 mini."),
@@ -1219,9 +1592,7 @@ describe("Print Plan workflow", () => {
     expect(
       screen.getByRole("heading", { name: "Project-wide Direct Spools" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("10 semantic · 10/4 physical"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("10 semantic · 10/4 physical")).toBeInTheDocument();
     expect(
       screen.getByText(
         "Project-wide Direct Spools is unavailable because 10 semantic material-color-role pairs require 10 unique physical Direct identities; the maximum is 4.",
@@ -1236,9 +1607,7 @@ describe("Print Plan workflow", () => {
     const nativePlan = createProjectWideDirectNativePlan();
     await renderAnalyzedNativeApp(nativePlan, [structuredClone(nativePlan)]);
 
-    expect(
-      screen.getByText("2 semantic · 2/4 physical"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("2 semantic · 2/4 physical")).toBeInTheDocument();
     const projectPaletteBeforeEditing = screen
       .getByRole("heading", { name: "Project-wide Direct Spools" })
       .closest("section");
@@ -1255,13 +1624,17 @@ describe("Print Plan workflow", () => {
     expect(projectPaletteBeforeEditing).toHaveTextContent(
       "#C85A55 · ΔE00 4.2 · High",
     );
-    const spoolSelects = screen.getAllByLabelText("Physical spool at print time");
+    const spoolSelects = screen.getAllByLabelText(
+      "Physical spool at print time",
+    );
     expect(spoolSelects).toHaveLength(2);
     for (const select of spoolSelects) {
       fireEvent.change(select, { target: { value: "signal-red" } });
     }
     expect(screen.getAllByText(/Preview Direct ΔE00/)).toHaveLength(2);
-    expect(within(projectPaletteBeforeEditing!).getAllByText("Nominal color")).toHaveLength(2);
+    expect(
+      within(projectPaletteBeforeEditing!).getAllByText("Nominal color"),
+    ).toHaveLength(2);
 
     const materialRisks = screen.getAllByRole("checkbox", {
       name: /mechanical-property risk for this pair/i,
@@ -1288,13 +1661,17 @@ describe("Print Plan workflow", () => {
       projectPalette!.querySelectorAll(".project-direct-palette__toolhead"),
     ).toHaveLength(2);
     expect(
-      [...projectPalette!.querySelectorAll(".project-direct-palette__toolhead")].map(
-        (element) => element.textContent,
-      ),
+      [
+        ...projectPalette!.querySelectorAll(
+          ".project-direct-palette__toolhead",
+        ),
+      ].map((element) => element.textContent),
     ).toEqual(["T1", "T1"]);
 
-    fireEvent.click(screen.getByRole("button", { name: /Recalculate Plan/i }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     const request = (
       nativeCommandCalls("replan_project")[0][1] as {
         request: { scopeOverrides: ProjectPlan["scopeSelections"] };
@@ -1427,10 +1804,10 @@ describe("Print Plan workflow", () => {
     nativePlan.projectDirectPalette.mappings[1].sourceMaterial = "PETG";
     await renderAnalyzedNativeApp(nativePlan, [structuredClone(nativePlan)]);
 
-    expect(
-      screen.getByText("5 semantic · 4/4 physical"),
-    ).toBeInTheDocument();
-    const spoolSelects = screen.getAllByLabelText("Physical spool at print time");
+    expect(screen.getByText("5 semantic · 4/4 physical")).toBeInTheDocument();
+    const spoolSelects = screen.getAllByLabelText(
+      "Physical spool at print time",
+    );
     expect(spoolSelects).toHaveLength(5);
     fireEvent.change(spoolSelects[0], { target: { value: "signal-red" } });
     expect(spoolSelects[1]).toHaveValue("signal-red");
@@ -1452,8 +1829,10 @@ describe("Print Plan workflow", () => {
       "5 semantic pairs across 4 physical identities to 1 physical spool",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Recalculate Plan/i }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     const request = (
       nativeCommandCalls("replan_project")[0][1] as {
         request: { scopeOverrides: ProjectPlan["scopeSelections"] };
@@ -1486,9 +1865,15 @@ describe("Print Plan workflow", () => {
     expect(within(headRow!).getByText("Direct Spools")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Stand — Plate 07/i }));
-    expect(screen.getByRole("heading", { name: "Stand — Plate 07" })).toBeInTheDocument();
-    expect(screen.getByText("A1 Mono", { selector: ".locked-strategy strong" })).toBeInTheDocument();
-    expect(screen.queryByRole("radio", { name: /CMY\+X Full Spectrum/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Stand — Plate 07" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("A1 Mono", { selector: ".locked-strategy strong" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("radio", { name: /CMY\+X Full Spectrum/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("edits five semantic rows through four linked per-plate physical identities", async () => {
@@ -1530,8 +1915,10 @@ describe("Print Plan workflow", () => {
     expect(toolheadSelects[4]).toHaveValue("T1");
     fireEvent.click(materialRisks[1]);
 
-    fireEvent.click(screen.getByRole("button", { name: /Recalculate Plan/i }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     const request = (
       nativeCommandCalls("replan_project")[0][1] as {
         request: { scopeOverrides: ProjectPlan["scopeSelections"] };
@@ -1604,12 +1991,169 @@ describe("Print Plan workflow", () => {
     );
     expect(
       screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply pending printer, spool, or plan changes/i,
+        name: "Recalculate plan",
       }),
     ).toBeEnabled();
     expect(
       screen.getByText(/Pending edits are not reflected in these queues yet/i),
     ).toBeInTheDocument();
+  });
+
+  it("enables a seven-color scope as a custom four-spool Direct palette", async () => {
+    const { initialPlan, replanned } = createCustomFourSpoolRecoveryPlans();
+    await renderAnalyzedNativeApp(initialPlan, [structuredClone(replanned)]);
+
+    const blockedDirect = screen.getByRole("radio", {
+      name: /Custom 4-Spool Direct/i,
+    });
+    expect(blockedDirect).toBeDisabled();
+    expect(blockedDirect).toBeChecked();
+    expect(screen.getByText("Setup required")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create 4-spool palette" }),
+    );
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
+    const request = (
+      nativeCommandCalls("replan_project")[0][1] as {
+        request: {
+          allowDirectPaletteReduction: boolean;
+          scopeOverrides: Array<{
+            scopeId: string;
+            strategy: string;
+            assignments: unknown[];
+          }>;
+        };
+      }
+    ).request;
+    expect(request.allowDirectPaletteReduction).toBe(true);
+    expect(
+      request.scopeOverrides.find((override) => override.scopeId === "plate-1"),
+    ).toMatchObject({
+      strategy: "direct",
+      assignments: [],
+    });
+    const direct = await screen.findByRole("radio", {
+      name: /Custom 4-Spool Direct/i,
+    });
+    expect(direct).toBeEnabled();
+    expect(direct).toBeChecked();
+    await waitFor(() => expect(direct).toHaveFocus());
+    expect(
+      screen.getByRole("heading", { name: "Head — Plate 01" }),
+    ).toBeInTheDocument();
+    const selectedSpools = screen.getAllByLabelText("Selected spool");
+    expect(selectedSpools).toHaveLength(7);
+    expect(
+      new Set(
+        selectedSpools.map((select) => (select as HTMLSelectElement).value),
+      ).size,
+    ).toBeLessThanOrEqual(4);
+    expect(
+      screen.getByRole("heading", { name: "Custom four-spool palette" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /Four-spool palette created.*7 source Direct identities.*4 physical spools/i,
+    );
+  });
+
+  it("keeps a visible recovery path when four-spool palette creation fails", async () => {
+    const { initialPlan, replanned } = createCustomFourSpoolRecoveryPlans();
+    await renderAnalyzedNativeApp(initialPlan, [
+      new Error("Planner service was interrupted."),
+      structuredClone(replanned),
+    ]);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create 4-spool palette" }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Palette creation failed.*Planner service was interrupted/i,
+      ),
+    ).toBeInTheDocument();
+    const retry = screen.getByRole("button", {
+      name: "Create 4-spool palette",
+    });
+    expect(retry).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Review Filament Library" }),
+    ).toBeEnabled();
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(2),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Custom four-spool palette",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("inherits a custom spool choice across unedited plates but preserves later corrections", async () => {
+    const customPlan = createCustomFourSpoolNativePlan();
+    await renderAnalyzedNativeApp(customPlan);
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Custom 4-Spool Direct/i }),
+    );
+    let firstSpool = screen.getAllByLabelText("Selected spool")[0];
+    fireEvent.change(firstSpool, { target: { value: "graphite" } });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Custom Second — Plate 02/i }),
+    );
+    let secondSpool = screen.getAllByLabelText("Selected spool")[0];
+    expect(secondSpool).toHaveValue("graphite");
+    fireEvent.change(secondSpool, { target: { value: "panchroma-magenta" } });
+    expect(secondSpool).toHaveValue("panchroma-magenta");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Custom First — Plate 01/i }),
+    );
+    firstSpool = screen.getAllByLabelText("Selected spool")[0];
+    fireEvent.change(firstSpool, { target: { value: "panchroma-yellow" } });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Custom Second — Plate 02/i }),
+    );
+    secondSpool = screen.getAllByLabelText("Selected spool")[0];
+    expect(secondSpool).toHaveValue("panchroma-magenta");
+  });
+
+  it("preserves plate-local mapping rows when one source scope is split across plates", async () => {
+    const customPlan = createCustomFourSpoolNativePlan();
+    customPlan.plates[1] = {
+      ...customPlan.plates[1],
+      scopeId: customPlan.plates[0].scopeId,
+      mappings: customPlan.plates[1].mappings!.map((mapping, index) =>
+        index === 0
+          ? { ...mapping, sourceName: "Second plate source marker" }
+          : mapping,
+      ),
+    };
+    customPlan.scopeSelections = customPlan.scopeSelections.slice(0, 1);
+    await renderAnalyzedNativeApp(customPlan);
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Custom 4-Spool Direct/i }),
+    );
+    fireEvent.change(screen.getAllByLabelText("Selected spool")[0], {
+      target: { value: "graphite" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Custom Second — Plate 02/i }),
+    );
+    expect(screen.getByText("Second plate source marker")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Selected spool")[0]).toHaveValue(
+      "graphite",
+    );
   });
 
   it("moves a split physical identity back to a free toolhead before replanning", async () => {
@@ -1642,8 +2186,10 @@ describe("Print Plan workflow", () => {
     expect(toolheadSelects[1]).toHaveValue("T2");
     expect(toolheadSelects[2]).toHaveValue("T3");
 
-    fireEvent.click(screen.getByRole("button", { name: /Recalculate Plan/i }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     const request = (
       nativeCommandCalls("replan_project")[0][1] as {
         request: { scopeOverrides: ProjectPlan["scopeSelections"] };
@@ -1675,7 +2221,9 @@ describe("Print Plan workflow", () => {
 
     expect(spoolSelect).toHaveValue("");
     expect(within(mappingCard!).getByText("Review")).toBeInTheDocument();
-    const actualColor = within(mappingCard!).getByLabelText("Actual spool color");
+    const actualColor = within(mappingCard!).getByLabelText(
+      "Actual spool color",
+    );
     expect(within(actualColor).getByText("Unassigned")).toBeInTheDocument();
     expect(actualColor.querySelector(".color-swatch")).toBeNull();
     expect(mappingCard).toHaveTextContent(/Direct ΔE00\s*Unavailable/);
@@ -1732,7 +2280,9 @@ describe("Print Plan workflow", () => {
     });
     const mappingCard = spoolSelect.closest("article");
     expect(mappingCard).not.toBeNull();
-    expect(within(mappingCard!).getByText("Material mismatch")).toBeInTheDocument();
+    expect(
+      within(mappingCard!).getByText("Material mismatch"),
+    ).toBeInTheDocument();
     expect(mappingCard).toHaveTextContent("#B72E2A");
     expect(mappingCard).toHaveTextContent("SHOP-RD-01");
     expect(mappingCard).toHaveTextContent("0.20 mm Workshop PETG");
@@ -1788,14 +2338,21 @@ describe("Print Plan workflow", () => {
 
   it("selects a browser file and completes the explicit demo analysis fallback", async () => {
     render(<App />);
+    await confirmProjectSetup();
 
-    const input = document.querySelector<HTMLInputElement>("#project-file-input");
+    const input = document.querySelector<HTMLInputElement>(
+      "#project-file-input",
+    );
     expect(input).not.toBeNull();
     const file = new File(["demo"], "color-study.3mf", { type: "model/3mf" });
     fireEvent.change(input!, { target: { files: [file] } });
 
-    expect(screen.getByRole("heading", { name: "color-study.3mf" })).toBeInTheDocument();
-    const analyzeButton = screen.getByRole("button", { name: "Analyze Project" });
+    expect(
+      screen.getByRole("heading", { name: "color-study.3mf" }),
+    ).toBeInTheDocument();
+    const analyzeButton = screen.getByRole("button", {
+      name: "Analyze Project",
+    });
     expect(analyzeButton).toBeEnabled();
     fireEvent.click(analyzeButton);
 
@@ -1805,7 +2362,9 @@ describe("Print Plan workflow", () => {
     await waitFor(
       () =>
         expect(
-          screen.getByText(/Analysis complete for color-study\.3mf.*browser demo data/i),
+          screen.getByText(
+            /Analysis complete for color-study\.3mf.*browser demo data/i,
+          ),
         ).toBeInTheDocument(),
       { timeout: 2_000 },
     );
@@ -1814,22 +2373,19 @@ describe("Print Plan workflow", () => {
   it("keeps conversion unavailable before the print plan is validated", () => {
     render(<App />);
 
-    const convertButton = screen.getByRole("button", {
-      name: /Approve & Convert.*Validate the current plan first/i,
-    });
-    expect(convertButton).toHaveAttribute("aria-disabled", "true");
-    expect(convertButton).toBeEnabled();
-
-    convertButton.focus();
-    expect(convertButton).toHaveFocus();
-    fireEvent.click(convertButton);
-
-    expect(screen.queryByText(/Plan approved/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(
+      screen.queryByRole("button", { name: /Review conversion/i }),
+    ).not.toBeInTheDocument();
+    const printRunButton = screen.getByRole("button", { name: "Print Run" });
+    expect(printRunButton).toHaveAttribute("aria-disabled", "true");
+    expect(printRunButton).toHaveAccessibleDescription(
+      /successfully convert a native print plan/i,
+    );
   });
 
   it("keeps a persisted publication locked until backend revalidation, then recovers and opens its registered artifact", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.planReady = true;
     nativePlan.blockingErrors = [];
@@ -1880,7 +2436,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
 
@@ -1901,7 +2458,10 @@ describe("Print Plan workflow", () => {
     expect(
       screen.getByText(/Revalidating saved Print Run files/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Print Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Print Run" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     await act(async () => {
       resolveRevalidation(structuredClone(bundle.result));
@@ -1929,7 +2489,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("uses the mixed conversion DTO and requires fresh preflight after a consumed failure", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
@@ -2077,7 +2638,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
@@ -2085,17 +2647,21 @@ describe("Print Plan workflow", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
-      expect(nativeCommandCalls("inspect_conversion_capabilities")).toHaveLength(1),
+      expect(
+        nativeCommandCalls("inspect_conversion_capabilities"),
+      ).toHaveLength(1),
     );
 
     const experimentalApproval = await screen.findByRole("checkbox", {
       name: /I understand this source dialect is Experimental/i,
     });
-    const approveButton = screen.getByText("Approve & Convert").closest("button")!;
+    const approveButton = screen
+      .getByText("Review conversion…")
+      .closest("button")!;
     expect(approveButton).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(experimentalApproval);
     await waitFor(() =>
-      expect(approveButton).toHaveAttribute("aria-disabled", "false"),
+      expect(approveButton).not.toHaveAttribute("aria-disabled"),
     );
     fireEvent.click(approveButton);
 
@@ -2104,7 +2670,9 @@ describe("Print Plan workflow", () => {
         screen.getByRole("heading", { name: "2 project files" }),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("heading", { name: "Snapmaker U1" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Snapmaker U1" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Bambu Lab A1 mini" }),
     ).toBeInTheDocument();
@@ -2125,9 +2693,9 @@ describe("Print Plan workflow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Convert projects" }));
     await waitFor(() =>
-      expect(
-        screen.getByRole("alert"),
-      ).toHaveTextContent("fixture writer failure after token consumption"),
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "fixture writer failure after token consumption",
+      ),
     );
     expect(
       screen.queryByRole("button", { name: "Convert projects" }),
@@ -2164,8 +2732,12 @@ describe("Print Plan workflow", () => {
         },
       ],
     ]);
-    expect(screen.getByText("projects/Withered_Foxy__u1.3mf")).toBeInTheDocument();
-    expect(screen.getByText("projects/Withered_Foxy__a1.3mf")).toBeInTheDocument();
+    expect(
+      screen.getByText("projects/Withered_Foxy__u1.3mf"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("projects/Withered_Foxy__a1.3mf"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     const printRunTab = screen.getByRole("button", { name: "Print Run" });
@@ -2177,13 +2749,14 @@ describe("Print Plan workflow", () => {
     expect(
       screen.getByText("/tmp/output/Withered_Foxy__converted/manifest.json"),
     ).toBeInTheDocument();
-    expect(
-      screen.getAllByText("Withered_Foxy__u1.3mf").length,
-    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Withered_Foxy__u1.3mf").length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("passes exact backend exclusions only after explicit partial-conversion approval", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     const exclusions = [
       {
@@ -2234,40 +2807,44 @@ describe("Print Plan workflow", () => {
         bundleDirectoryName: "Withered_Foxy__valid-jobs",
         artifacts: [
           ...(partialU1Plates.length > 0
-            ? [{
-            adapterId: "snapmaker/u1-direct",
-            target: "u1_direct",
-            printer: "Snapmaker U1",
-            strategy: "Direct Spools",
-            slicer: "Snapmaker Orca",
-            batchId: "valid-u1-batch",
-            fileName: "Withered_Foxy__valid-jobs.3mf",
-            targetPlateIds: partialU1Plates.map((plate) => plate.id),
-            sourceUnitIds: partialU1Plates.flatMap(
-              (plate) => plate.sourceUnitIds,
-            ),
-            loadout: [],
-            setupActions: [],
-            adapterEvidence: { status: "prepared" },
-          }]
+            ? [
+                {
+                  adapterId: "snapmaker/u1-direct",
+                  target: "u1_direct",
+                  printer: "Snapmaker U1",
+                  strategy: "Direct Spools",
+                  slicer: "Snapmaker Orca",
+                  batchId: "valid-u1-batch",
+                  fileName: "Withered_Foxy__valid-jobs.3mf",
+                  targetPlateIds: partialU1Plates.map((plate) => plate.id),
+                  sourceUnitIds: partialU1Plates.flatMap(
+                    (plate) => plate.sourceUnitIds,
+                  ),
+                  loadout: [],
+                  setupActions: [],
+                  adapterEvidence: { status: "prepared" },
+                },
+              ]
             : []),
           ...(partialA1Plates.length > 0
-            ? [{
-                adapterId: "bambu/a1-mini",
-                target: "a1_mini_mono",
-                printer: "Bambu Lab A1 mini",
-                strategy: "A1 Mono",
-                slicer: "Bambu Studio",
-                batchId: "valid-a1-batch",
-                fileName: "Withered_Foxy__valid-a1-jobs.3mf",
-                targetPlateIds: partialA1Plates.map((plate) => plate.id),
-                sourceUnitIds: partialA1Plates.flatMap(
-                  (plate) => plate.sourceUnitIds,
-                ),
-                loadout: exactA1PreparedLoadout,
-                setupActions: [],
-                adapterEvidence: { status: "prepared" },
-              }]
+            ? [
+                {
+                  adapterId: "bambu/a1-mini",
+                  target: "a1_mini_mono",
+                  printer: "Bambu Lab A1 mini",
+                  strategy: "A1 Mono",
+                  slicer: "Bambu Studio",
+                  batchId: "valid-a1-batch",
+                  fileName: "Withered_Foxy__valid-a1-jobs.3mf",
+                  targetPlateIds: partialA1Plates.map((plate) => plate.id),
+                  sourceUnitIds: partialA1Plates.flatMap(
+                    (plate) => plate.sourceUnitIds,
+                  ),
+                  loadout: exactA1PreparedLoadout,
+                  setupActions: [],
+                  adapterEvidence: { status: "prepared" },
+                },
+              ]
             : []),
         ],
         warnings: [],
@@ -2278,7 +2855,8 @@ describe("Print Plan workflow", () => {
       adapterId: "u1-planner/mixed-native",
       outputDirectory: "/tmp/output/Withered_Foxy__valid-jobs",
       manifestPath: "/tmp/output/Withered_Foxy__valid-jobs/manifest.json",
-      reportPath: "/tmp/output/Withered_Foxy__valid-jobs/conversion-report.html",
+      reportPath:
+        "/tmp/output/Withered_Foxy__valid-jobs/conversion-report.html",
       artifacts: preparedConversion.preparation.artifacts.map((artifact) => ({
         ...artifact,
         relativePath: `projects/${artifact.fileName}`,
@@ -2314,7 +2892,8 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
@@ -2327,7 +2906,7 @@ describe("Print Plan workflow", () => {
     });
     expect(screen.getByText("model-42")).toBeInTheDocument();
     const convertValidJobs = screen.getByRole("button", {
-      name: /Convert Valid Jobs.*Review and acknowledge every excluded source unit first/i,
+      name: "Review valid jobs…",
     });
     expect(convertValidJobs).toHaveAttribute("aria-disabled", "true");
 
@@ -2345,12 +2924,12 @@ describe("Print Plan workflow", () => {
     expect(currentApproval).toBeChecked();
     await waitFor(
       () => {
-        const button = screen.getByText("Convert Valid Jobs").closest("button");
-        expect(button).toHaveAttribute("aria-disabled", "false");
+        const button = screen.getByText("Review valid jobs…").closest("button");
+        expect(button).not.toHaveAttribute("aria-disabled");
       },
       { timeout: 2_000 },
     );
-    fireEvent.click(screen.getByText("Convert Valid Jobs").closest("button")!);
+    fireEvent.click(screen.getByText("Review valid jobs…").closest("button")!);
 
     const dialog = await screen.findByRole("dialog");
     expect(
@@ -2395,7 +2974,9 @@ describe("Print Plan workflow", () => {
         name: "Partial print run · 1 source unit excluded",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start print run" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Start print run" }),
+    ).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Print Plan" }));
     fireEvent.click(
@@ -2406,14 +2987,20 @@ describe("Print Plan workflow", () => {
         name: /I understand that these source units will be excluded/i,
       }),
     ).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Print Run" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Print Run" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("clears partial approval when an identical replan receives new backend evidence", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.planReady = false;
-    nativePlan.blockingErrors = ["One isolated source unit cannot be scheduled."];
+    nativePlan.blockingErrors = [
+      "One isolated source unit cannot be scheduled.",
+    ];
     nativePlan.omittedUnitCount = 1;
     nativePlan.partialConversion = {
       available: true,
@@ -2460,29 +3047,40 @@ describe("Print Plan workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     const approval = await screen.findByRole("checkbox", {
       name: /I understand that these source units will be excluded/i,
     });
     await waitFor(() =>
-      expect(nativeCommandCalls("inspect_conversion_capabilities")).toHaveLength(1),
+      expect(
+        nativeCommandCalls("inspect_conversion_capabilities"),
+      ).toHaveLength(1),
     );
     await waitFor(() =>
       expect(
         screen.getByRole("button", {
-          name: /Convert Valid Jobs.*Review and acknowledge every excluded source unit first/i,
+          name: "Review valid jobs…",
         }),
       ).toBeInTheDocument(),
     );
     fireEvent.click(approval);
     expect(approval).toBeChecked();
 
-    fireEvent.click(screen.getByRole("button", { name: "Validate Choices" }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    openProjectSetupEditor();
+    const currentT4 = getCurrentT4Select();
+    fireEvent.change(currentT4, { target: { value: "burnt-orange" } });
+    fireEvent.change(currentT4, { target: { value: "matte-grey" } });
+    applyProjectSetupChanges();
     await waitFor(() =>
-      expect(nativeCommandCalls("inspect_conversion_capabilities")).toHaveLength(2),
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(
+        nativeCommandCalls("inspect_conversion_capabilities"),
+      ).toHaveLength(2),
     );
     expect(capabilityRevision).toBe(2);
     expect(
@@ -2492,19 +3090,23 @@ describe("Print Plan workflow", () => {
     ).not.toBeChecked();
     expect(
       screen.getByRole("button", {
-        name: /Convert Valid Jobs.*Review and acknowledge every excluded source unit first/i,
+        name: "Review valid jobs…",
       }),
     ).toHaveAttribute("aria-disabled", "true");
   });
 
-  it("validates choices explicitly with the local browser demo", async () => {
+  it("recalculates choices explicitly with the local browser demo", async () => {
     await renderAnalyzedApp();
 
-    const validateButton = screen.getByRole("button", { name: "Validate Choices" });
-    expect(validateButton).toBeEnabled();
-    fireEvent.click(validateButton);
+    openProjectSetupEditor();
+    fireEvent.click(
+      screen.getByRole("radio", { name: /CMY\+X Full Spectrum only/i }),
+    );
+    applyProjectSetupChanges();
 
-    expect(screen.getByRole("button", { name: "Validating…" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Recalculating…" }),
+    ).toBeDisabled();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(
         "Choices validated locally using demo data. All Direct mappings are assigned.",
@@ -2513,21 +3115,19 @@ describe("Print Plan workflow", () => {
   });
 
   it("keeps browser demo A1 mini routing aligned with its fixed A1 queue", async () => {
+    savePrintingSetup(window.localStorage, twoPrinterSetup);
     await renderAnalyzedApp();
 
-    const a1MiniToggle = screen.getByRole("checkbox", {
-      name: "Use Bambu Lab A1 mini for eligible mono parts",
-    });
-    expect(a1MiniToggle).toBeChecked();
-    expect(a1MiniToggle).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Recalculate plan" })).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        /Browser demo routing is fixed to the included A1 mini preview/i,
-      ),
+      screen.getByText("A1 mini requested · 2 eligible plates"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("table", { name: /A1 mini Plates in planned print order/i }),
+      screen.queryByRole("button", { name: "Recalculate plan" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("table", {
+        name: /A1 mini Plates in planned print order/i,
+      }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
@@ -2537,45 +3137,72 @@ describe("Print Plan workflow", () => {
   it("keeps native A1 mini routing editable when the analyzed plan starts on U1", async () => {
     const nativePlan = createA1RoutingOffNativePlan();
     const replanned = createDemoPlan();
-    await renderAnalyzedNativeApp(nativePlan, [replanned]);
-
-    const a1MiniToggle = screen.getByRole("checkbox", {
-      name: "Use Bambu Lab A1 mini for eligible mono parts",
+    await renderAnalyzedNativeApp(nativePlan, [replanned], twoPrinterSetup, {
+      a1MiniEnabled: false,
     });
-    expect(a1MiniToggle).not.toBeChecked();
-    expect(a1MiniToggle).toBeEnabled();
-    fireEvent.click(a1MiniToggle);
-    expect(a1MiniToggle).toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+
+    chooseProjectPrinter(true);
+    applyProjectSetupChanges();
 
     await waitFor(() =>
       expect(nativeCommandCalls("replan_project")).toHaveLength(1),
     );
-    expect(screen.getByText("A1 mini routing is applied to this plan.")).toBeInTheDocument();
+    expect(
+      screen.getByText("A1 mini requested · 2 eligible plates"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a saved U1-only setup out of optional A1 routing", async () => {
+    await renderAnalyzedNativeApp(
+      createA1RoutingOffNativePlan(),
+      [],
+      u1OnlySetup,
+    );
+
+    openProjectSetupEditor();
+    expect(
+      screen.getByRole("radio", {
+        name: /Snapmaker U1 \+ Bambu Lab A1 mini/i,
+      }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/A1 mini is not listed in Available equipment/i),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a requested A1 mini visible when no eligible jobs are found", async () => {
+    const nativePlan = createA1RoutingOffNativePlan();
+    await renderAnalyzedNativeApp(nativePlan, [], twoPrinterSetup);
+
+    expect(
+      screen.getByText("A1 mini requested · 0 eligible plates"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/preference remains enabled/i)).toBeInTheDocument();
+    expect(nativeCommandCalls("replan_project")).toHaveLength(0);
   });
 
   it("persists a mono plate printer choice by stable source unit IDs", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     const replanned = structuredClone(nativePlan);
     vi.mocked(open).mockResolvedValue("/tmp/Withered_Foxy.3mf");
     mockNativeInvoke({ analyzePlan: nativePlan, replanPlans: [replanned] });
+    savePrintingSetup(window.localStorage, twoPrinterSetup);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(screen.getAllByText("Analysis complete")).not.toHaveLength(0),
     );
 
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Use Bambu Lab A1 mini for eligible mono parts",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: /Stand — Plate 07/i }));
     expect(
       screen.getByRole("group", { name: "Prepare this plate for" }),
@@ -2586,7 +3213,9 @@ describe("Print Plan workflow", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     expect(nativeCommandCalls("replan_project")[0]).toEqual([
       "replan_project",
       expect.objectContaining({
@@ -2604,7 +3233,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("forces an existing in-stock spool onto a source color before offering creation", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.colorResolutions = [structuredClone(colorResolutionFixtures[1])];
     nativePlan.blockingErrors = ["One source color requires a decision."];
@@ -2619,9 +3249,12 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan, replanPlans: [replanned] });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
@@ -2633,7 +3266,9 @@ describe("Print Plan workflow", () => {
     fireEvent.click(
       within(card!).getByRole("button", { name: "Choose / add spool" }),
     );
-    expect(within(card!).getByText("Choose an in-stock spool first")).toBeInTheDocument();
+    expect(
+      within(card!).getByText("Choose an in-stock spool first"),
+    ).toBeInTheDocument();
     fireEvent.click(
       within(card!).getByRole("radio", {
         name: /Black.*PolyLite PETG Black/i,
@@ -2646,8 +3281,10 @@ describe("Print Plan workflow", () => {
       "Black will replace #ADB1B2 using Direct Spools",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Recalculate Plan/i }));
-    await waitFor(() => expect(nativeCommandCalls("replan_project")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
     expect(nativeCommandCalls("replan_project")[0]).toEqual([
       "replan_project",
       expect.objectContaining({
@@ -2670,108 +3307,133 @@ describe("Print Plan workflow", () => {
     ]);
   });
 
-  it("clears A1 mini pending state when the draft returns to the applied off setting", async () => {
-    await renderAnalyzedNativeApp(createA1RoutingOffNativePlan());
-
-    const a1MiniToggle = screen.getByRole("checkbox", {
-      name: "Use Bambu Lab A1 mini for eligible mono parts",
-    });
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
-
-    fireEvent.click(a1MiniToggle);
-    expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Validate pending edits first/i,
-      }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "Recalculate plan" }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(a1MiniToggle);
-
-    expect(a1MiniToggle).not.toBeChecked();
-    expect(
-      screen.queryByRole("button", { name: "Recalculate plan" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
-    expect(screen.getByText("Eligible mono parts stay on the U1.")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "A1 mini routing restored to the applied setting. No recalculation is required.",
+  it("keeps the applied plan unchanged when A1 draft edits are cancelled", async () => {
+    await renderAnalyzedNativeApp(
+      createA1RoutingOffNativePlan(),
+      [],
+      twoPrinterSetup,
+      { a1MiniEnabled: false },
     );
+
+    expect(getExportPlanButton()).toBeEnabled();
+    chooseProjectPrinter(true);
+    expect(
+      screen.getByRole("radio", {
+        name: /Snapmaker U1 \+ Bambu Lab A1 mini/i,
+      }),
+    ).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Apply & recalculate" }),
+    ).not.toBeInTheDocument();
+    expect(nativeCommandCalls("replan_project")).toHaveLength(0);
+    expect(getExportPlanButton()).toBeEnabled();
+    expect(screen.getByText("A1 mini not requested")).toBeInTheDocument();
   });
 
-  it("compares A1 mini draft changes with the latest applied on setting", async () => {
-    await renderAnalyzedNativeApp(createA1RoutingOffNativePlan(), [createDemoPlan()]);
+  it("uses the latest applied A1 setting when setup is edited again", async () => {
+    await renderAnalyzedNativeApp(
+      createA1RoutingOffNativePlan(),
+      [createDemoPlan()],
+      twoPrinterSetup,
+      { a1MiniEnabled: false },
+    );
 
-    const a1MiniToggle = screen.getByRole("checkbox", {
-      name: "Use Bambu Lab A1 mini for eligible mono parts",
-    });
-    fireEvent.click(a1MiniToggle);
-    fireEvent.click(screen.getByRole("button", { name: "Recalculate plan" }));
+    chooseProjectPrinter(true);
+    applyProjectSetupChanges();
     await waitFor(() =>
-      expect(screen.getByText("A1 mini routing is applied to this plan.")).toBeInTheDocument(),
+      expect(
+        screen.getByText("A1 mini requested · 2 eligible plates"),
+      ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
+    expect(getExportPlanButton()).toBeEnabled();
 
-    fireEvent.click(a1MiniToggle);
-    expect(a1MiniToggle).not.toBeChecked();
-    expect(screen.getByText(/Pending recalculation/i)).toBeInTheDocument();
+    openProjectSetupEditor();
     expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Validate pending edits first/i,
+      screen.getByRole("radio", {
+        name: /Snapmaker U1 \+ Bambu Lab A1 mini/i,
       }),
-    ).toBeDisabled();
-
-    fireEvent.click(a1MiniToggle);
-
-    expect(a1MiniToggle).toBeChecked();
-    expect(
-      screen.queryByRole("button", { name: "Recalculate plan" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
-    expect(screen.getByText("A1 mini routing is applied to this plan.")).toBeInTheDocument();
+    ).toBeChecked();
   });
 
-  it("keeps fixed T1–T3 spools out of the current T4 choices", async () => {
+  it("submits the current A1 spool without restricting later A1 colors", async () => {
+    await renderAnalyzedNativeApp(
+      createA1RoutingOffNativePlan(),
+      [createDemoPlan()],
+      twoPrinterSetup,
+      { a1MiniEnabled: false },
+    );
+
+    chooseProjectPrinter(true);
+    const currentA1Spool = getCurrentA1SpoolSelect();
+    expect(
+      within(currentA1Spool).getByRole("option", {
+        name: "Burnt Orange · PLA · PolyTerra Burnt Orange",
+      }),
+    ).toHaveValue("burnt-orange");
+
+    fireEvent.change(currentA1Spool, { target: { value: "burnt-orange" } });
+    applyProjectSetupChanges();
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
+    expect(nativeCommandCalls("replan_project")[0]).toEqual([
+      "replan_project",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          a1MiniEnabled: true,
+          currentA1SpoolId: "burnt-orange",
+        }),
+      }),
+    ]);
+  });
+
+  it("shows current T4 choices in the visible Project setup", async () => {
     await renderAnalyzedApp();
 
-    const currentT4 = screen.getByLabelText("Currently loaded T4 spool");
+    openProjectSetupEditor();
+    const currentT4 = getCurrentT4Select();
     expect(
-      within(currentT4).queryByRole("option", { name: "Cyan · PLA" }),
-    ).not.toBeInTheDocument();
+      within(currentT4).getByRole("option", {
+        name: "Cyan · PLA · Panchroma Translucent Cyan",
+      }),
+    ).toBeInTheDocument();
     expect(
-      within(currentT4).queryByRole("option", { name: "Magenta · PLA" }),
-    ).not.toBeInTheDocument();
+      within(currentT4).getByRole("option", {
+        name: "Magenta · PLA · Panchroma Translucent Magenta",
+      }),
+    ).toBeInTheDocument();
     expect(
-      within(currentT4).queryByRole("option", { name: "Yellow · PLA" }),
-    ).not.toBeInTheDocument();
+      within(currentT4).getByRole("option", {
+        name: "Yellow · PLA · Panchroma Translucent Yellow",
+      }),
+    ).toBeInTheDocument();
     expect(
-      within(currentT4).getByRole("option", { name: "Grey · PLA" }),
+      within(currentT4).getByRole("option", {
+        name: "Grey · PLA · PolyLite Matte Grey",
+      }),
     ).toHaveValue("matte-grey");
   });
 
   it("disables export while edited choices are pending validation", async () => {
     await renderAnalyzedApp();
 
-    expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled();
+    expect(getExportPlanButton()).toBeEnabled();
     fireEvent.click(screen.getByRole("radio", { name: /Direct Spools/i }));
 
-    expect(
-      screen.getByRole("button", { name: /Export JSON Plan.*Validate pending edits first/i }),
-    ).toBeDisabled();
+    expect(getExportPlanButton()).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("status")).toHaveTextContent(
       "Changes are pending validation.",
     );
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply pending printer, spool, or plan changes/i,
+        name: "Recalculate plan",
       }),
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Export JSON Plan" })).toBeEnabled(),
-    );
+    await waitFor(() => expect(getExportPlanButton()).toBeEnabled());
   });
 
   it("exports the browser plan as JSON", async () => {
@@ -2793,8 +3455,12 @@ describe("Print Plan workflow", () => {
     });
 
     try {
+      savePrintingSetup(window.localStorage, twoPrinterSetup);
       await renderAnalyzedApp();
-      fireEvent.click(screen.getByRole("button", { name: "Export JSON Plan" }));
+      await waitFor(() =>
+        expect(getExportPlanButton()).not.toHaveAttribute("aria-disabled"),
+      );
+      fireEvent.click(getExportPlanButton());
 
       expect(createObjectUrl).toHaveBeenCalledOnce();
       const exportedBlob = createObjectUrl.mock.calls.at(0)?.at(0);
@@ -2824,10 +3490,15 @@ describe("Print Plan workflow", () => {
   });
 
   it("saves the native plan through the Tauri export command", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.batches = [
-      { ...nativePlan.batches[0], id: "native-authoritative", label: "Native batch" },
+      {
+        ...nativePlan.batches[0],
+        id: "native-authoritative",
+        label: "Native batch",
+      },
     ];
     nativePlan.t4SwapCount = 7;
     nativePlan.a1SpoolChangeCount = 4;
@@ -2836,21 +3507,26 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
     expect(screen.getByText("Native batch")).toBeInTheDocument();
     const summary = screen.getByRole("region", { name: "Print plan summary" });
     expect(within(summary).getByText("7")).toBeInTheDocument();
     expect(within(summary).getByText("4")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Export JSON Plan" }));
+    fireEvent.click(getExportPlanButton());
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("export_plan", {
@@ -2870,7 +3546,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("replans native projects with the selected alternative plate IDs", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     const replanned = createDemoPlan();
     replanned.alternativePlates = replanned.alternativePlates.map((plate) =>
@@ -2880,14 +3557,19 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan, replanPlans: [replanned] });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
 
@@ -2897,25 +3579,21 @@ describe("Print Plan workflow", () => {
     expect(alternative).not.toBeChecked();
     fireEvent.click(alternative);
     expect(alternative).toBeChecked();
-    expect(
-      screen.getByRole("button", {
-        name: /Export JSON Plan.*Validate pending edits first/i,
-      }),
-    ).toBeDisabled();
+    expect(getExportPlanButton()).toHaveAttribute("aria-disabled", "true");
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply pending printer, spool, or plan changes/i,
+        name: "Recalculate plan",
       }),
     );
     await waitFor(() =>
       expect(nativeCommandCalls("replan_project")).toContainEqual([
         "replan_project",
         {
-        sourcePath: "/tmp/Withered_Foxy.3mf",
-        request: expect.objectContaining({
-          includedAlternativePlateIds: [7],
-        }),
+          sourcePath: "/tmp/Withered_Foxy.3mf",
+          request: expect.objectContaining({
+            includedAlternativePlateIds: [7],
+          }),
         },
       ]),
     );
@@ -2927,7 +3605,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("shows safe color fallbacks and submits exact approvals on recalculation", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.colorResolutions = structuredClone(colorResolutionFixtures);
     nativePlan.blockingErrors = [
@@ -2939,11 +3618,13 @@ describe("Print Plan workflow", () => {
       plate.scopeId === "plate-6" ? { ...plate, strategy: "direct" } : plate,
     );
     const replanned = structuredClone(nativePlan);
-    replanned.colorResolutions = replanned.colorResolutions.map((resolution) => ({
-      ...resolution,
-      colorApproved: true,
-      materialApproved: resolution.requiresMaterialSubstitution,
-    }));
+    replanned.colorResolutions = replanned.colorResolutions.map(
+      (resolution) => ({
+        ...resolution,
+        colorApproved: true,
+        materialApproved: resolution.requiresMaterialSubstitution,
+      }),
+    );
     replanned.blockingErrors = [];
     replanned.omittedUnitCount = 0;
     replanned.planReady = true;
@@ -2952,9 +3633,12 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan, replanPlans: [replanned] });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
@@ -2963,8 +3647,12 @@ describe("Print Plan workflow", () => {
       ).toBeInTheDocument(),
     );
 
-    const headCard = screen.getByText("Source color #8E9089").closest("article");
-    const frameCard = screen.getByText("Source color #ADB1B2").closest("article");
+    const headCard = screen
+      .getByText("Source color #8E9089")
+      .closest("article");
+    const frameCard = screen
+      .getByText("Source color #ADB1B2")
+      .closest("article");
     expect(headCard).not.toBeNull();
     expect(frameCard).not.toBeNull();
     expect(within(headCard!).getByLabelText("Source color")).toHaveTextContent(
@@ -2974,13 +3662,17 @@ describe("Print Plan workflow", () => {
       within(headCard!).getByLabelText("Nearest CMY+X alternative"),
     ).toHaveTextContent("#9199A4PLA");
     expect(headCard).toHaveTextContent("ΔE00 10.1");
-    expect(headCard).toHaveTextContent("Required T4 Panchroma Translucent Grey");
+    expect(headCard).toHaveTextContent(
+      "Required T4 Panchroma Translucent Grey",
+    );
 
     fireEvent.click(
       within(headCard!).getByRole("button", { name: "Choose / add spool" }),
     );
     fireEvent.click(within(headCard!).getByText("Add new spool to library"));
-    expect(within(headCard!).getByLabelText(/HEX color/i)).toHaveValue("#8E9089");
+    expect(within(headCard!).getByLabelText(/HEX color/i)).toHaveValue(
+      "#8E9089",
+    );
     expect(within(headCard!).getByRole("radio", { name: "PLA" })).toBeChecked();
 
     fireEvent.click(
@@ -3005,7 +3697,7 @@ describe("Print Plan workflow", () => {
     fireEvent.click(materialButton);
 
     const recalculate = screen.getByRole("button", {
-      name: /Recalculate Plan.*Apply approved color decisions/i,
+      name: "Recalculate plan",
     });
     fireEvent.click(recalculate);
     await waitFor(() =>
@@ -3053,7 +3745,8 @@ describe("Print Plan workflow", () => {
   });
 
   it("clears accepted fallback candidates when a spool changes inventory", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.colorResolutions = structuredClone(colorResolutionFixtures);
     const replanned = structuredClone(nativePlan);
@@ -3061,9 +3754,12 @@ describe("Print Plan workflow", () => {
     mockNativeInvoke({ analyzePlan: nativePlan, replanPlans: [replanned] });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
@@ -3072,7 +3768,9 @@ describe("Print Plan workflow", () => {
       ).toBeInTheDocument(),
     );
 
-    const headCard = screen.getByText("Source color #8E9089").closest("article");
+    const headCard = screen
+      .getByText("Source color #8E9089")
+      .closest("article");
     expect(headCard).not.toBeNull();
     fireEvent.click(
       within(headCard!).getByRole("button", { name: "Accept approximation" }),
@@ -3085,7 +3783,9 @@ describe("Print Plan workflow", () => {
     fireEvent.change(within(headCard!).getByLabelText(/Spool name/i), {
       target: { value: "Dedicated Head Grey" },
     });
-    fireEvent.click(within(headCard!).getByRole("button", { name: "Add spool" }));
+    fireEvent.click(
+      within(headCard!).getByRole("button", { name: "Add spool" }),
+    );
 
     expect(within(headCard!).getByText("Needs approval")).toBeInTheDocument();
     await waitFor(() =>
@@ -3096,7 +3796,7 @@ describe("Print Plan workflow", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply approved color decisions/i,
+        name: "Recalculate plan",
       }),
     );
     await waitFor(() =>
@@ -3126,8 +3826,9 @@ describe("Print Plan workflow", () => {
     ]);
   });
 
-  it("keeps a Direct scope selection through repeated native A1 mini replans", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("submits repeated native project setup changes deterministically", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
     const nativePlan = createDemoPlan();
     nativePlan.scopeSelections = nativePlan.scopeSelections.map((selection) =>
       selection.scopeId === "plate-8"
@@ -3152,61 +3853,60 @@ describe("Print Plan workflow", () => {
       analyzePlan: nativePlan,
       replanPlans: [replanned, replanned],
     });
+    savePrintingSetup(window.localStorage, twoPrinterSetup);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose 3MF" }));
+    await confirmProjectSetup();
+    fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Withered_Foxy.3mf" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("heading", { name: "Withered_Foxy.3mf" }),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("table", { name: /U1 Plates in planned print order/i }),
+        screen.getByRole("table", {
+          name: /U1 Plates in planned print order/i,
+        }),
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Use Bambu Lab A1 mini for eligible mono parts",
-      }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /Recalculate Plan.*Apply pending printer, spool, or plan changes/i,
-      }),
-    );
+    openProjectSetupEditor();
+    fireEvent.change(getCurrentT4Select(), {
+      target: { value: "burnt-orange" },
+    });
+    applyProjectSetupChanges();
     await waitFor(() =>
       expect(nativeCommandCalls("replan_project")).toHaveLength(1),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Validate Choices" }));
+    chooseProjectPrinter(false);
+    applyProjectSetupChanges();
     await waitFor(() =>
       expect(nativeCommandCalls("replan_project")).toHaveLength(2),
     );
 
-    const expectedSelection = {
-      scopeId: "plate-8",
-      strategy: "direct",
-      assignments: [
-        {
-          requirementId: "nameplate-black",
-          spoolId: "black-petg",
-          toolhead: "T4",
-        },
-      ],
-      approvedColorFallbacks: [],
-      materialSubstitutions: [],
-    };
-    for (const call of nativeCommandCalls("replan_project")) {
-      expect(call).toEqual([
+    expect(nativeCommandCalls("replan_project")).toEqual([
+      [
         "replan_project",
-        {
+        expect.objectContaining({
           sourcePath: "/tmp/Withered_Foxy.3mf",
           request: expect.objectContaining({
             a1MiniEnabled: true,
-            scopeOverrides: expect.arrayContaining([expectedSelection]),
+            scopeOverrides: [],
           }),
-        },
-      ]);
-    }
+        }),
+      ],
+      [
+        "replan_project",
+        expect.objectContaining({
+          sourcePath: "/tmp/Withered_Foxy.3mf",
+          request: expect.objectContaining({
+            a1MiniEnabled: false,
+            scopeOverrides: [],
+          }),
+        }),
+      ],
+    ]);
   });
 });

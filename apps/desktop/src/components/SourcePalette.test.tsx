@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createDemoPlan } from "../data/mock-plan";
@@ -68,11 +68,14 @@ describe("source palette presentation", () => {
     expect(screen.getByText("F6")).toBeInTheDocument();
     expect(screen.getByText("#ADB1B2")).toBeInTheDocument();
     expect(
-      screen.getByText(/assign the same compatible spool to every source mapping/i),
+      screen.getByText(
+        /assign the same compatible spool to every source mapping/i,
+      ),
     ).toBeInTheDocument();
   });
 
   it("distinguishes the Direct one-to-one limit from CMY+X physical spools", () => {
+    const onPrepareCustomPalette = vi.fn();
     const plate = demoPlate({
       sourceColors: headColors,
       logicalColorCount: 7,
@@ -88,13 +91,47 @@ describe("source palette presentation", () => {
         plate={plate}
         spools={createDemoPlan().spools}
         onChange={vi.fn()}
+        onPrepareCustomPalette={onPrepareCustomPalette}
       />,
     );
 
-    expect(
-      screen.getByText(/CMY\+X can still reproduce the 7 semantic source pairs/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/lossy palette remap/i)).toBeInTheDocument();
+    expect(screen.getByText(/Prefer not to merge colors/i)).toHaveTextContent(
+      /CMY\+X can reproduce the 7 semantic source pairs/i,
+    );
+    const createPalette = screen.getByRole("button", {
+      name: "Create 4-spool palette",
+    });
+    expect(createPalette).toHaveAccessibleDescription(
+      /every source identity and the source 3MF stay unchanged/i,
+    );
+    fireEvent.click(createPalette);
+    expect(onPrepareCustomPalette).toHaveBeenCalledOnce();
+  });
+
+  it("keeps palette creation single-action while a replan is running", () => {
+    const plate = demoPlate({
+      logicalColorCount: 7,
+      effectivePairCount: 7,
+      directPairCount: 7,
+      directEligible: false,
+      mappings: undefined,
+    });
+
+    render(
+      <StrategyComparison
+        plate={plate}
+        spools={createDemoPlan().spools}
+        onChange={vi.fn()}
+        isPreparingCustomPalette
+        onPrepareCustomPalette={vi.fn()}
+      />,
+    );
+
+    const createPalette = screen.getByRole("button", {
+      name: "Creating palette…",
+    });
+    expect(createPalette).toBeDisabled();
+    expect(createPalette).toHaveAttribute("aria-busy", "true");
   });
 
   it("reports the actual pair count when Direct is available", () => {
@@ -139,7 +176,9 @@ describe("source palette presentation", () => {
       screen.getByText("4 colors · 5 semantic pairs · 4 Direct identities"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Role-separated source pairs .* share one physical spool/i),
+      screen.getByText(
+        /Role-separated source pairs .* share one physical spool/i,
+      ),
     ).toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
-import { LockKeyhole, Printer } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { LockKeyhole, Printer, X } from "lucide-react";
 
 import type {
   NewPhysicalSpoolInput,
@@ -16,15 +17,27 @@ import { StrategyComparison } from "./StrategyComparison";
 interface PlateInspectorProps {
   plan: ProjectPlan;
   plate: PlatePlan;
+  isOpen: boolean;
+  onClose: () => void;
   restoreCmy: boolean;
-  onStrategyChange: (strategy: Extract<PrintStrategy, "cmyx" | "direct">) => void;
+  onStrategyChange: (
+    strategy: Extract<PrintStrategy, "cmyx" | "direct">,
+  ) => void;
   onRestoreChange: (restore: boolean) => void;
   onToolheadChange: (mappingId: string, toolhead: ToolheadId) => void;
   onSpoolChange: (mappingId: string, spoolId: string) => void;
-  onMaterialSubstitutionChange: (mappingId: string, acknowledged: boolean) => void;
+  onMaterialSubstitutionChange: (
+    mappingId: string,
+    acknowledged: boolean,
+  ) => void;
   a1MiniEnabled: boolean;
   onPrinterPreferenceChange: (preference: PrinterPreference) => void;
   onAddSpool: (spool: NewPhysicalSpoolInput) => void;
+  customDirectPalettesEnabled: boolean;
+  isPreparingCustomPalette: boolean;
+  customPaletteError?: string;
+  onPrepareCustomPalette?: () => void;
+  onOpenFilamentLibrary: () => void;
 }
 
 function PrinterChoice({
@@ -46,9 +59,14 @@ function PrinterChoice({
   const a1ProvisionallyAvailable = plate.isFastMono;
 
   return (
-    <section className="printer-choice" aria-labelledby={`printer-choice-${plate.id}`}>
+    <section
+      className="printer-choice"
+      aria-labelledby={`printer-choice-${plate.id}`}
+    >
       <fieldset>
-        <legend id={`printer-choice-${plate.id}`}>Prepare this plate for</legend>
+        <legend id={`printer-choice-${plate.id}`}>
+          Prepare this plate for
+        </legend>
         <p>
           The choice applies to all {plate.sourceUnitIds.length} source{" "}
           {plate.sourceUnitIds.length === 1 ? "unit" : "units"} in this row.
@@ -61,9 +79,21 @@ function PrinterChoice({
         <div className="printer-choice__options">
           {(
             [
-              ["auto", "Auto", "Use A1 mini when validation allows it; otherwise keep U1."],
-              ["u1", "Snapmaker U1", "Always keep these source units in the U1 queue."],
-              ["a1-mini", "Bambu Lab A1 mini", "Require an A1 mini single-spool output."],
+              [
+                "auto",
+                "Auto",
+                "Use A1 mini when validation allows it; otherwise keep U1.",
+              ],
+              [
+                "u1",
+                "Snapmaker U1",
+                "Always keep these source units in the U1 queue.",
+              ],
+              [
+                "a1-mini",
+                "Bambu Lab A1 mini",
+                "Require an A1 mini single-spool output.",
+              ],
             ] as const
           ).map(([value, label, description]) => {
             const optionId = `${plate.id}-printer-${value}`;
@@ -94,13 +124,13 @@ function PrinterChoice({
         {!a1ProvisionallyAvailable ? (
           <p className="printer-choice__notice">
             A1 mini is unavailable because this result does not use exactly one
-            physical spool. Select Direct Spools, assign the same compatible spool
-            to every source mapping you want to merge, then recalculate.
+            physical spool. Select Direct Spools, assign the same compatible
+            spool to every source mapping you want to merge, then recalculate.
           </p>
         ) : (
           <p className="printer-choice__notice">
-            A1 mini routing is provisional until 180 × 180 mm packing and its own
-            0.4 mm printer profile are validated.
+            A1 mini routing is provisional until 180 × 180 mm packing and its
+            own 0.4 mm printer profile are validated.
           </p>
         )}
       </fieldset>
@@ -123,8 +153,8 @@ function A1MonoInspector({ plate }: { plate: PlatePlan }) {
         <LockKeyhole aria-label="Locked strategy" />
       </div>
       <p>
-        A1 mini jobs are single-spool output. Full Spectrum recipes and U1 toolhead
-        mappings never apply to this plate.
+        A1 mini jobs are single-spool output. Full Spectrum recipes and U1
+        toolhead mappings never apply to this plate.
       </p>
     </section>
   );
@@ -133,6 +163,8 @@ function A1MonoInspector({ plate }: { plate: PlatePlan }) {
 export function PlateInspector({
   plan,
   plate,
+  isOpen,
+  onClose,
   restoreCmy,
   onStrategyChange,
   onRestoreChange,
@@ -142,15 +174,39 @@ export function PlateInspector({
   a1MiniEnabled,
   onPrinterPreferenceChange,
   onAddSpool,
+  customDirectPalettesEnabled,
+  isPreparingCustomPalette,
+  customPaletteError,
+  onPrepareCustomPalette,
+  onOpenFilamentLibrary,
 }: PlateInspectorProps) {
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+
+  useEffect(() => {
+    if (isOpen) headingRef.current?.focus();
+  }, [isOpen, plate.id]);
+
   return (
-    <aside className="plate-inspector" aria-labelledby="selected-plate-heading">
+    <aside
+      className={`plate-inspector ${isOpen ? "is-open" : ""}`}
+      aria-labelledby="selected-plate-heading"
+    >
       <header className="inspector-header">
         <p>Selected Plate</p>
-        <h2 id="selected-plate-heading">{plate.title}</h2>
+        <h2 ref={headingRef} id="selected-plate-heading" tabIndex={-1}>
+          {plate.title}
+        </h2>
         <span>
           Order {plate.order} of {plan.plates.length} · {plate.printer}
         </span>
+        <button
+          className="icon-button inspector-close"
+          type="button"
+          aria-label="Close plate details"
+          onClick={onClose}
+        >
+          <X aria-hidden="true" />
+        </button>
       </header>
 
       <SourcePaletteDetails plate={plate} />
@@ -167,7 +223,16 @@ export function PlateInspector({
         <A1MonoInspector plate={plate} />
       ) : (
         <>
-          <StrategyComparison plate={plate} spools={plan.spools} onChange={onStrategyChange} />
+          <StrategyComparison
+            plate={plate}
+            spools={plan.spools}
+            onChange={onStrategyChange}
+            customDirectPalettesEnabled={customDirectPalettesEnabled}
+            isPreparingCustomPalette={isPreparingCustomPalette}
+            customPaletteError={customPaletteError}
+            onPrepareCustomPalette={onPrepareCustomPalette}
+            onOpenFilamentLibrary={onOpenFilamentLibrary}
+          />
           {isDirectStrategyAvailable(plate) && plate.mappings ? (
             <DirectSpoolEditor
               plateId={plate.id}

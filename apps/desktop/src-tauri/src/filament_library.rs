@@ -197,10 +197,17 @@ fn legacy_library_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 fn load_from_path(path: &Path) -> Result<FilamentLibraryView, String> {
     if !path.exists() {
-        return normalize_library(FilamentLibraryView {
+        let mut library = normalize_library(FilamentLibraryView {
             schema_version: FILAMENT_LIBRARY_SCHEMA_VERSION,
             spools: Vec::new(),
-        });
+        })?;
+        // The built-in catalogue describes supported products, not the
+        // operator's physical shelf. A fresh installation must not claim that
+        // any of those spools are available until the operator confirms them.
+        for spool in &mut library.spools {
+            spool.available = false;
+        }
+        return Ok(library);
     }
     let metadata = fs::metadata(path)
         .map_err(|error| format!("Failed to inspect the filament library: {error}"))?;
@@ -599,6 +606,7 @@ mod tests {
                 .iter()
                 .all(|spool| spool.source == "built-in")
         );
+        assert!(library.spools.iter().all(|spool| !spool.available));
         assert!(
             library
                 .spools

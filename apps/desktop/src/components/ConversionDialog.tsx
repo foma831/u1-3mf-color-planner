@@ -4,7 +4,9 @@ import {
   ExternalLink,
   FolderOpen,
   FolderOutput,
+  Info,
   LoaderCircle,
+  PlayCircle,
   RefreshCw,
   TriangleAlert,
   X,
@@ -34,6 +36,7 @@ interface ConversionDialogProps {
   onOpenOutput: (artifact: PublishedConversionArtifact) => void;
   onShowOutputInFinder: (artifact: PublishedConversionArtifact) => void;
   onRetryPreflight: () => void;
+  onOpenPrintRun: () => void;
   onClose: () => void;
 }
 
@@ -157,12 +160,14 @@ export function ConversionDialog({
   onOpenOutput,
   onShowOutputInFinder,
   onRetryPreflight,
+  onOpenPrintRun,
   onClose,
 }: ConversionDialogProps) {
   const instanceId = useId().replace(/:/g, "");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const warningAcknowledgementRef = useRef<HTMLInputElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const fallbackDialogRef = useRef(false);
   const previousResultRef = useRef<ConversionResult | null>(null);
@@ -236,6 +241,7 @@ export function ConversionDialog({
   const preparationExclusionsHeadingId = `${instanceId}-conversion-preparation-exclusions-heading`;
   const resultExclusionsHeadingId = `${instanceId}-conversion-result-exclusions-heading`;
   const warningAcknowledgementId = `${instanceId}-conversion-warning-acknowledgement`;
+  const warningAcknowledgementLabelId = `${instanceId}-conversion-warning-acknowledgement-label`;
   const warningsRequireAcknowledgement =
     preparation !== undefined && preparation.warnings.length > 0;
 
@@ -414,6 +420,7 @@ export function ConversionDialog({
                 </ul>
                 <label className="conversion-warning-acknowledgement">
                   <input
+                    ref={warningAcknowledgementRef}
                     id={warningAcknowledgementId}
                     type="checkbox"
                     checked={warningsAcknowledged}
@@ -422,7 +429,7 @@ export function ConversionDialog({
                       setWarningsAcknowledged(event.target.checked)
                     }
                   />
-                  <span>
+                  <span id={warningAcknowledgementLabelId}>
                     I have reviewed these warnings and want to continue with
                     this conversion.
                   </span>
@@ -438,6 +445,17 @@ export function ConversionDialog({
             <p className="conversion-result-path">
               Human-readable report: <code>{result.reportPath}</code>
             </p>
+            <div className="conversion-notice">
+              <Info aria-hidden="true" />
+              <div>
+                <strong>Printer filament has not changed</strong>
+                <p>
+                  Conversion creates project files only. Complete the guided
+                  Print Run before saving its final printer loadout for the next
+                  project.
+                </p>
+              </div>
+            </div>
             <ExcludedUnitsBlock
               exclusions={result.excludedSourceUnits}
               headingId={resultExclusionsHeadingId}
@@ -638,11 +656,24 @@ export function ConversionDialog({
           <button
             className="button button--primary"
             type="button"
-            disabled={
-              isConverting ||
-              (warningsRequireAcknowledgement && !warningsAcknowledged)
+            aria-disabled={
+              (warningsRequireAcknowledgement && !warningsAcknowledged) ||
+              undefined
             }
-            onClick={() => onConvert(warningsAcknowledged)}
+            aria-describedby={
+              warningsRequireAcknowledgement && !warningsAcknowledged
+                ? warningAcknowledgementLabelId
+                : undefined
+            }
+            disabled={isConverting}
+            onClick={(event) => {
+              if (warningsRequireAcknowledgement && !warningsAcknowledged) {
+                event.preventDefault();
+                warningAcknowledgementRef.current?.focus();
+                return;
+              }
+              onConvert(warningsAcknowledged);
+            }}
           >
             {isConverting ? (
               <LoaderCircle className="spin" aria-hidden="true" />
@@ -664,6 +695,16 @@ export function ConversionDialog({
           >
             <RefreshCw aria-hidden="true" />
             Run preflight again
+          </button>
+        ) : null}
+        {result ? (
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={onOpenPrintRun}
+          >
+            <PlayCircle aria-hidden="true" />
+            Open Print Run
           </button>
         ) : null}
       </div>

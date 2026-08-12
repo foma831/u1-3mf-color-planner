@@ -32,18 +32,28 @@ export function inStockSpools(spools: PhysicalSpool[]) {
 }
 
 export function isDirectStrategyAvailable(plate: PlatePlan) {
-  const directPairCount =
-    plate.directPairCount ??
-    // Conservative compatibility fallback for legacy browser/mock envelopes
-    // that predate the authoritative physical Direct count.
-    plate.mappings?.length ??
-    0;
+  const mappings = plate.mappings ?? [];
+  const hasAuthoritativePairCount =
+    typeof plate.directPairCount === "number" && plate.directPairCount > 0;
+  const selectedSpoolIds = new Set(
+    mappings
+      .map((mapping) => mapping.selectedSpoolId)
+      .filter((spoolId) => spoolId.length > 0),
+  );
   return (
     plate.directEligible &&
-    plate.mappings !== undefined &&
-    directPairCount > 0 &&
-    directPairCount <= 4
+    (hasAuthoritativePairCount || mappings.length <= 4) &&
+    mappings.length > 0 &&
+    selectedSpoolIds.size <= 4
   );
+}
+
+export function directPhysicalSpoolCount(plate: PlatePlan) {
+  return new Set(
+    (plate.mappings ?? [])
+      .map((mapping) => mapping.selectedSpoolId)
+      .filter((spoolId) => spoolId.length > 0),
+  ).size;
 }
 
 export function createUniqueSpoolId(
@@ -70,6 +80,8 @@ export function buildReplanRequest(
   plan: ProjectPlan,
   restoreCmyAfterDirect: boolean,
   a1MiniEnabled = false,
+  allowDirectPaletteReduction = false,
+  defaultStrategy: "auto" | "cmyx" | "direct" = "auto",
 ): ReplanRequest {
   const availableSpoolIds = new Set(
     inStockSpools(plan.spools).map((spool) => spool.id),
@@ -148,8 +160,10 @@ export function buildReplanRequest(
     ) {
       continue;
     }
+    const retainDirectAssignments =
+      plate.strategy === "direct" || allowDirectPaletteReduction;
     const assignments =
-      plate.strategy === "direct"
+      retainDirectAssignments
         ? (plate.mappings ?? []).flatMap((mapping) =>
             mapping.selectedSpoolId &&
             availableSpoolIds.has(mapping.selectedSpoolId)
@@ -166,7 +180,7 @@ export function buildReplanRequest(
           )
         : [];
     const visibleRequirementIds = new Set(
-      plate.strategy === "direct"
+      retainDirectAssignments
         ? (plate.mappings ?? []).map((mapping) => mapping.id)
         : [],
     );
@@ -257,6 +271,7 @@ export function buildReplanRequest(
   const scopeOverrides = [...overridesByScope.values()];
 
   return {
+    defaultStrategy,
     confirmedSpools: plan.spools
       .filter((spool) => spool.source === "user" && spool.available)
       .map(({ id, name, colorName, hex, material, sku, profile, colorBasis, available }) => ({
@@ -281,8 +296,13 @@ export function buildReplanRequest(
     currentLoadout: plan.currentLoadout
       .filter((loadout) => availableSpoolIds.has(loadout.spoolId))
       .map((loadout) => ({ ...loadout })),
+    currentA1SpoolId:
+      plan.currentA1SpoolId && availableSpoolIds.has(plan.currentA1SpoolId)
+        ? plan.currentA1SpoolId
+        : null,
     restoreCmyAfterDirect,
     a1MiniEnabled,
+    allowDirectPaletteReduction,
     includedAlternativePlateIds: plan.alternativePlates
       .filter((plate) => plate.included)
       .map((plate) => plate.id),

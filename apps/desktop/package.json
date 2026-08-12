@@ -8,8 +8,8 @@
     "build:web": "tsc -b && vite build",
     "check": "tsc -b --pretty false",
     "test": "vitest run",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "node ../../scripts/run-with-rust.mjs tauri dev",
+    "tauri:build": "node ../../scripts/run-with-rust.mjs tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -31,4 +31,3 @@
     "vitest": "^3.0.0"
   }
 }
-

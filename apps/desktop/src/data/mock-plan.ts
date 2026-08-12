@@ -132,6 +132,7 @@ export const demoSpools: PhysicalSpool[] = [
 const headMappings: DirectColorMapping[] = [
   {
     id: "head-cyan",
+    inheritanceKey: "PLA|#08ABFB|declared:demo-head-cyan",
     physicalIdentityId: "head-physical-01",
     sourceSlot: "F2",
     sourceName: "Clear Cyan",
@@ -147,6 +148,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-purple",
+    inheritanceKey: "PLA|#8951B8|declared:demo-head-purple",
     physicalIdentityId: "head-physical-02",
     sourceSlot: "F5",
     sourceName: "Muted Violet",
@@ -162,6 +164,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-sand",
+    inheritanceKey: "PLA|#D6BA87|declared:demo-head-sand",
     physicalIdentityId: "head-physical-03",
     sourceSlot: "F7",
     sourceName: "Warm Sand",
@@ -177,6 +180,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-grey",
+    inheritanceKey: "PLA|#595E63|declared:demo-head-grey",
     physicalIdentityId: "head-physical-04",
     sourceSlot: "F9",
     sourceName: "Graphite Grey",
@@ -192,8 +196,11 @@ const headMappings: DirectColorMapping[] = [
   },
 ];
 
-function plate(overrides: Partial<PlatePlan> & Pick<PlatePlan, "id" | "order" | "title">): PlatePlan {
+function plate(
+  overrides: Partial<PlatePlan> & Pick<PlatePlan, "id" | "order" | "title">,
+): PlatePlan {
   return {
+    planningStatus: "printable",
     scopeId: `plate-${overrides.order}`,
     sourceUnitIds: [`source-unit-${overrides.order}`],
     printer: "U1",
@@ -338,7 +345,15 @@ export function createDemoPlan(fileName = "Withered_Foxy.3mf"): ProjectPlan {
       { toolhead: "T3", spoolId: "panchroma-yellow" },
       { toolhead: "T4", spoolId: "matte-grey" },
     ],
+    currentA1SpoolId: null,
+    plannedFinalLoadout: [
+      { toolhead: "T1", spoolId: "panchroma-cyan" },
+      { toolhead: "T2", spoolId: "panchroma-magenta" },
+      { toolhead: "T3", spoolId: "panchroma-yellow" },
+    ],
+    plannedFinalA1SpoolId: "black-petg",
     restoreCmyByDefault: true,
+    customDirectPalettesEnabled: false,
     partialConversion: {
       available: false,
       exclusions: [],

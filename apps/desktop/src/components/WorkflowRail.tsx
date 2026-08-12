@@ -1,9 +1,10 @@
 import {
-  CalendarDays,
   Disc3,
-  FileBox,
-  Palette,
-  ShieldCheck,
+  FileSearch,
+  FolderOutput,
+  ListChecks,
+  PlayCircle,
+  Settings2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -14,57 +15,58 @@ interface WorkflowStep {
 }
 
 interface WorkflowRailProps {
+  inventoryReady: boolean;
+  projectSetupReady: boolean;
   hasAnalysis: boolean;
-  hasPendingPlanChanges: boolean;
-  planReady: boolean;
+  needsAttention: boolean;
+  validatedPlanAvailable: boolean;
+  printRunAvailable: boolean;
 }
 
+const stepDefinitions = [
+  { label: "Inventory", icon: Disc3 },
+  { label: "Setup", icon: Settings2 },
+  { label: "Analyze", icon: FileSearch },
+  { label: "Resolve", icon: ListChecks },
+  { label: "Convert", icon: FolderOutput },
+  { label: "Print", icon: PlayCircle },
+] as const;
+
 function workflowSteps({
+  inventoryReady,
+  projectSetupReady,
   hasAnalysis,
-  hasPendingPlanChanges,
-  planReady,
+  needsAttention,
+  validatedPlanAvailable,
+  printRunAvailable,
 }: WorkflowRailProps): WorkflowStep[] {
-  if (!hasAnalysis) {
-    return [
-      { label: "Project", icon: FileBox, state: "current" },
-      { label: "Materials", icon: Disc3, state: "upcoming" },
-      { label: "Color Strategy", icon: Palette, state: "upcoming" },
-      { label: "Print Plan", icon: CalendarDays, state: "upcoming" },
-      { label: "Validate", icon: ShieldCheck, state: "upcoming" },
-    ];
-  }
+  const currentIndex = !inventoryReady
+    ? 0
+    : !projectSetupReady
+      ? 1
+      : !hasAnalysis
+        ? 2
+        : needsAttention || !validatedPlanAvailable
+          ? 3
+          : !printRunAvailable
+            ? 4
+            : 5;
 
-  if (hasPendingPlanChanges) {
-    return [
-      { label: "Project", icon: FileBox, state: "complete" },
-      { label: "Materials", icon: Disc3, state: "complete" },
-      { label: "Color Strategy", icon: Palette, state: "current" },
-      { label: "Print Plan", icon: CalendarDays, state: "upcoming" },
-      { label: "Validate", icon: ShieldCheck, state: "upcoming" },
-    ];
-  }
-
-  return [
-    { label: "Project", icon: FileBox, state: "complete" },
-    { label: "Materials", icon: Disc3, state: "complete" },
-    { label: "Color Strategy", icon: Palette, state: "complete" },
-    {
-      label: "Print Plan",
-      icon: CalendarDays,
-      state: planReady ? "complete" : "current",
-    },
-    {
-      label: "Validate",
-      icon: ShieldCheck,
-      state: planReady ? "current" : "upcoming",
-    },
-  ];
+  return stepDefinitions.map((step, index) => ({
+    ...step,
+    state:
+      index < currentIndex
+        ? "complete"
+        : index === currentIndex
+          ? "current"
+          : "upcoming",
+  }));
 }
 
 export function WorkflowRail(props: WorkflowRailProps) {
   const steps = workflowSteps(props);
   return (
-    <nav className="workflow-rail" aria-label="Project workflow">
+    <aside className="workflow-rail" aria-label="Project progress">
       <ol className="workflow-steps">
         {steps.map(({ label, icon: Icon, state }, index) => (
           <li
@@ -84,6 +86,6 @@ export function WorkflowRail(props: WorkflowRailProps) {
           </li>
         ))}
       </ol>
-    </nav>
+    </aside>
   );
 }

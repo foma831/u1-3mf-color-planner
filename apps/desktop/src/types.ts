@@ -10,7 +10,8 @@ export type ColorQuality = "Excellent" | "Very Good" | "Review";
 
 export type Confidence = "Measured" | "High" | "Nominal";
 
-export type MaterialStatus = "Exact" | "Close" | "Review" | "Poor" | "Material mismatch";
+export type MaterialStatus =
+  "Exact" | "Close" | "Review" | "Poor" | "Material mismatch";
 
 /** Materials that the desktop inventory can currently validate and schedule. */
 export type SpoolMaterial = "PLA" | "PETG";
@@ -91,8 +92,15 @@ export interface LoadedToolhead {
   spoolId: string;
 }
 
+export interface PrinterLoadoutSnapshot {
+  currentLoadout: LoadedToolhead[];
+  currentA1SpoolId: string | null;
+}
+
 export interface DirectColorMapping {
   id: string;
+  /** Stable cross-scope source identity used for non-destructive inheritance. */
+  inheritanceKey: string;
   /** Role-separated rows sharing this identity must use one spool/toolhead. */
   physicalIdentityId: string;
   sourceSlot: string;
@@ -118,6 +126,8 @@ export interface SourceColor {
 
 export interface PlatePlan {
   id: string;
+  /** Printable target rows are scheduled; blocked rows only expose omitted source units for resolution. */
+  planningStatus: "printable" | "blocked";
   scopeId: string;
   /** Stable source units represented by this provisional target plate. */
   sourceUnitIds: string[];
@@ -181,7 +191,15 @@ export interface ProjectPlan {
   partialConversion: PartialConversionAvailability;
   spools: PhysicalSpool[];
   currentLoadout: LoadedToolhead[];
+  /** Currently loaded external spool; null means the first A1 setup is unknown. */
+  currentA1SpoolId: string | null;
+  /** Expected U1 state after every planned batch and restore action is complete. */
+  plannedFinalLoadout: LoadedToolhead[];
+  /** Expected A1 external spool after every planned A1 batch is complete. */
+  plannedFinalA1SpoolId: string | null;
   restoreCmyByDefault: boolean;
+  /** Applied backend mode for lossy per-plate Direct palette reduction. */
+  customDirectPalettesEnabled: boolean;
 }
 
 export interface ProjectDirectPaletteReference {
@@ -272,7 +290,8 @@ export interface ConversionCapability {
   available: boolean;
   reason: string;
   planFingerprint: string | null;
-  sourceDialectSupport: "Supported" | "Experimental" | "Limited" | "Unsupported";
+  sourceDialectSupport:
+    "Supported" | "Experimental" | "Limited" | "Unsupported";
   experimentalDialectApprovalRequired: boolean;
   experimentalDialectFingerprint: string | null;
   adapters: ConversionAdapterCapability[];
@@ -370,10 +389,7 @@ export interface ConversionProgress {
 }
 
 export type ConversionState =
-  | "active"
-  | "cancelled"
-  | "publishing"
-  | "published";
+  "active" | "cancelled" | "publishing" | "published";
 
 export interface CancelConversionResult {
   conversionId: string;
@@ -408,11 +424,7 @@ export interface FilamentLibraryDocument {
  * but it can still display records created by future native clients.
  */
 export type CmyxSampleOrientation =
-  | "upright"
-  | "flat"
-  | "angled"
-  | "unknown"
-  | { custom: string };
+  "upright" | "flat" | "angled" | "unknown" | { custom: string };
 
 export type CmyxGeometryClass =
   | "calibration_swatch"
@@ -427,12 +439,7 @@ export interface CmyxGeometryContext {
   geometryClass: CmyxGeometryClass;
 }
 
-export type CmyxRecipeMode =
-  | "solid"
-  | "cycle"
-  | "ratio"
-  | "match"
-  | "gradient";
+export type CmyxRecipeMode = "solid" | "cycle" | "ratio" | "match" | "gradient";
 
 /** The guided measurement form intentionally omits one-component Solid. */
 export type CmyxMeasurementRecipeMode = Exclude<CmyxRecipeMode, "solid">;
@@ -629,11 +636,14 @@ export interface UnitPrinterSelection {
 }
 
 export interface ReplanRequest {
+  defaultStrategy: "auto" | "cmyx" | "direct";
   confirmedSpools: ConfirmedSpool[];
   scopeOverrides: ScopeOverride[];
   unitPrinterOverrides: UnitPrinterSelection[];
   currentLoadout: LoadedToolhead[];
+  currentA1SpoolId: string | null;
   restoreCmyAfterDirect: boolean;
+  allowDirectPaletteReduction: boolean;
   a1MiniEnabled: boolean;
   includedAlternativePlateIds: number[];
 }

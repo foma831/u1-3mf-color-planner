@@ -4,6 +4,7 @@ import {
   CircleHelp,
   LibraryBig,
   Pipette,
+  Printer,
   Settings,
   X,
 } from "lucide-react";
@@ -11,6 +12,7 @@ import {
 interface TitleBarProps {
   onOpenFilamentLibrary: () => void;
   onOpenColorCalibration: () => void;
+  onOpenPrintingSetup: () => void;
 }
 
 type UtilityDialog = "help" | "settings";
@@ -18,6 +20,7 @@ type UtilityDialog = "help" | "settings";
 export function TitleBar({
   onOpenFilamentLibrary,
   onOpenColorCalibration,
+  onOpenPrintingSetup,
 }: TitleBarProps) {
   const instanceId = useId().replace(/:/g, "");
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -92,7 +95,7 @@ export function TitleBar({
           <button
             className="icon-button"
             type="button"
-            aria-label="Open settings"
+            aria-label="Open application setup"
             onClick={(event) => openDialog("settings", event.currentTarget)}
           >
             <Settings aria-hidden="true" />
@@ -115,10 +118,10 @@ export function TitleBar({
               </span>
               <div>
                 <p className="eyebrow">
-                  {isHelp ? "Operator guide" : "Application setup"}
+                  {isHelp ? "Operator guide" : "Setup & readiness"}
                 </p>
                 <h2 id={titleId}>
-                  {isHelp ? "Plan, convert, and print" : "Settings"}
+                  {isHelp ? "Plan, convert, and print" : "Application setup"}
                 </h2>
               </div>
               <button
@@ -141,29 +144,36 @@ export function TitleBar({
                 </p>
                 <ol className="utility-dialog__steps">
                   <li>
+                    <strong>Confirm physical inputs.</strong> Mark only the
+                    spools that are available now and keep Available printers
+                    up to date.
+                  </li>
+                  <li>
+                    <strong>Choose Project setup.</strong> Select U1-only or U1
+                    with A1 mini, then choose Automatic, Direct Spools only, or
+                    CMY+X only before the first analysis.
+                  </li>
+                  <li>
                     <strong>Analyze the source.</strong> Review every target
-                    plate, source color, material, and omitted unit.
+                    plate, source color, material, and omitted unit. The first
+                    plan already uses the Project setup you confirmed.
                   </li>
                   <li>
-                    <strong>Resolve materials and colors.</strong> Add stocked
-                    spools, assign exact or intentional replacement colors, and
-                    approve any material change.
+                    <strong>Resolve and refine.</strong> Approve intentional
+                    color or material replacements, adjust eligible per-plate
+                    routing when needed, then recalculate the plan.
                   </li>
                   <li>
-                    <strong>Route and recalculate.</strong> Enable A1 mini when
-                    needed, choose Auto, U1, or A1 mini per eligible scope, then
-                    use Recalculate plan or Validate Choices.
+                    <strong>Review conversion output.</strong> Review conversion
+                    opens preflight so you can check every output and warning,
+                    choose a destination, then select Convert projects. Export
+                    JSON plan saves a report only; it does not create 3MF files.
                   </li>
                   <li>
-                    <strong>Convert native projects.</strong> Approve & Convert
-                    opens preflight. Review every output and warning, choose a
-                    destination, then select Convert projects. Export JSON Plan
-                    saves a report only; it does not create 3MF files.
-                  </li>
-                  <li>
-                    <strong>Follow Print Run.</strong> Open each unsliced project
-                    in its target slicer. Make every stated spool change after
-                    the previous job finishes and before starting the next one.
+                    <strong>Follow Print Run.</strong> Open each unsliced
+                    project in its target slicer. Make every stated spool change
+                    after the previous job finishes and before starting the next
+                    one.
                   </li>
                 </ol>
                 <section
@@ -184,8 +194,8 @@ export function TitleBar({
             ) : (
               <div className="utility-dialog__body">
                 <p id={descriptionId}>
-                  Printer targets and writer dialects are qualification-bound.
-                  Configure the variable physical inputs below.
+                  Confirm physical inputs and review the qualification-bound
+                  printer targets before conversion.
                 </p>
                 <dl className="utility-dialog__targets">
                   <div>
@@ -203,6 +213,14 @@ export function TitleBar({
                   </div>
                 </dl>
                 <div className="utility-dialog__settings-actions">
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => openDestination(onOpenPrintingSetup)}
+                  >
+                    <Printer aria-hidden="true" />
+                    Available printers
+                  </button>
                   <button
                     className="button"
                     type="button"

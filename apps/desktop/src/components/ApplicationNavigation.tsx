@@ -32,14 +32,22 @@ export function ApplicationNavigation({
             type="button"
             key={id}
             aria-current={activeView === id ? "page" : undefined}
-            aria-describedby={disabled ? "print-run-navigation-hint" : undefined}
+            aria-describedby={
+              disabled ? "print-run-navigation-hint" : undefined
+            }
+            aria-disabled={disabled || undefined}
             title={
               disabled
                 ? "Analyze, validate, and successfully convert a native print plan before starting."
                 : undefined
             }
-            disabled={disabled}
-            onClick={() => onChange(id)}
+            onClick={(event) => {
+              if (disabled) {
+                event.preventDefault();
+                return;
+              }
+              onChange(id);
+            }}
           >
             <Icon aria-hidden="true" />
             {label}

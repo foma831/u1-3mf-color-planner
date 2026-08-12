@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileSearch, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 
 import {
   ApplicationNavigation,
@@ -12,11 +12,14 @@ import { ColorResolutionPanel } from "./components/ColorResolutionPanel";
 import { ColorCalibration } from "./components/ColorCalibration";
 import { ConversionDialog } from "./components/ConversionDialog";
 import { FilamentLibrary } from "./components/FilamentLibrary";
+import { GettingStarted } from "./components/GettingStarted";
 import { PlateInspector } from "./components/PlateInspector";
 import { PlateTable } from "./components/PlateTable";
 import { PlanWarnings } from "./components/PlanWarnings";
 import { PartialConversionNotice } from "./components/PartialConversionNotice";
 import { PrintRun } from "./components/PrintRun";
+import { PrintingSetupControl } from "./components/PrintingSetupControl";
+import { ProjectSetupControl } from "./components/ProjectSetupControl";
 import { ProjectDirectPalette } from "./components/ProjectDirectPalette";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { StatusStrip } from "./components/StatusStrip";
@@ -46,6 +49,27 @@ import {
   saveFilamentLibrary,
 } from "./services/filament-library";
 import {
+  loadPrintingSetup,
+  savePrintingSetup,
+  type PrintingSetup,
+} from "./services/printing-setup";
+import {
+  constrainPlanningIntentToEquipment,
+  createDefaultPlanningIntent,
+  loadPlanningIntent,
+  planningIntentEquals,
+  savePlanningIntent,
+  type PlanningIntent,
+} from "./services/planning-intent";
+import {
+  constrainPrinterLoadoutToEquipment,
+  createEmptyPrinterLoadout,
+  loadPrinterLoadout,
+  printerLoadoutEquals,
+  savePrinterLoadout,
+  type PrinterLoadoutProfile,
+} from "./services/printer-loadout";
+import {
   createRecommendedCmyxCalibrationProject,
   deleteCmyxCalibrationRecord,
   loadCmyxCalibrationLibrary,
@@ -70,6 +94,7 @@ import type {
   PhysicalSpool,
   PreparedConversion,
   PrinterPreference,
+  PrinterLoadoutSnapshot,
   PrintStrategy,
   ProjectPlan,
   ProjectDirectPaletteChoice,
@@ -118,7 +143,7 @@ function applyBrowserInventoryGuard(
   };
 }
 
-function printRunLocalStorage() {
+function appLocalStorage() {
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage;
@@ -169,9 +194,103 @@ function sharedToolheadMappingIds(
   return physicalIds;
 }
 
+function directMappingOverrideKey(scopeId: string, inheritanceKey: string) {
+  return JSON.stringify([scopeId, inheritanceKey]);
+}
+
+function applySpoolChoiceToMappings(
+  mappings: DirectColorMapping[],
+  mappingId: string,
+  nextSpoolId: string,
+): { mappings: DirectColorMapping[]; changed: boolean; error?: string } {
+  const active = mappings.find((mapping) => mapping.id === mappingId);
+  if (!active) return { mappings, changed: false };
+
+  const activeIdentityIds = physicalIdentityMappingIds(mappings, active);
+  if (
+    mappings
+      .filter((mapping) => activeIdentityIds.has(mapping.id))
+      .every((mapping) => mapping.selectedSpoolId === nextSpoolId)
+  ) {
+    return { mappings, changed: false };
+  }
+
+  const assignedOutside = mappings.filter(
+    (mapping) =>
+      !activeIdentityIds.has(mapping.id) && Boolean(mapping.selectedSpoolId),
+  );
+  const sharedMapping = nextSpoolId
+    ? assignedOutside.find((mapping) => mapping.selectedSpoolId === nextSpoolId)
+    : undefined;
+  const occupiedToolheads = new Set(
+    assignedOutside.map((mapping) => mapping.directToolhead),
+  );
+  let nextToolhead = sharedMapping?.directToolhead ?? active.directToolhead;
+  if (
+    nextSpoolId &&
+    !sharedMapping &&
+    occupiedToolheads.has(active.directToolhead)
+  ) {
+    const freeToolhead = toolheads.find(
+      (toolhead) => !occupiedToolheads.has(toolhead),
+    );
+    if (!freeToolhead) {
+      return {
+        mappings,
+        changed: false,
+        error:
+          "No free T1–T4 toolhead is available for that physical spool. Resolve the existing toolhead assignments first.",
+      };
+    }
+    nextToolhead = freeToolhead;
+  }
+
+  return {
+    changed: true,
+    mappings: mappings.map((mapping) =>
+      activeIdentityIds.has(mapping.id)
+        ? {
+            ...mapping,
+            selectedSpoolId: nextSpoolId,
+            directToolhead: nextToolhead,
+            materialSubstitutionAcknowledged: false,
+          }
+        : mapping,
+    ),
+  };
+}
+
 export default function App() {
   const [plan, setPlan] = useState(initialPlan);
   const [activeView, setActiveView] = useState<ApplicationView>("plan");
+  const [printingSetup, setPrintingSetup] = useState<PrintingSetup | null>(() =>
+    loadPrintingSetup(appLocalStorage()),
+  );
+  const [printingSetupPersistence, setPrintingSetupPersistence] = useState<
+    "none" | "persisted" | "session"
+  >(printingSetup ? "persisted" : "none");
+  const [planningIntent, setPlanningIntent] = useState<PlanningIntent>(() =>
+    constrainPlanningIntentToEquipment(
+      loadPlanningIntent(appLocalStorage()) ??
+        createDefaultPlanningIntent(printingSetup),
+      printingSetup,
+    ),
+  );
+  const [printerLoadout, setPrinterLoadout] = useState<PrinterLoadoutProfile>(
+    () =>
+      constrainPrinterLoadoutToEquipment(
+        loadPrinterLoadout(appLocalStorage()) ?? createEmptyPrinterLoadout(),
+        printingSetup,
+      ),
+  );
+  const [appliedPlanningIntent, setAppliedPlanningIntent] =
+    useState<PlanningIntent | null>(null);
+  const [appliedPrinterLoadout, setAppliedPrinterLoadout] =
+    useState<PrinterLoadoutProfile | null>(null);
+  const [isProjectSetupConfirmed, setIsProjectSetupConfirmed] = useState(false);
+  const [isPrintingSetupOpen, setIsPrintingSetupOpen] = useState(false);
+  const [isSetupRecommendationOpen, setIsSetupRecommendationOpen] =
+    useState(false);
   const [librarySpools, setLibrarySpools] = useState<PhysicalSpool[]>(
     initialPlan.spools,
   );
@@ -196,24 +315,35 @@ export default function App() {
     AnalysisResult["source"] | null
   >(null);
   const [selectedPlateId, setSelectedPlateId] = useState("");
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const [pendingSelection, setPendingSelection] =
     useState<ProjectSelection | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCancellingAnalysis, setIsCancellingAnalysis] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [activeSourcePath, setActiveSourcePath] = useState<string | null>(null);
-  const [a1MiniEnabled, setA1MiniEnabled] = useState(false);
+  const [a1MiniEnabled, setA1MiniEnabled] = useState(
+    planningIntent.a1MiniEnabled,
+  );
   const [appliedA1MiniEnabled, setAppliedA1MiniEnabled] = useState(false);
-  const [colorNeedsRecalculation, setColorNeedsRecalculation] =
-    useState(false);
+  const [customDirectPalettesEnabled, setCustomDirectPalettesEnabled] =
+    useState(initialPlan.customDirectPalettesEnabled);
+  const [
+    appliedCustomDirectPalettesEnabled,
+    setAppliedCustomDirectPalettesEnabled,
+  ] = useState(initialPlan.customDirectPalettesEnabled);
+  const [colorNeedsRecalculation, setColorNeedsRecalculation] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
+  const [customPaletteFailure, setCustomPaletteFailure] = useState<{
+    scopeId: string;
+    message: string;
+  } | null>(null);
   const [restoreCmy, setRestoreCmy] = useState(false);
   const [isPlanDirty, setIsPlanDirty] = useState(false);
   const [liveMessage, setLiveMessage] = useState("");
   const [conversionCapability, setConversionCapability] =
     useState<ConversionCapability | null>(null);
-  const [authoritativePlanRevision, setAuthoritativePlanRevision] =
-    useState(0);
+  const [authoritativePlanRevision, setAuthoritativePlanRevision] = useState(0);
   const [isCheckingConversion, setIsCheckingConversion] = useState(false);
   const [isPreparingConversion, setIsPreparingConversion] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
@@ -236,10 +366,14 @@ export default function App() {
     useState(false);
   const [activeConversionOutputAction, setActiveConversionOutputAction] =
     useState<ActiveConversionOutputAction | null>(null);
-  const [partialConversionAcknowledgementKey, setPartialConversionAcknowledgementKey] =
-    useState<string | null>(null);
-  const [experimentalDialectAcknowledgementKey, setExperimentalDialectAcknowledgementKey] =
-    useState<string | null>(null);
+  const [
+    partialConversionAcknowledgementKey,
+    setPartialConversionAcknowledgementKey,
+  ] = useState<string | null>(null);
+  const [
+    experimentalDialectAcknowledgementKey,
+    setExperimentalDialectAcknowledgementKey,
+  ] = useState<string | null>(null);
   const librarySpoolsRef = useRef<PhysicalSpool[]>(initialPlan.spools);
   const libraryLoadQueue = useRef<Promise<void>>(Promise.resolve());
   const librarySaveQueue = useRef<Promise<void>>(Promise.resolve());
@@ -253,11 +387,26 @@ export default function App() {
   const calibrationMutationQueue = useRef<Promise<void>>(Promise.resolve());
   const activeConversionIdRef = useRef<string | null>(null);
   const printRunRecoveryAttemptRef = useRef("");
+  const explicitDirectMappingOverridesRef = useRef(new Set<string>());
+  const browserFileInputRef = useRef<HTMLInputElement>(null);
   const isNative = isTauriRuntime();
+  const a1MiniConfigured = printingSetup?.secondaryPrinter === "a1-mini";
   const a1MiniNeedsRecalculation = a1MiniEnabled !== appliedA1MiniEnabled;
-  const hasPendingPlanChanges = isPlanDirty || a1MiniNeedsRecalculation;
+  const planningIntentNeedsRecalculation =
+    hasAnalysis && !planningIntentEquals(planningIntent, appliedPlanningIntent);
+  const printerLoadoutNeedsRecalculation =
+    hasAnalysis && !printerLoadoutEquals(printerLoadout, appliedPrinterLoadout);
+  const customDirectPalettesNeedsRecalculation =
+    customDirectPalettesEnabled !== appliedCustomDirectPalettesEnabled;
+  const hasPendingPlanChanges =
+    isPlanDirty ||
+    a1MiniNeedsRecalculation ||
+    planningIntentNeedsRecalculation ||
+    printerLoadoutNeedsRecalculation ||
+    customDirectPalettesNeedsRecalculation;
   const selectedPlate = hasAnalysis
-    ? plan.plates.find((plate) => plate.id === selectedPlateId) ?? plan.plates[0]
+    ? (plan.plates.find((plate) => plate.id === selectedPlateId) ??
+      plan.plates[0])
     : undefined;
   const stats = useMemo(() => derivePlanStats(plan), [plan]);
   const executionPlanFingerprint = useMemo(
@@ -275,16 +424,19 @@ export default function App() {
         unitPrinterSelections: plan.unitPrinterSelections,
         alternativePlates: plan.alternativePlates,
         currentLoadout: plan.currentLoadout,
+        currentA1SpoolId: plan.currentA1SpoolId,
         spools: plan.spools,
         colorResolutions: plan.colorResolutions,
         backendPlanFingerprint: conversionCapability?.planFingerprint ?? null,
         authoritativePlanRevision,
         a1MiniEnabled,
+        customDirectPalettesEnabled,
         restoreCmy,
         isPlanDirty,
       }),
     [
       a1MiniEnabled,
+      customDirectPalettesEnabled,
       authoritativePlanRevision,
       conversionCapability?.planFingerprint,
       isPlanDirty,
@@ -310,10 +462,7 @@ export default function App() {
     ) {
       setPartialConversionAcknowledgementKey(null);
     }
-  }, [
-    partialConversionAcknowledgementKey,
-    partialConversionEvidenceKey,
-  ]);
+  }, [partialConversionAcknowledgementKey, partialConversionEvidenceKey]);
   useEffect(() => {
     if (
       experimentalDialectAcknowledgementKey !== null &&
@@ -322,19 +471,6 @@ export default function App() {
       setExperimentalDialectAcknowledgementKey(null);
     }
   }, [experimentalDialectAcknowledgementKey, experimentalDialectEvidenceKey]);
-  const configuredT4SpoolId =
-    plan.currentLoadout.find((entry) => entry.toolhead === "T4")?.spoolId ?? "";
-  const currentT4SpoolId = plan.spools.some(
-    (spool) => spool.id === configuredT4SpoolId && spool.available,
-  )
-    ? configuredT4SpoolId
-    : "";
-  const loadedT1ToT3SpoolIds = new Set(
-    plan.currentLoadout
-      .filter((entry) => entry.toolhead !== "T4")
-      .map((entry) => entry.spoolId),
-  );
-
   useEffect(() => {
     let canceled = false;
     const load = async () => {
@@ -505,6 +641,7 @@ export default function App() {
       run: "Print Run",
     }[activeView];
     document.title = `${viewName} | U1 3MF Color Planner`;
+    document.getElementById("main-content")?.focus();
   }, [activeView]);
 
   useEffect(() => {
@@ -579,7 +716,9 @@ export default function App() {
         librarySaveFailure.current = message;
         setLibraryErrorKind("save");
         setLibraryError(`Filament library could not be saved. ${message}`);
-        setLiveMessage("Filament library could not be saved. Replanning is blocked.");
+        setLiveMessage(
+          "Filament library could not be saved. Replanning is blocked.",
+        );
         return false;
       })
       .finally(() => {
@@ -595,7 +734,9 @@ export default function App() {
     successMessage: string,
   ) => {
     if (isLibraryLoading || libraryErrorKind === "load") {
-      setLiveMessage("Wait for the filament library to load before editing it.");
+      setLiveMessage(
+        "Wait for the filament library to load before editing it.",
+      );
       return;
     }
     librarySpoolsRef.current = nextSpools;
@@ -612,6 +753,7 @@ export default function App() {
     const plate = plan.plates.find((candidate) => candidate.id === plateId);
     if (!plate) return;
     setSelectedPlateId(plateId);
+    setIsInspectorOpen(true);
     setLiveMessage(`${plate.title} selected for inspection.`);
   };
 
@@ -619,6 +761,7 @@ export default function App() {
     try {
       const selection = await chooseProjectPath();
       if (selection) {
+        const startsNewProject = hasAnalysis;
         analysisRequestGenerationRef.current += 1;
         setPendingSelection(selection);
         setIsAnalyzing(false);
@@ -626,11 +769,20 @@ export default function App() {
         setHasAnalysis(false);
         setAnalysisSource(null);
         setSelectedPlateId("");
+        setIsInspectorOpen(false);
+        setIsSetupRecommendationOpen(false);
         setActiveSourcePath(null);
-        setA1MiniEnabled(false);
+        setA1MiniEnabled(planningIntent.a1MiniEnabled);
         setAppliedA1MiniEnabled(false);
+        setAppliedPlanningIntent(null);
+        setAppliedPrinterLoadout(null);
+        if (startsNewProject) setIsProjectSetupConfirmed(false);
+        setCustomDirectPalettesEnabled(false);
+        setAppliedCustomDirectPalettesEnabled(false);
+        explicitDirectMappingOverridesRef.current.clear();
         setColorNeedsRecalculation(false);
         setAnalysisError("");
+        setCustomPaletteFailure(null);
         setIsPlanDirty(false);
         setAuthoritativePlanRevision((revision) => revision + 1);
         setConversionCapability(null);
@@ -639,7 +791,9 @@ export default function App() {
         setPrintRunRecoveryStatus("idle");
         setPrintRunRecoveryError("");
         printRunRecoveryAttemptRef.current = "";
-        setLiveMessage(`${selection.fileName} selected. Choose Analyze Project to continue.`);
+        setLiveMessage(
+          `${selection.fileName} selected. Choose Analyze Project to continue.`,
+        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -649,6 +803,7 @@ export default function App() {
   };
 
   const chooseBrowserProject = (file: File) => {
+    const startsNewProject = hasAnalysis;
     analysisRequestGenerationRef.current += 1;
     setPendingSelection({ fileName: file.name, browserFile: file });
     setIsAnalyzing(false);
@@ -656,11 +811,20 @@ export default function App() {
     setHasAnalysis(false);
     setAnalysisSource(null);
     setSelectedPlateId("");
+    setIsInspectorOpen(false);
+    setIsSetupRecommendationOpen(false);
     setActiveSourcePath(null);
-    setA1MiniEnabled(false);
+    setA1MiniEnabled(planningIntent.a1MiniEnabled);
     setAppliedA1MiniEnabled(false);
+    setAppliedPlanningIntent(null);
+    setAppliedPrinterLoadout(null);
+    if (startsNewProject) setIsProjectSetupConfirmed(false);
+    setCustomDirectPalettesEnabled(false);
+    setAppliedCustomDirectPalettesEnabled(false);
+    explicitDirectMappingOverridesRef.current.clear();
     setColorNeedsRecalculation(false);
     setAnalysisError("");
+    setCustomPaletteFailure(null);
     setIsPlanDirty(false);
     setAuthoritativePlanRevision((revision) => revision + 1);
     setConversionCapability(null);
@@ -669,17 +833,31 @@ export default function App() {
     setPrintRunRecoveryStatus("idle");
     setPrintRunRecoveryError("");
     printRunRecoveryAttemptRef.current = "";
-    setLiveMessage(`${file.name} selected. Choose Analyze Project to continue.`);
+    setLiveMessage(
+      `${file.name} selected. Choose Analyze Project to continue.`,
+    );
   };
 
   const runAnalysis = async () => {
     if (!pendingSelection) return;
+    if (!isProjectSetupConfirmed) {
+      setLiveMessage(
+        "Confirm the visible Project setup before analyzing this 3MF.",
+      );
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById("project-setup-heading")
+          ?.scrollIntoView({ block: "center" });
+      });
+      return;
+    }
     const selection = pendingSelection;
     const requestGeneration = analysisRequestGenerationRef.current + 1;
     analysisRequestGenerationRef.current = requestGeneration;
     setIsAnalyzing(true);
     setIsCancellingAnalysis(false);
     setAnalysisError("");
+    setCustomPaletteFailure(null);
     try {
       await libraryLoadQueue.current;
       await librarySaveQueue.current;
@@ -690,7 +868,11 @@ export default function App() {
           `Save the filament library before analysis. ${librarySaveFailure.current}`,
         );
       }
-      const result = await analyzeProject(selection);
+      const result = await analyzeProject(
+        selection,
+        planningIntent,
+        printerLoadout,
+      );
       if (analysisRequestGenerationRef.current !== requestGeneration) return;
       const analyzedPlan =
         result.source === "browser-demo"
@@ -700,13 +882,23 @@ export default function App() {
       setHasAnalysis(true);
       setAnalysisSource(result.source);
       setSelectedPlateId(analyzedPlan.plates[0]?.id ?? "");
+      setIsInspectorOpen(false);
+      setIsSetupRecommendationOpen(false);
       setRestoreCmy(analyzedPlan.restoreCmyByDefault);
       setActiveSourcePath(selection.sourcePath ?? null);
-      const browserDemoUsesA1Mini =
-        result.source === "browser-demo" &&
-        analyzedPlan.plates.some((plate) => plate.printer === "A1 mini");
-      setA1MiniEnabled(browserDemoUsesA1Mini);
-      setAppliedA1MiniEnabled(browserDemoUsesA1Mini);
+      const appliedA1MiniEnabled = planningIntent.a1MiniEnabled;
+      setA1MiniEnabled(appliedA1MiniEnabled);
+      setAppliedA1MiniEnabled(appliedA1MiniEnabled);
+      setAppliedPlanningIntent({
+        ...planningIntent,
+        a1MiniEnabled: appliedA1MiniEnabled,
+      });
+      setAppliedPrinterLoadout(printerLoadout);
+      setCustomDirectPalettesEnabled(analyzedPlan.customDirectPalettesEnabled);
+      setAppliedCustomDirectPalettesEnabled(
+        analyzedPlan.customDirectPalettesEnabled,
+      );
+      explicitDirectMappingOverridesRef.current.clear();
       setColorNeedsRecalculation(false);
       setIsPlanDirty(false);
       setAuthoritativePlanRevision((revision) => revision + 1);
@@ -724,7 +916,9 @@ export default function App() {
       setAnalysisSource(null);
       const message = error instanceof Error ? error.message : String(error);
       setAnalysisError(`Analysis could not be completed. ${message}`);
-      setLiveMessage("Analysis could not be completed. Review the visible error and try again.");
+      setLiveMessage(
+        "Analysis could not be completed. Review the visible error and try again.",
+      );
     } finally {
       if (analysisRequestGenerationRef.current === requestGeneration) {
         setIsAnalyzing(false);
@@ -748,7 +942,9 @@ export default function App() {
     }
     setIsAnalyzing(false);
     setIsCancellingAnalysis(false);
-    setLiveMessage("Analysis canceled. The selected 3MF is ready to analyze again.");
+    setLiveMessage(
+      "Analysis canceled. The selected 3MF is ready to analyze again.",
+    );
   };
 
   const changeStrategy = (
@@ -770,6 +966,42 @@ export default function App() {
     setIsPlanDirty(true);
     setLiveMessage(
       `${selectedPlate.title} is set to ${
+        strategy === "direct" ? "Direct Spools" : "CMY+X Full Spectrum"
+      }. Changes are pending validation.`,
+    );
+  };
+
+  const changeBulkStrategies = (
+    scopeIds: string[],
+    strategy: Extract<PrintStrategy, "cmyx" | "direct">,
+  ) => {
+    const selectedScopeIds = new Set(scopeIds);
+    if (selectedScopeIds.size === 0) return;
+    const selectedPlates = plan.plates.filter(
+      (plate) => plate.printer === "U1" && selectedScopeIds.has(plate.scopeId),
+    );
+    if (selectedPlates.length === 0) return;
+    if (
+      strategy === "direct" &&
+      selectedPlates.some((plate) => !isDirectStrategyAvailable(plate))
+    ) {
+      setLiveMessage(
+        "Direct Spools was not applied because at least one selected source scope is unavailable. Open that plate and choose Create 4-spool palette, or select only compatible plates.",
+      );
+      return;
+    }
+
+    setPlan((current) => ({
+      ...current,
+      plates: current.plates.map((plate) =>
+        plate.printer === "U1" && selectedScopeIds.has(plate.scopeId)
+          ? { ...plate, strategy }
+          : plate,
+      ),
+    }));
+    setIsPlanDirty(true);
+    setLiveMessage(
+      `${selectedScopeIds.size} source scope${selectedScopeIds.size === 1 ? "" : "s"} (${selectedPlates.length} U1 plate${selectedPlates.length === 1 ? "" : "s"}) ${selectedPlates.length === 1 ? "is" : "are"} set to ${
         strategy === "direct" ? "Direct Spools" : "CMY+X Full Spectrum"
       }. Changes are pending validation.`,
     );
@@ -817,98 +1049,106 @@ export default function App() {
       }),
     );
     setIsPlanDirty(true);
-    setLiveMessage(`Direct spool toolheads updated. ${nextToolhead} is now assigned.`);
+    setLiveMessage(
+      `Direct spool toolheads updated. ${nextToolhead} is now assigned.`,
+    );
   };
 
   const changeSpool = (mappingId: string, nextSpoolId: string) => {
     if (!selectedPlate) return;
     const nextSpool = plan.spools.find((spool) => spool.id === nextSpoolId);
-    const selectedMappings = selectedPlate.mappings ?? [];
-    const selectedActive = selectedMappings.find(
+    const selectedActive = (selectedPlate.mappings ?? []).find(
       (mapping) => mapping.id === mappingId,
     );
     if (!selectedActive) return;
-    const selectedActiveIdentityIds = physicalIdentityMappingIds(
-      selectedMappings,
-      selectedActive,
+    const preflight = applySpoolChoiceToMappings(
+      selectedPlate.mappings ?? [],
+      mappingId,
+      nextSpoolId,
     );
-    const selectedAssignedOutside = selectedMappings.filter(
-      (mapping) =>
-        !selectedActiveIdentityIds.has(mapping.id) &&
-        Boolean(mapping.selectedSpoolId),
-    );
-    const selectedSharedMapping = nextSpoolId
-      ? selectedAssignedOutside.find(
-          (mapping) => mapping.selectedSpoolId === nextSpoolId,
-        )
-      : undefined;
-    const selectedOccupiedToolheads = new Set(
-      selectedAssignedOutside.map((mapping) => mapping.directToolhead),
-    );
-    let selectedNextToolhead =
-      selectedSharedMapping?.directToolhead ?? selectedActive.directToolhead;
-    if (
-      nextSpoolId &&
-      !selectedSharedMapping &&
-      selectedOccupiedToolheads.has(selectedActive.directToolhead)
-    ) {
-      const freeToolhead = toolheads.find(
-        (toolhead) => !selectedOccupiedToolheads.has(toolhead),
-      );
-      if (!freeToolhead) {
-        setLiveMessage(
-          "No free T1–T4 toolhead is available for that physical spool. Resolve the existing toolhead assignments first.",
-        );
-        return;
-      }
-      selectedNextToolhead = freeToolhead;
+    if (preflight.error) {
+      setLiveMessage(preflight.error);
+      return;
     }
-    const mergedPhysicalIdentityCount =
-      nextSpoolId
-        ? new Set([
-            selectedActive.physicalIdentityId,
-            ...selectedMappings
-              .filter(
-                (mapping) =>
-                  mapping.physicalIdentityId !==
-                    selectedActive.physicalIdentityId &&
-                  mapping.selectedSpoolId === nextSpoolId,
-              )
-              .map((mapping) => mapping.physicalIdentityId),
-          ]).size
-        : 0;
-    setPlan((current) =>
-      updateSelectedMappings(current, selectedPlate.scopeId, (mappings) => {
-        const active = mappings.find((mapping) => mapping.id === mappingId);
-        if (!active) return mappings;
-        const activeIdentityIds = physicalIdentityMappingIds(mappings, active);
-        if (
-          mappings
-            .filter((mapping) => activeIdentityIds.has(mapping.id))
-            .every((mapping) => mapping.selectedSpoolId === nextSpoolId)
-        ) {
-          return mappings;
-        }
-        return mappings.map((mapping) => {
-          if (activeIdentityIds.has(mapping.id)) {
-            return {
-              ...mapping,
-              selectedSpoolId: nextSpoolId,
-              directToolhead: selectedNextToolhead,
-              materialSubstitutionAcknowledged: false,
-            };
-          }
-          return mapping;
-        });
-      }),
+    explicitDirectMappingOverridesRef.current.add(
+      directMappingOverrideKey(
+        selectedPlate.scopeId,
+        selectedActive.inheritanceKey,
+      ),
     );
+    const propagatedScopes = new Set<string>();
+    const skippedScopes = new Set<string>();
+    const updatesByPlate = new Map<string, DirectColorMapping[]>();
+    updatesByPlate.set(selectedPlate.id, preflight.mappings);
+    for (const plate of plan.plates) {
+      if (
+        plate.printer !== "U1" ||
+        plate.id === selectedPlate.id ||
+        !plate.mappings
+      ) {
+        continue;
+      }
+      const sameScope = plate.scopeId === selectedPlate.scopeId;
+      if (!sameScope && !customDirectPalettesEnabled) continue;
+      const inherited = plate.mappings.find(
+        (mapping) => mapping.inheritanceKey === selectedActive.inheritanceKey,
+      );
+      if (
+        !inherited ||
+        (!sameScope &&
+          explicitDirectMappingOverridesRef.current.has(
+            directMappingOverrideKey(plate.scopeId, inherited.inheritanceKey),
+          ))
+      ) {
+        continue;
+      }
+      const inheritedUpdate = applySpoolChoiceToMappings(
+        plate.mappings,
+        inherited.id,
+        nextSpoolId,
+      );
+      if (inheritedUpdate.error) {
+        skippedScopes.add(plate.scopeId);
+        continue;
+      }
+      updatesByPlate.set(plate.id, inheritedUpdate.mappings);
+      if (!sameScope && inheritedUpdate.changed) {
+        propagatedScopes.add(plate.scopeId);
+      }
+    }
+    const mergedPhysicalIdentityCount = nextSpoolId
+      ? new Set(
+          preflight.mappings
+            .filter((mapping) => mapping.selectedSpoolId === nextSpoolId)
+            .map((mapping) => mapping.physicalIdentityId),
+        ).size
+      : 0;
+    setPlan({
+      ...plan,
+      plates: plan.plates.map((plate) => {
+        const mappings = updatesByPlate.get(plate.id);
+        return mappings ? { ...plate, mappings } : plate;
+      }),
+    });
     setIsPlanDirty(true);
+    const propagationSummary =
+      propagatedScopes.size > 0
+        ? ` The same source identity was also updated on ${propagatedScopes.size} unedited ${
+            propagatedScopes.size === 1 ? "plate scope" : "plate scopes"
+          }.`
+        : "";
+    const skippedSummary =
+      skippedScopes.size > 0
+        ? ` ${skippedScopes.size} inherited ${
+            skippedScopes.size === 1 ? "scope was" : "scopes were"
+          } left unchanged because no free toolhead was available.`
+        : "";
     setLiveMessage(
       nextSpool
         ? mergedPhysicalIdentityCount > 1
-          ? `${mergedPhysicalIdentityCount} physical Direct identities will use ${nextSpool.colorName} on one spool. Recalculate the plan to validate A1 Mono eligibility.`
-          : `${nextSpool.colorName} assigned. Color difference and setup actions are pending validation.`
-        : "Spool assignment cleared for the linked physical identity. Direct mapping requires review.",
+          ? `${mergedPhysicalIdentityCount} physical Direct identities will use ${nextSpool.colorName} on one spool. Recalculate the plan to validate the reduced palette and A1 Mono eligibility.${propagationSummary}${skippedSummary}`
+          : `${nextSpool.colorName} assigned. Color difference and setup actions are pending validation.${propagationSummary}${skippedSummary}`
+        : `Spool assignment cleared for the linked physical identity. Direct mapping requires review.${propagationSummary}${skippedSummary}`,
     );
   };
 
@@ -917,6 +1157,13 @@ export default function App() {
     acknowledged: boolean,
   ) => {
     if (!selectedPlate) return;
+    const active = (selectedPlate.mappings ?? []).find(
+      (mapping) => mapping.id === mappingId,
+    );
+    if (!active) return;
+    explicitDirectMappingOverridesRef.current.add(
+      directMappingOverrideKey(selectedPlate.scopeId, active.inheritanceKey),
+    );
     setPlan((current) =>
       updateSelectedMappings(current, selectedPlate.scopeId, (mappings) =>
         mappings.map((mapping) =>
@@ -939,7 +1186,9 @@ export default function App() {
     const selectedSourceUnits = new Set(selectedPlate.sourceUnitIds);
     setPlan((current) => {
       const existingSourceUnits = new Set(
-        current.unitPrinterSelections.map((selection) => selection.sourceUnitId),
+        current.unitPrinterSelections.map(
+          (selection) => selection.sourceUnitId,
+        ),
       );
       return {
         ...current,
@@ -967,6 +1216,30 @@ export default function App() {
     );
   };
 
+  const changeCustomDirectPalettes = (enabled: boolean) => {
+    setCustomDirectPalettesEnabled(enabled);
+    if (!enabled) {
+      setPlan((current) => ({
+        ...current,
+        plates: current.plates.map((plate) =>
+          plate.printer === "U1" &&
+          plate.strategy === "direct" &&
+          (plate.directPairCount ?? plate.mappings?.length ?? 0) > 4
+            ? { ...plate, strategy: "cmyx" as const }
+            : plate,
+        ),
+      }));
+    }
+    const needsRecalculation = enabled !== appliedCustomDirectPalettesEnabled;
+    setLiveMessage(
+      needsRecalculation
+        ? enabled
+          ? "Custom four-spool palettes selected. Recalculate the plan to generate a proposed mapping for every U1 plate."
+          : "Custom four-spool palettes cleared. Recalculate the plan to restore exact Direct eligibility limits."
+        : "Custom Direct palette mode restored to the applied setting. No recalculation is required.",
+    );
+  };
+
   const applyWholeProjectDirectPalette = (
     choices: ProjectDirectPaletteChoice[],
   ) => {
@@ -984,7 +1257,9 @@ export default function App() {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setLiveMessage(`Project-wide Direct Spools could not be applied. ${message}`);
+      setLiveMessage(
+        `Project-wide Direct Spools could not be applied. ${message}`,
+      );
     }
   };
 
@@ -1034,7 +1309,7 @@ export default function App() {
             ...input,
             calibrationIdentity: calibrationBatchChanged
               ? createCalibrationIdentity()
-              : spool.calibrationIdentity ?? spool.id,
+              : (spool.calibrationIdentity ?? spool.id),
             name: input.name.trim(),
             colorName: input.colorName.trim(),
             hex: input.hex.toUpperCase(),
@@ -1049,10 +1324,7 @@ export default function App() {
     );
   };
 
-  const changeLibraryAvailability = (
-    spoolId: string,
-    available: boolean,
-  ) => {
+  const changeLibraryAvailability = (spoolId: string, available: boolean) => {
     const spool = librarySpools.find((candidate) => candidate.id === spoolId);
     if (!spool || spool.available === available) return;
     const nextSpools = librarySpools.map((candidate) =>
@@ -1070,7 +1342,9 @@ export default function App() {
     const spool = librarySpools.find((candidate) => candidate.id === spoolId);
     if (!spool || spool.source !== "user") return false;
     if (isLibraryLoading || libraryErrorKind === "load") {
-      setLiveMessage("Wait for the filament library to load before editing it.");
+      setLiveMessage(
+        "Wait for the filament library to load before editing it.",
+      );
       return false;
     }
 
@@ -1147,7 +1421,8 @@ export default function App() {
       plan.colorResolutions
         .filter(
           (resolution) =>
-            !resolution.requiresMaterialSubstitution && !resolution.colorApproved,
+            !resolution.requiresMaterialSubstitution &&
+            !resolution.colorApproved,
         )
         .map((resolution) => resolution.scopeId),
     );
@@ -1201,7 +1476,9 @@ export default function App() {
       (candidate) => candidate.id === spoolId && candidate.available,
     );
     if (!spool) {
-      setLiveMessage("The selected spool is no longer in stock. Choose another spool.");
+      setLiveMessage(
+        "The selected spool is no longer in stock. Choose another spool.",
+      );
       return;
     }
     const unavailableReason = directUnavailableReasonForResolution(resolution);
@@ -1232,8 +1509,7 @@ export default function App() {
         strategy: "direct" as const,
         assignments: [
           ...(existingSelection?.assignments ?? []).filter(
-            (existing) =>
-              existing.requirementId !== resolution.requirementId,
+            (existing) => existing.requirementId !== resolution.requirementId,
           ),
           assignment,
         ],
@@ -1350,19 +1626,49 @@ export default function App() {
     }
   };
 
-  const validateChoices = async () => {
+  const validateChoices = async (
+    planningIntentOverride?: PlanningIntent,
+    customDirectPaletteScopeId?: string,
+    printerLoadoutOverride?: PrinterLoadoutProfile,
+  ) => {
     if (!hasAnalysis) return;
     if (isNative && !activeSourcePath) {
       setLiveMessage("Analyze a native project before validating choices.");
       return;
     }
 
+    const requestedPlanningIntent = planningIntentOverride ?? planningIntent;
+    const requestedPrinterLoadout = printerLoadoutOverride ?? printerLoadout;
+    const requestedA1MiniEnabled = requestedPlanningIntent.a1MiniEnabled;
+    if (customDirectPaletteScopeId) setCustomPaletteFailure(null);
+    if (planningIntentOverride) {
+      if (printingSetup === null && requestedA1MiniEnabled) {
+        const inferredSetup: PrintingSetup = {
+          schemaVersion: 1,
+          primaryPrinter: "u1",
+          secondaryPrinter: "a1-mini",
+        };
+        const persisted = savePrintingSetup(appLocalStorage(), inferredSetup);
+        setPrintingSetup(inferredSetup);
+        setPrintingSetupPersistence(persisted ? "persisted" : "session");
+      }
+      setPlanningIntent(requestedPlanningIntent);
+      setA1MiniEnabled(requestedA1MiniEnabled);
+      savePlanningIntent(appLocalStorage(), requestedPlanningIntent);
+    }
+    if (printerLoadoutOverride) {
+      setPrinterLoadout(requestedPrinterLoadout);
+      savePrinterLoadout(appLocalStorage(), requestedPrinterLoadout);
+    }
     setIsValidating(true);
     setConversionCapability(null);
     setPartialConversionAcknowledgementKey(null);
-    const selectedScopeId = selectedPlate?.scopeId;
+    const selectedScopeId =
+      customDirectPaletteScopeId ?? selectedPlate?.scopeId;
     const selectedSourceUnitIds = new Set(selectedPlate?.sourceUnitIds ?? []);
-    const requestedA1MiniEnabled = a1MiniEnabled;
+    const requestedCustomDirectPalettesEnabled = customDirectPaletteScopeId
+      ? true
+      : customDirectPalettesEnabled;
 
     try {
       await libraryLoadQueue.current;
@@ -1377,27 +1683,134 @@ export default function App() {
         plan,
         restoreCmy,
         requestedA1MiniEnabled,
+        requestedCustomDirectPalettesEnabled,
+        requestedPlanningIntent.defaultStrategy,
       );
+      request.currentLoadout = requestedPrinterLoadout.currentLoadout.map(
+        (entry) => ({ ...entry }),
+      );
+      request.currentA1SpoolId = requestedPrinterLoadout.currentA1SpoolId;
+      if (planningIntentOverride) {
+        if (requestedPlanningIntent.defaultStrategy === "auto") {
+          request.scopeOverrides = [];
+        } else {
+          const requestedStrategy = requestedPlanningIntent.defaultStrategy;
+          const overridesByScope = new Map(
+            request.scopeOverrides.map((override) => [
+              override.scopeId,
+              { ...override, strategy: requestedStrategy },
+            ]),
+          );
+          for (const plate of plan.plates) {
+            if (plate.printer !== "U1") continue;
+            if (!overridesByScope.has(plate.scopeId)) {
+              overridesByScope.set(plate.scopeId, {
+                scopeId: plate.scopeId,
+                strategy: requestedStrategy,
+                assignments: [],
+                approvedColorFallbacks: [],
+                materialSubstitutions: [],
+              });
+            }
+          }
+          request.scopeOverrides = [...overridesByScope.values()];
+        }
+      }
+      if (customDirectPaletteScopeId) {
+        request.scopeOverrides = [
+          ...request.scopeOverrides.filter(
+            (override) => override.scopeId !== customDirectPaletteScopeId,
+          ),
+          {
+            scopeId: customDirectPaletteScopeId,
+            strategy: "direct",
+            assignments: [],
+            approvedColorFallbacks: [],
+            materialSubstitutions: [],
+          },
+        ];
+      }
       if (isNative && activeSourcePath) {
         const replanned = await replanProject(activeSourcePath, request);
         setPlan(replanned);
         setIsPlanDirty(false);
         setAppliedA1MiniEnabled(requestedA1MiniEnabled);
+        setAppliedPlanningIntent(requestedPlanningIntent);
+        setAppliedPrinterLoadout(requestedPrinterLoadout);
+        setCustomDirectPalettesEnabled(replanned.customDirectPalettesEnabled);
+        setAppliedCustomDirectPalettesEnabled(
+          replanned.customDirectPalettesEnabled,
+        );
         setColorNeedsRecalculation(false);
+        setIsSetupRecommendationOpen(false);
         setAuthoritativePlanRevision((revision) => revision + 1);
-        setSelectedPlateId(
+        const nextSelectedPlate =
           replanned.plates.find((plate) =>
             plate.sourceUnitIds.some((sourceUnitId) =>
               selectedSourceUnitIds.has(sourceUnitId),
             ),
           )?.id ??
-            replanned.plates.find((plate) => plate.scopeId === selectedScopeId)?.id ??
-            replanned.plates[0]?.id ??
-            "",
-        );
-        setLiveMessage(
-          `Choices validated. ${replanned.plates.length} target plates replanned.`,
-        );
+          replanned.plates.find((plate) => plate.scopeId === selectedScopeId)
+            ?.id ??
+          replanned.plates[0]?.id ??
+          "";
+        setSelectedPlateId(nextSelectedPlate);
+        if (customDirectPaletteScopeId) {
+          const palettePlates = replanned.plates.filter(
+            (plate) =>
+              plate.printer === "U1" &&
+              plate.scopeId === customDirectPaletteScopeId,
+          );
+          const preparedPlate = palettePlates.find(
+            (plate) =>
+              isDirectStrategyAvailable(plate) &&
+              Boolean(plate.mappings?.length),
+          );
+          if (preparedPlate) {
+            const mappingRows = palettePlates.flatMap(
+              (plate) => plate.mappings ?? [],
+            );
+            const sourceIdentityCount = Math.max(
+              ...palettePlates.map(
+                (plate) =>
+                  plate.directPairCount ??
+                  plate.effectivePairCount ??
+                  plate.logicalColorCount,
+              ),
+            );
+            const physicalSpoolCount = new Set(
+              mappingRows
+                .map((mapping) => mapping.selectedSpoolId)
+                .filter(Boolean),
+            ).size;
+            setCustomPaletteFailure(null);
+            setLiveMessage(
+              `Four-spool palette created for ${preparedPlate.title}. ${sourceIdentityCount} source Direct identities are mapped to ${physicalSpoolCount} physical ${physicalSpoolCount === 1 ? "spool" : "spools"}. Review every mapping before conversion.`,
+            );
+            window.requestAnimationFrame(() => {
+              document
+                .getElementById(`strategy-${preparedPlate.id}-direct`)
+                ?.focus({ preventScroll: true });
+            });
+          } else {
+            const reason =
+              palettePlates.find((plate) => plate.directEligibilityReason)
+                ?.directEligibilityReason ??
+              "No compatible four-spool palette could be created from the available inventory.";
+            const message = `${reason} Review compatible spools in the Filament Library, then try again.`;
+            setCustomPaletteFailure({
+              scopeId: customDirectPaletteScopeId,
+              message,
+            });
+            setLiveMessage(
+              `Four-spool palette could not be created. ${message}`,
+            );
+          }
+        } else {
+          setLiveMessage(
+            `Choices validated. ${replanned.plates.length} target plates replanned.`,
+          );
+        }
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 350));
         const reviewCount = plan.plates
@@ -1416,15 +1829,28 @@ export default function App() {
           const u1CmyBatchCount = batches.filter(
             (batch) => batch.printer === "U1" && batch.strategy === "cmyx",
           ).length;
-          return applyBrowserInventoryGuard({
-            ...current,
-            batches,
-            t4SwapCount: Math.max(0, u1CmyBatchCount - 1),
-          }, current.spools);
+          return applyBrowserInventoryGuard(
+            {
+              ...current,
+              batches,
+              t4SwapCount: Math.max(0, u1CmyBatchCount - 1),
+            },
+            current.spools,
+          );
         });
         setIsPlanDirty(false);
         setAppliedA1MiniEnabled(requestedA1MiniEnabled);
+        setAppliedPlanningIntent(requestedPlanningIntent);
+        setAppliedPrinterLoadout(requestedPrinterLoadout);
+        setAppliedCustomDirectPalettesEnabled(
+          requestedCustomDirectPalettesEnabled,
+        );
+        setPlan((current) => ({
+          ...current,
+          customDirectPalettesEnabled: requestedCustomDirectPalettesEnabled,
+        }));
         setColorNeedsRecalculation(false);
+        setIsSetupRecommendationOpen(false);
         setAuthoritativePlanRevision((revision) => revision + 1);
         const directReviewMessage =
           reviewCount > 0
@@ -1442,6 +1868,12 @@ export default function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (customDirectPaletteScopeId) {
+        setCustomPaletteFailure({
+          scopeId: customDirectPaletteScopeId,
+          message: `Palette creation failed. ${message} Try again, or review compatible spools in the Filament Library.`,
+        });
+      }
       setLiveMessage(`Choice validation failed. ${message}`);
     } finally {
       setIsValidating(false);
@@ -1453,8 +1885,7 @@ export default function App() {
       !isNative ||
       !activeSourcePath ||
       !conversionScopeAvailable ||
-      (partialConversionPlanAvailable &&
-        !partialConversionAcknowledged) ||
+      (partialConversionPlanAvailable && !partialConversionAcknowledged) ||
       !conversionCapability?.available ||
       !conversionCapability.planFingerprint ||
       !experimentalDialectAcknowledged
@@ -1464,8 +1895,8 @@ export default function App() {
           ? "Review and acknowledge every excluded source unit before converting valid jobs."
           : !experimentalDialectAcknowledged
             ? "Review and approve the fingerprint-bound Experimental source dialect warning before conversion."
-          : conversionCapability?.reason ??
-              "Conversion is not available for the current plan.",
+            : (conversionCapability?.reason ??
+              "Conversion is not available for the current plan."),
       );
       return;
     }
@@ -1490,7 +1921,10 @@ export default function App() {
         conversionCapability.planFingerprint,
         partialConversionApproval,
         experimentalDialectEvidenceKey
-          ? { sourceFingerprint: conversionCapability.experimentalDialectFingerprint! }
+          ? {
+              sourceFingerprint:
+                conversionCapability.experimentalDialectFingerprint!,
+            }
           : null,
       );
       setConversionDestination(destination);
@@ -1529,21 +1963,18 @@ export default function App() {
       const result = await convertNativeProject(
         preparedConversion.preparationToken,
         conversionDestination,
-        warningsAcknowledged
-          ? preparedConversion.preparation.warnings
-          : [],
+        warningsAcknowledged ? preparedConversion.preparation.warnings : [],
       );
       setConversionResult(result);
       const publishedBundle: PublishedPrintRunBundle = {
         sourceHash: plan.summary.sourceHash,
-        backendPlanFingerprint:
-          preparedConversion.preparation.planFingerprint,
+        backendPlanFingerprint: preparedConversion.preparation.planFingerprint,
         executionPlanFingerprint,
         result,
       };
       setPublishedPrintRunBundle(publishedBundle);
       const receiptSaved = savePublishedPrintRunBundle(
-        printRunLocalStorage(),
+        appLocalStorage(),
         plan,
         publishedBundle,
       );
@@ -1600,7 +2031,9 @@ export default function App() {
       if (cancellation.accepted) {
         setLiveMessage("Conversion cancellation requested.");
       } else if (cancellation.state === "published") {
-        setLiveMessage("The conversion was already published and was not removed.");
+        setLiveMessage(
+          "The conversion was already published and was not removed.",
+        );
       } else {
         setLiveMessage("The conversion is no longer running.");
       }
@@ -1657,8 +2090,7 @@ export default function App() {
     !isLibraryLoading &&
     !isLibrarySaving &&
     !libraryError;
-  const validatedPlanAvailable =
-    validatedChoicesAvailable && plan.planReady;
+  const validatedPlanAvailable = validatedChoicesAvailable && plan.planReady;
   const partialConversionEvidenceComplete =
     !plan.planReady &&
     plan.partialConversion.available &&
@@ -1666,8 +2098,7 @@ export default function App() {
     plan.omittedUnitCount === plan.partialConversion.exclusions.length &&
     plan.blockingErrors.length > 0;
   const partialConversionPlanAvailable =
-    validatedChoicesAvailable &&
-    partialConversionEvidenceComplete;
+    validatedChoicesAvailable && partialConversionEvidenceComplete;
   const conversionScopeAvailable =
     validatedPlanAvailable || partialConversionPlanAvailable;
 
@@ -1728,7 +2159,7 @@ export default function App() {
     }
 
     const stored = loadUntrustedPublishedPrintRunBundle(
-      printRunLocalStorage(),
+      appLocalStorage(),
       plan,
     );
     if (!stored) return;
@@ -1792,11 +2223,7 @@ export default function App() {
         setPublishedPrintRunBundle(recovered);
         setPrintRunRecoveryStatus("recovered");
         setPrintRunRecoveryError("");
-        savePublishedPrintRunBundle(
-          printRunLocalStorage(),
-          plan,
-          recovered,
-        );
+        savePublishedPrintRunBundle(appLocalStorage(), plan, recovered);
         setLiveMessage(
           `${result.artifacts.length} published project ${
             result.artifacts.length === 1 ? "file was" : "files were"
@@ -1844,20 +2271,19 @@ export default function App() {
   const conversionBlockReason = !validatedChoicesAvailable
     ? "Validate the current plan first"
     : !conversionScopeAvailable
-      ? plan.partialConversion.available &&
-        !partialConversionEvidenceComplete
+      ? plan.partialConversion.available && !partialConversionEvidenceComplete
         ? "Partial conversion evidence is incomplete. Recalculate the plan before converting."
         : plan.partialConversion.reason || "Resolve the blocking choices first"
-    : !isNative
-      ? "Native conversion is available in the desktop app"
-      : isCheckingConversion
-        ? "Checking the installed writer adapters…"
-        : partialConversionPlanAvailable && !partialConversionAcknowledged
-          ? "Review and acknowledge every excluded source unit first"
-        : !experimentalDialectAcknowledged
-          ? "Approve the fingerprint-bound Experimental source dialect warning first"
-        : conversionCapability?.reason ??
-          "Conversion is unavailable: no qualified writer adapter is installed.";
+      : !isNative
+        ? "Native conversion is available in the desktop app"
+        : isCheckingConversion
+          ? "Checking the installed writer adapters…"
+          : partialConversionPlanAvailable && !partialConversionAcknowledged
+            ? "Review and acknowledge every excluded source unit first"
+            : !experimentalDialectAcknowledged
+              ? "Approve the fingerprint-bound Experimental source dialect warning first"
+              : (conversionCapability?.reason ??
+                "Conversion is unavailable: no qualified writer adapter is installed.");
   const publishedPrintRunReady =
     (validatedPlanAvailable ||
       (partialConversionPlanAvailable && partialConversionAcknowledged)) &&
@@ -1867,6 +2293,58 @@ export default function App() {
       publishedPrintRunBundle?.backendPlanFingerprint &&
     isPublishedPrintRunBundleReady(plan, publishedPrintRunBundle);
   const printRunAvailable = publishedPrintRunReady;
+  const availableSpoolCount = librarySpools.filter(
+    (spool) => spool.available,
+  ).length;
+  const inventoryReady =
+    !isLibraryLoading && !libraryError && availableSpoolCount > 0;
+  const initialSetupReady = inventoryReady && isProjectSetupConfirmed;
+  const a1MiniPlateCount = hasAnalysis
+    ? plan.plates.filter((plate) => plate.printer === "A1 mini").length
+    : 0;
+  const projectSetupIntent = useMemo<PlanningIntent>(
+    () => ({
+      defaultStrategy: planningIntent.defaultStrategy,
+      a1MiniEnabled,
+    }),
+    [a1MiniEnabled, planningIntent.defaultStrategy],
+  );
+  const unresolvedDecisionCount = plan.colorResolutions.length;
+  const planNeedsAttention =
+    hasPendingPlanChanges ||
+    unresolvedDecisionCount > 0 ||
+    plan.blockingErrors.length > 0 ||
+    plan.omittedUnitCount > 0;
+  const planStateLabel = isAnalyzing
+    ? "Analyzing…"
+    : !hasAnalysis
+      ? !inventoryReady
+        ? "Confirm inventory"
+        : !isProjectSetupConfirmed
+          ? "Confirm project setup"
+          : pendingSelection
+            ? "Ready to analyze"
+            : "Ready for a project"
+      : printRunAvailable
+        ? "Print Run ready"
+        : hasPendingPlanChanges
+          ? "Changes pending"
+          : unresolvedDecisionCount > 0
+            ? `${unresolvedDecisionCount} ${
+                unresolvedDecisionCount === 1 ? "decision" : "decisions"
+              } required`
+            : plan.blockingErrors.length > 0 || plan.omittedUnitCount > 0
+              ? "Needs attention"
+              : validatedPlanAvailable
+                ? analysisSource === "browser-demo"
+                  ? "Demo plan ready"
+                  : "Ready to convert"
+                : "Plan analyzed";
+  const planStateTone = !hasAnalysis
+    ? "plan-state--idle"
+    : planNeedsAttention
+      ? "plan-state--attention"
+      : "";
 
   useEffect(() => {
     if (activeView === "run" && !printRunAvailable) {
@@ -1901,6 +2379,134 @@ export default function App() {
               ? "Saved in this app's local data directory and qualified by the native U1 process context."
               : "Saved only in this browser demo profile; not used by native planning.";
 
+  const confirmInitialProjectSetup = (
+    nextIntent: PlanningIntent,
+    nextPrinterLoadout: PrinterLoadoutProfile,
+  ) => {
+    let equipmentWasPersisted = true;
+    if (printingSetup === null && nextIntent.a1MiniEnabled) {
+      const inferredSetup: PrintingSetup = {
+        schemaVersion: 1,
+        primaryPrinter: "u1",
+        secondaryPrinter: "a1-mini",
+      };
+      equipmentWasPersisted = savePrintingSetup(
+        appLocalStorage(),
+        inferredSetup,
+      );
+      setPrintingSetup(inferredSetup);
+      setPrintingSetupPersistence(
+        equipmentWasPersisted ? "persisted" : "session",
+      );
+    }
+    const intentWasPersisted = savePlanningIntent(
+      appLocalStorage(),
+      nextIntent,
+    );
+    const loadoutWasPersisted = savePrinterLoadout(
+      appLocalStorage(),
+      nextPrinterLoadout,
+    );
+    setPlanningIntent(nextIntent);
+    setPrinterLoadout(nextPrinterLoadout);
+    setA1MiniEnabled(nextIntent.a1MiniEnabled);
+    setIsProjectSetupConfirmed(true);
+    setIsSetupRecommendationOpen(false);
+    const printerSummary = nextIntent.a1MiniEnabled
+      ? "Snapmaker U1 and Bambu Lab A1 mini"
+      : "Snapmaker U1 only";
+    const strategySummary =
+      nextIntent.defaultStrategy === "direct"
+        ? "Direct Spools only"
+        : nextIntent.defaultStrategy === "cmyx"
+          ? "CMY+X Full Spectrum only"
+          : "Automatic strategy";
+    setLiveMessage(
+      `Project setup confirmed: ${printerSummary}, ${strategySummary}.${
+        equipmentWasPersisted && intentWasPersisted && loadoutWasPersisted
+          ? ""
+          : " The choice is available for this session but could not be saved."
+      }`,
+    );
+  };
+
+  const saveApplicationPrintingSetup = (nextSetup: PrintingSetup) => {
+    const persisted = savePrintingSetup(appLocalStorage(), nextSetup);
+    const removedActiveA1Mini =
+      nextSetup.secondaryPrinter === null &&
+      a1MiniEnabled &&
+      analysisSource !== "browser-demo";
+    setPrintingSetup(nextSetup);
+    setPrintingSetupPersistence(persisted ? "persisted" : "session");
+    if (hasAnalysis) {
+      setIsSetupRecommendationOpen(true);
+    }
+    if (removedActiveA1Mini) {
+      setA1MiniEnabled(false);
+      const nextIntent = {
+        ...planningIntent,
+        a1MiniEnabled: false,
+      };
+      setPlanningIntent(nextIntent);
+      savePlanningIntent(appLocalStorage(), nextIntent);
+      if (!hasAnalysis) setIsProjectSetupConfirmed(false);
+    }
+    const nextPrinterLoadout = constrainPrinterLoadoutToEquipment(
+      printerLoadout,
+      nextSetup,
+    );
+    if (!printerLoadoutEquals(printerLoadout, nextPrinterLoadout)) {
+      setPrinterLoadout(nextPrinterLoadout);
+      savePrinterLoadout(appLocalStorage(), nextPrinterLoadout);
+      if (!hasAnalysis) setIsProjectSetupConfirmed(false);
+    }
+    const printerSummary =
+      nextSetup.secondaryPrinter === "a1-mini"
+        ? "Snapmaker U1 and Bambu Lab A1 mini"
+        : "Snapmaker U1 only";
+    setLiveMessage(
+      `Printing setup updated: ${printerSummary}.${
+        removedActiveA1Mini
+          ? " Recalculate the plan to remove A1 mini routing."
+          : ""
+      }${
+        persisted
+          ? ""
+          : " The change is available for this session but could not be saved."
+      }`,
+    );
+  };
+
+  const saveCompletedPrintRunLoadout = (snapshot: PrinterLoadoutSnapshot) => {
+    const nextPrinterLoadout = constrainPrinterLoadoutToEquipment(
+      {
+        schemaVersion: 1,
+        currentLoadout: snapshot.currentLoadout.map((entry) => ({ ...entry })),
+        currentA1SpoolId: snapshot.currentA1SpoolId,
+        updatedFrom: "print-run",
+      },
+      printingSetup,
+    );
+    const persisted = savePrinterLoadout(appLocalStorage(), nextPrinterLoadout);
+    setPrinterLoadout(nextPrinterLoadout);
+    setAppliedPrinterLoadout(nextPrinterLoadout);
+    setLiveMessage(
+      persisted
+        ? "The completed Print Run loadout was saved for the next project."
+        : "The completed Print Run loadout is available for this session but could not be saved locally.",
+    );
+  };
+
+  const openPrintingSetupEditor = () => {
+    setActiveView("plan");
+    setIsPrintingSetupOpen(true);
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLInputElement>("#printing-setup input")
+        ?.focus();
+    });
+  };
+
   const openApplicationView = (view: ApplicationView) => {
     setActiveView(view);
     if (view === "calibration") {
@@ -1917,6 +2523,38 @@ export default function App() {
     );
   };
 
+  const projectSetupControl = (
+    <ProjectSetupControl
+      intent={projectSetupIntent}
+      loadout={printerLoadout}
+      equipmentSetup={printingSetup}
+      availableSpools={librarySpools}
+      hasAnalysis={hasAnalysis}
+      a1PlateCount={a1MiniPlateCount}
+      isFixedPreview={analysisSource === "browser-demo"}
+      isOpen={
+        isSetupRecommendationOpen ||
+        (!hasAnalysis && !isProjectSetupConfirmed)
+      }
+      isBusy={isAnalyzing || isValidating || isLibrarySaving}
+      isStale={hasPendingPlanChanges || isValidating}
+      customDirectPalettesEnabled={customDirectPalettesEnabled}
+      customDirectPalettesFixed={analysisSource === "browser-demo"}
+      onOpenChange={setIsSetupRecommendationOpen}
+      onConfirm={(nextIntent, nextPrinterLoadout) => {
+        if (hasAnalysis) {
+          void validateChoices(nextIntent, undefined, nextPrinterLoadout);
+        } else {
+          confirmInitialProjectSetup(nextIntent, nextPrinterLoadout);
+        }
+      }}
+      onChangeEquipment={openPrintingSetupEditor}
+      onCustomDirectPalettesChange={
+        hasAnalysis ? changeCustomDirectPalettes : undefined
+      }
+    />
+  );
+
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -1925,6 +2563,7 @@ export default function App() {
       <TitleBar
         onOpenFilamentLibrary={() => openApplicationView("library")}
         onOpenColorCalibration={() => openApplicationView("calibration")}
+        onOpenPrintingSetup={openPrintingSetupEditor}
       />
       <ApplicationNavigation
         activeView={activeView}
@@ -1933,339 +2572,395 @@ export default function App() {
       />
       {activeView === "plan" ? (
         <>
-          <div className="workspace-grid">
-        <WorkflowRail
-          hasAnalysis={hasAnalysis}
-          hasPendingPlanChanges={hasPendingPlanChanges}
-          planReady={plan.planReady}
-        />
-        <div className="central-column">
-          <ProjectHeader
-            summary={hasAnalysis ? plan.summary : null}
-            analysisSource={hasAnalysis ? analysisSource : null}
-            pendingSelection={pendingSelection}
-            isAnalyzing={isAnalyzing}
-            isCancellingAnalysis={isCancellingAnalysis}
-            isNative={isNative}
-            onBrowserFile={chooseBrowserProject}
-            onChooseNativeFile={chooseNativeProject}
-            onAnalyze={runAnalysis}
-            onCancelAnalysis={cancelAnalysis}
-          />
-          <main id="main-content" className="main-workspace" tabIndex={-1}>
-            <div className="plan-heading">
-              <div>
-                <h2>Print Plan</h2>
-                <p>Review batch order, physical loadouts, and color fidelity before conversion.</p>
-              </div>
-              <span
-                className={`plan-state ${!hasAnalysis ? "plan-state--idle" : ""}`}
-              >
-                <span aria-hidden="true" />
-                {isAnalyzing
-                  ? "Analyzing…"
-                  : hasAnalysis
-                    ? analysisSource === "browser-demo"
-                      ? "Demo data"
-                      : "Analysis complete"
-                    : pendingSelection
-                      ? "Ready to analyze"
-                      : "Waiting for analysis"}
-              </span>
-            </div>
-            <div className="registration-rule" aria-hidden="true" />
-            {analysisError ? (
-              <p className="analysis-error">
-                <TriangleAlert aria-hidden="true" />
-                {analysisError}
-              </p>
-            ) : null}
-            {hasAnalysis && printRunRecoveryStatus === "checking" ? (
-              <p className="print-run-recovery-status" role="status">
-                <span className="print-run-recovery-spinner" aria-hidden="true" />
-                Revalidating saved Print Run files against this source and plan…
-              </p>
-            ) : null}
-            {hasAnalysis && printRunRecoveryError ? (
-              <div className="print-run-recovery-error" role="alert">
-                <TriangleAlert aria-hidden="true" />
-                <p>{printRunRecoveryError}</p>
-                {isNative && activeSourcePath ? (
-                  <button
-                    className="button button--compact"
-                    type="button"
-                    disabled={printRunRecoveryStatus === "checking"}
-                    onClick={() => {
-                      printRunRecoveryAttemptRef.current = "";
-                      setPrintRunRecoveryError("");
-                      setPrintRunRecoveryRevision((revision) => revision + 1);
-                    }}
-                  >
-                    Retry saved-run recovery
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {hasAnalysis && plan.blockingErrors.length > 0 ? (
-              <section className="plan-blockers" aria-labelledby="plan-blockers-heading">
-                <TriangleAlert aria-hidden="true" />
-                <div>
-                  <h3 id="plan-blockers-heading">
-                    {plan.colorResolutions.length > 0
-                      ? "Plan needs color decisions"
-                      : "Plan has blocking errors"}
-                  </h3>
-                  <p>
-                    {plan.partialConversion.available &&
-                    plan.partialConversion.exclusions.length > 0
-                      ? `${plan.partialConversion.exclusions.length} printable ${
-                          plan.partialConversion.exclusions.length === 1
-                            ? "unit cannot"
-                            : "units cannot"
-                        } be converted with the current plan. Full-plan export remains disabled; the valid jobs can be converted only after you review and acknowledge every exclusion below.`
-                      : plan.omittedUnitCount > 0
-                      ? `${plan.omittedUnitCount} printable ${
-                          plan.omittedUnitCount === 1 ? "unit is" : "units are"
-                        } omitted. Export remains disabled until the choices are valid.`
-                      : "Export remains disabled until the blocking choices are resolved."}
-                  </p>
-                  <details>
-                    <summary>Technical details</summary>
-                    <ul>
-                      {plan.blockingErrors.map((error) => (
-                        <li key={error}>{error}</li>
-                      ))}
-                    </ul>
-                  </details>
+          <div
+            className={`workspace-grid ${
+              selectedPlate ? "" : "workspace-grid--without-inspector"
+            }`}
+          >
+            <WorkflowRail
+              inventoryReady={inventoryReady}
+              projectSetupReady={initialSetupReady}
+              hasAnalysis={hasAnalysis}
+              needsAttention={planNeedsAttention}
+              validatedPlanAvailable={validatedPlanAvailable}
+              printRunAvailable={printRunAvailable}
+            />
+            <div className="central-column">
+              <ProjectHeader
+                summary={hasAnalysis ? plan.summary : null}
+                analysisSource={hasAnalysis ? analysisSource : null}
+                pendingSelection={pendingSelection}
+                isAnalyzing={isAnalyzing}
+                isCancellingAnalysis={isCancellingAnalysis}
+                isNative={isNative}
+                browserFileInputRef={browserFileInputRef}
+                onBrowserFile={chooseBrowserProject}
+                onChooseNativeFile={chooseNativeProject}
+                onAnalyze={runAnalysis}
+                onCancelAnalysis={cancelAnalysis}
+                analysisAvailable={isProjectSetupConfirmed}
+                analysisBlockReason="Confirm Project setup in Step 2 first"
+              />
+              <main id="main-content" className="main-workspace" tabIndex={-1}>
+                <div className="plan-heading">
+                  <div>
+                    <h2>Print Plan</h2>
+                    <p>
+                      Review batch order, physical loadouts, and color fidelity
+                      before conversion.
+                    </p>
+                  </div>
+                  <span className={`plan-state ${planStateTone}`}>
+                    <span aria-hidden="true" />
+                    {planStateLabel}
+                  </span>
                 </div>
-              </section>
-            ) : null}
-            {hasAnalysis && plan.partialConversion.exclusions.length > 0 ? (
-              <PartialConversionNotice
-                available={
-                  plan.partialConversion.available &&
-                  !isCheckingConversion &&
-                  Boolean(conversionCapability?.planFingerprint)
-                }
-                exclusions={plan.partialConversion.exclusions}
-                reason={plan.partialConversion.reason}
-                acknowledged={partialConversionAcknowledged}
-                onAcknowledgedChange={(acknowledged) => {
-                  setPartialConversionAcknowledgementKey(
-                    acknowledged ? partialConversionEvidenceKey : null,
-                  );
+                <div className="registration-rule" aria-hidden="true" />
+                {isPrintingSetupOpen ? (
+                  <PrintingSetupControl
+                    setup={printingSetup}
+                    persistenceStatus={printingSetupPersistence}
+                    isOpen={isPrintingSetupOpen}
+                    onOpenChange={(open) => {
+                      setIsPrintingSetupOpen(open);
+                      if (!open && hasAnalysis) {
+                        window.requestAnimationFrame(() => {
+                          document
+                            .getElementById("project-setup-change")
+                            ?.focus();
+                        });
+                      }
+                    }}
+                    onSave={saveApplicationPrintingSetup}
+                  />
+                ) : null}
+                {analysisError ? (
+                  <p className="analysis-error" role="alert">
+                    <TriangleAlert aria-hidden="true" />
+                    {analysisError}
+                  </p>
+                ) : null}
+                {hasAnalysis && printRunRecoveryStatus === "checking" ? (
+                  <p className="print-run-recovery-status" role="status">
+                    <span
+                      className="print-run-recovery-spinner"
+                      aria-hidden="true"
+                    />
+                    Revalidating saved Print Run files against this source and
+                    plan…
+                  </p>
+                ) : null}
+                {hasAnalysis && printRunRecoveryError ? (
+                  <div className="print-run-recovery-error" role="alert">
+                    <TriangleAlert aria-hidden="true" />
+                    <p>{printRunRecoveryError}</p>
+                    {isNative && activeSourcePath ? (
+                      <button
+                        className="button button--compact"
+                        type="button"
+                        disabled={printRunRecoveryStatus === "checking"}
+                        onClick={() => {
+                          printRunRecoveryAttemptRef.current = "";
+                          setPrintRunRecoveryError("");
+                          setPrintRunRecoveryRevision(
+                            (revision) => revision + 1,
+                          );
+                        }}
+                      >
+                        Retry saved-run recovery
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {hasAnalysis && plan.blockingErrors.length > 0 ? (
+                  <section
+                    className="plan-blockers"
+                    aria-labelledby="plan-blockers-heading"
+                  >
+                    <TriangleAlert aria-hidden="true" />
+                    <div>
+                      <h3 id="plan-blockers-heading">
+                        {plan.colorResolutions.length > 0
+                          ? "Plan needs color decisions"
+                          : "Plan has blocking errors"}
+                      </h3>
+                      <p>
+                        {plan.partialConversion.available &&
+                        plan.partialConversion.exclusions.length > 0
+                          ? `${plan.partialConversion.exclusions.length} printable ${
+                              plan.partialConversion.exclusions.length === 1
+                                ? "unit cannot"
+                                : "units cannot"
+                            } be converted with the current plan. Full-plan export remains disabled; the valid jobs can be converted only after you review and acknowledge every exclusion below.`
+                          : plan.omittedUnitCount > 0
+                            ? `${plan.omittedUnitCount} printable ${
+                                plan.omittedUnitCount === 1
+                                  ? "unit is"
+                                  : "units are"
+                              } omitted. Export remains disabled until the choices are valid.`
+                            : "Export remains disabled until the blocking choices are resolved."}
+                      </p>
+                      <details>
+                        <summary>Technical details</summary>
+                        <ul>
+                          {plan.blockingErrors.map((error) => (
+                            <li key={error}>{error}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    </div>
+                  </section>
+                ) : null}
+                {hasAnalysis && plan.partialConversion.exclusions.length > 0 ? (
+                  <PartialConversionNotice
+                    available={
+                      plan.partialConversion.available &&
+                      !isCheckingConversion &&
+                      Boolean(conversionCapability?.planFingerprint)
+                    }
+                    exclusions={plan.partialConversion.exclusions}
+                    reason={plan.partialConversion.reason}
+                    acknowledged={partialConversionAcknowledged}
+                    onAcknowledgedChange={(acknowledged) => {
+                      setPartialConversionAcknowledgementKey(
+                        acknowledged ? partialConversionEvidenceKey : null,
+                      );
+                      setLiveMessage(
+                        acknowledged
+                          ? `${plan.partialConversion.exclusions.length} excluded source ${
+                              plan.partialConversion.exclusions.length === 1
+                                ? "unit acknowledged"
+                                : "units acknowledged"
+                            }. Only valid jobs will be converted.`
+                          : "Partial conversion acknowledgement cleared.",
+                      );
+                    }}
+                  />
+                ) : null}
+                {hasAnalysis &&
+                conversionCapability?.experimentalDialectApprovalRequired &&
+                conversionCapability.experimentalDialectFingerprint ? (
+                  <section
+                    className="plan-blockers"
+                    aria-labelledby="experimental-dialect-heading"
+                  >
+                    <TriangleAlert aria-hidden="true" />
+                    <div>
+                      <h3 id="experimental-dialect-heading">
+                        Experimental source dialect
+                      </h3>
+                      <p>
+                        This application/version has not passed the verified
+                        source-dialect fixture. Conversion remains locked until
+                        you approve this exact source fingerprint.
+                      </p>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={experimentalDialectAcknowledged}
+                          onChange={(event) => {
+                            setExperimentalDialectAcknowledgementKey(
+                              event.target.checked
+                                ? experimentalDialectEvidenceKey
+                                : null,
+                            );
+                            setLiveMessage(
+                              event.target.checked
+                                ? "Experimental source dialect approved for this exact source fingerprint."
+                                : "Experimental source dialect approval cleared.",
+                            );
+                          }}
+                        />{" "}
+                        I understand this source dialect is Experimental and
+                        approve conversion of this exact file.
+                      </label>
+                      <p>
+                        Fingerprint:{" "}
+                        <code>
+                          {conversionCapability.experimentalDialectFingerprint}
+                        </code>
+                      </p>
+                    </div>
+                  </section>
+                ) : null}
+                {hasAnalysis ? (
+                  <PlanWarnings warnings={plan.globalWarnings} />
+                ) : null}
+                {hasAnalysis ? (
+                  <>
+                    {!isPrintingSetupOpen ? projectSetupControl : null}
+                    <ColorResolutionPanel
+                      resolutions={plan.colorResolutions}
+                      spools={plan.spools}
+                      onAcceptColor={acceptColorApproximation}
+                      onAcceptMaterialSubstitution={acceptMaterialSubstitution}
+                      onAcceptAllSameMaterial={
+                        acceptAllSameMaterialApproximations
+                      }
+                      onChooseExistingSpool={chooseExistingSpoolForResolution}
+                      directUnavailableReason={
+                        directUnavailableReasonForResolution
+                      }
+                      onAddSpool={addSpool}
+                    />
+                    <StatusStrip {...stats} />
+                    <BatchTimeline
+                      batches={plan.batches}
+                      totalPlates={plan.plates.length}
+                      isStale={hasPendingPlanChanges}
+                    />
+                    <PlateTable
+                      plates={plan.plates}
+                      spools={plan.spools}
+                      selectedPlateId={selectedPlateId}
+                      onSelectPlate={selectPlate}
+                      a1MiniEnabled={a1MiniEnabled}
+                      a1MiniConfigured={
+                        a1MiniConfigured || analysisSource === "browser-demo"
+                      }
+                      hasPendingPlanChanges={hasPendingPlanChanges}
+                      onBulkStrategyChange={changeBulkStrategies}
+                    />
+                    <details className="advanced-planning">
+                      <summary>
+                        <span>Advanced planning</span>
+                        <small>
+                          Alternative source plates and project-wide Direct
+                          Spools
+                        </small>
+                      </summary>
+                      <div className="advanced-planning__content">
+                        <AlternativePlateSelector
+                          plates={plan.alternativePlates}
+                          onChange={changeAlternativePlate}
+                        />
+                        <ProjectDirectPalette
+                          plan={plan}
+                          isStale={hasPendingPlanChanges}
+                          onApply={applyWholeProjectDirectPalette}
+                        />
+                      </div>
+                    </details>
+                  </>
+                ) : (
+                  <GettingStarted
+                    availableSpoolCount={availableSpoolCount}
+                    isInventoryLoading={isLibraryLoading}
+                    isProjectSetupConfirmed={isProjectSetupConfirmed}
+                    projectSetup={
+                      isPrintingSetupOpen ? null : projectSetupControl
+                    }
+                    pendingFileName={pendingSelection?.fileName}
+                    isAnalyzing={isAnalyzing}
+                    onOpenFilamentLibrary={() => openApplicationView("library")}
+                    onOpenProject={() => {
+                      if (isNative) {
+                        void chooseNativeProject();
+                      } else {
+                        browserFileInputRef.current?.click();
+                      }
+                    }}
+                    onAnalyzeProject={() => void runAnalysis()}
+                  />
+                )}
+              </main>
+            </div>
+            {selectedPlate ? (
+              <PlateInspector
+                plan={plan}
+                plate={selectedPlate}
+                isOpen={isInspectorOpen}
+                onClose={() => {
+                  setIsInspectorOpen(false);
+                  setLiveMessage("Plate details closed.");
+                  window.requestAnimationFrame(() => {
+                    document
+                      .getElementById(`plate-select-${selectedPlate.id}`)
+                      ?.focus({ preventScroll: true });
+                  });
+                }}
+                restoreCmy={restoreCmy}
+                onStrategyChange={changeStrategy}
+                onRestoreChange={(restore) => {
+                  setRestoreCmy(restore);
+                  setIsPlanDirty(true);
                   setLiveMessage(
-                    acknowledged
-                      ? `${plan.partialConversion.exclusions.length} excluded source ${
-                          plan.partialConversion.exclusions.length === 1
-                            ? "unit acknowledged"
-                            : "units acknowledged"
-                        }. Only valid jobs will be converted.`
-                      : "Partial conversion acknowledgement cleared.",
+                    restore
+                      ? "Restore CMY setup actions added to the plan."
+                      : "Restore CMY setup actions removed from the plan.",
                   );
                 }}
+                onToolheadChange={changeToolhead}
+                onSpoolChange={changeSpool}
+                onMaterialSubstitutionChange={changeDirectMaterialSubstitution}
+                a1MiniEnabled={a1MiniEnabled}
+                onPrinterPreferenceChange={changePrinterPreference}
+                onAddSpool={addSpool}
+                customDirectPalettesEnabled={plan.customDirectPalettesEnabled}
+                isPreparingCustomPalette={isValidating}
+                customPaletteError={
+                  customPaletteFailure?.scopeId === selectedPlate.scopeId
+                    ? customPaletteFailure.message
+                    : undefined
+                }
+                onPrepareCustomPalette={
+                  isNative && activeSourcePath
+                    ? () => {
+                        void validateChoices(undefined, selectedPlate.scopeId);
+                      }
+                    : undefined
+                }
+                onOpenFilamentLibrary={() => openApplicationView("library")}
               />
             ) : null}
-            {hasAnalysis &&
-            conversionCapability?.experimentalDialectApprovalRequired &&
-            conversionCapability.experimentalDialectFingerprint ? (
-              <section
-                className="plan-blockers"
-                aria-labelledby="experimental-dialect-heading"
-              >
-                <TriangleAlert aria-hidden="true" />
-                <div>
-                  <h3 id="experimental-dialect-heading">
-                    Experimental source dialect
-                  </h3>
-                  <p>
-                    This application/version has not passed the verified source-dialect fixture.
-                    Conversion remains locked until you approve this exact source fingerprint.
-                  </p>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={experimentalDialectAcknowledged}
-                      onChange={(event) => {
-                        setExperimentalDialectAcknowledgementKey(
-                          event.target.checked ? experimentalDialectEvidenceKey : null,
-                        );
-                        setLiveMessage(
-                          event.target.checked
-                            ? "Experimental source dialect approved for this exact source fingerprint."
-                            : "Experimental source dialect approval cleared.",
-                        );
-                      }}
-                    />{" "}
-                    I understand this source dialect is Experimental and approve conversion of this
-                    exact file.
-                  </label>
-                  <p>
-                    Fingerprint: <code>{conversionCapability.experimentalDialectFingerprint}</code>
-                  </p>
-                </div>
-              </section>
-            ) : null}
-            {hasAnalysis ? (
-              <PlanWarnings warnings={plan.globalWarnings} />
-            ) : null}
-            {hasAnalysis ? (
-              <>
-                <AlternativePlateSelector
-                  plates={plan.alternativePlates}
-                  onChange={changeAlternativePlate}
-                />
-                <ProjectDirectPalette
-                  plan={plan}
-                  isStale={hasPendingPlanChanges}
-                  onApply={applyWholeProjectDirectPalette}
-                />
-                <ColorResolutionPanel
-                  resolutions={plan.colorResolutions}
-                  spools={plan.spools}
-                  onAcceptColor={acceptColorApproximation}
-                  onAcceptMaterialSubstitution={acceptMaterialSubstitution}
-                  onAcceptAllSameMaterial={acceptAllSameMaterialApproximations}
-                  onChooseExistingSpool={chooseExistingSpoolForResolution}
-                  directUnavailableReason={directUnavailableReasonForResolution}
-                  onAddSpool={addSpool}
-                />
-                <BatchTimeline
-                  batches={plan.batches}
-                  totalPlates={plan.plates.length}
-                  isStale={hasPendingPlanChanges}
-                />
-                <StatusStrip {...stats} />
-                <PlateTable
-                  plates={plan.plates}
-                  spools={plan.spools}
-                  selectedPlateId={selectedPlateId}
-                  onSelectPlate={selectPlate}
-                  a1MiniEnabled={a1MiniEnabled}
-                  hasPendingPlanChanges={hasPendingPlanChanges}
-                />
-              </>
-            ) : (
-              <section className="empty-plan" aria-labelledby="empty-plan-heading">
-                <FileSearch aria-hidden="true" />
-                <div>
-                  <h2 id="empty-plan-heading">No analyzed print plan</h2>
-                  <p>
-                    Choose a .3mf project, then run Analyze Project. Browser analysis
-                    uses clearly labeled demo data.
-                  </p>
-                </div>
-              </section>
-            )}
-          </main>
-        </div>
-        {selectedPlate ? (
-          <PlateInspector
-            plan={plan}
-            plate={selectedPlate}
-            restoreCmy={restoreCmy}
-            onStrategyChange={changeStrategy}
-            onRestoreChange={(restore) => {
-              setRestoreCmy(restore);
-              setIsPlanDirty(true);
-              setLiveMessage(
-                restore
-                  ? "Restore CMY setup actions added to the plan."
-                  : "Restore CMY setup actions removed from the plan.",
-              );
-            }}
-            onToolheadChange={changeToolhead}
-            onSpoolChange={changeSpool}
-            onMaterialSubstitutionChange={changeDirectMaterialSubstitution}
-            a1MiniEnabled={a1MiniEnabled}
-            onPrinterPreferenceChange={changePrinterPreference}
-            onAddSpool={addSpool}
-          />
-        ) : null}
           </div>
-          <BottomActionRail
-        isBusy={
-          isAnalyzing ||
-          isValidating ||
-          isLibrarySaving ||
-          isPreparingConversion ||
-          isConverting
-        }
-        isValidating={isValidating}
-        planAvailable={hasAnalysis}
-        exportAvailable={validatedPlanAvailable}
-        exportBlockReason={
-          plan.blockingErrors.length > 0 || plan.omittedUnitCount > 0
-            ? "Resolve blocking choices first"
-            : libraryError
-              ? "Resolve the filament library error"
-              : undefined
-        }
-        onExport={exportPlan}
-        onValidate={validateChoices}
-        validationAvailable={
-          hasAnalysis &&
-          !isLibraryLoading &&
-          !libraryError &&
-          (!isNative || Boolean(activeSourcePath))
-        }
-        a1MiniEnabled={a1MiniEnabled}
-        a1MiniNeedsRecalculation={a1MiniNeedsRecalculation}
-        a1MiniRoutingFixed={analysisSource === "browser-demo"}
-        planNeedsRecalculation={hasPendingPlanChanges}
-        colorNeedsRecalculation={colorNeedsRecalculation}
-        currentT4SpoolId={currentT4SpoolId}
-        t4Options={plan.spools
-          .filter(
-            (spool) =>
-              spool.available && !loadedT1ToT3SpoolIds.has(spool.id),
-          )
-          .map((spool) => ({
-            id: spool.id,
-            label: `${spool.colorName} · ${spool.material}`,
-          }))}
-        onCurrentT4Change={(spoolId) => {
-          setPlan((current) => ({
-            ...current,
-            currentLoadout: [
-              ...current.currentLoadout.filter((entry) => entry.toolhead !== "T4"),
-              ...(spoolId ? [{ toolhead: "T4" as const, spoolId }] : []),
-            ],
-          }));
-          setIsPlanDirty(true);
-          setLiveMessage(
-            spoolId
-              ? "Current T4 updated. Validate choices to recalculate the first swap."
-              : "Current T4 marked unknown. The plan will require a conservative setup action.",
-          );
-        }}
-        onA1MiniChange={(enabled) => {
-          setA1MiniEnabled(enabled);
-          const needsRecalculation = enabled !== appliedA1MiniEnabled;
-          setLiveMessage(
-            needsRecalculation
-              ? enabled
-                ? "A1 mini routing selected. Recalculate the plan to update printer assignments."
-                : "A1 mini routing cleared. Recalculate the plan to return eligible parts to the U1."
-              : "A1 mini routing restored to the applied setting. No recalculation is required.",
-          );
-        }}
-            conversionAvailable={conversionAvailable}
-            conversionAdapters={conversionCapability?.adapters ?? []}
-            isCheckingConversion={isCheckingConversion}
-            conversionLabel={
-          partialConversionPlanAvailable
-            ? "Convert Valid Jobs"
-            : "Approve & Convert"
-        }
-        conversionBlockReason={conversionBlockReason}
-        onApprove={approveAndPrepareConversion}
-          />
+          {hasAnalysis ? (
+            <BottomActionRail
+              isBusy={
+                isAnalyzing ||
+                isValidating ||
+                isLibrarySaving ||
+                isPreparingConversion ||
+                isConverting
+              }
+              isValidating={isValidating}
+              planAvailable={hasAnalysis}
+              exportAvailable={validatedPlanAvailable}
+              exportBlockReason={
+                plan.blockingErrors.length > 0 || plan.omittedUnitCount > 0
+                  ? "Resolve blocking choices first"
+                  : libraryError
+                    ? "Resolve the filament library error"
+                    : undefined
+              }
+              onExport={exportPlan}
+              onValidate={validateChoices}
+              validationAvailable={
+                hasAnalysis &&
+                !isLibraryLoading &&
+                !libraryError &&
+                (!isNative || Boolean(activeSourcePath))
+              }
+              planNeedsRecalculation={hasPendingPlanChanges}
+              colorNeedsRecalculation={colorNeedsRecalculation}
+              conversionStageAvailable={isNative && conversionScopeAvailable}
+              conversionAvailable={conversionAvailable}
+              conversionAdapters={conversionCapability?.adapters ?? []}
+              isCheckingConversion={isCheckingConversion}
+              conversionLabel={
+                partialConversionPlanAvailable
+                  ? "Review valid jobs…"
+                  : "Review conversion…"
+              }
+              conversionBlockReason={conversionBlockReason}
+              onApprove={approveAndPrepareConversion}
+            />
+          ) : null}
         </>
       ) : activeView === "library" ? (
         <main id="main-content" className="standalone-workspace" tabIndex={-1}>
           {libraryError ? (
-            <p className="analysis-error">
+            <p className="analysis-error" role="alert">
               <TriangleAlert aria-hidden="true" />
               {libraryError}
             </p>
@@ -2274,17 +2969,28 @@ export default function App() {
             {libraryPersistenceStatus}
           </p>
           {isLibraryLoading ? (
-            <section className="empty-plan" aria-labelledby="library-loading-heading">
+            <section
+              className="empty-plan"
+              aria-labelledby="library-loading-heading"
+            >
               <div>
                 <h2 id="library-loading-heading">Loading filament library</h2>
-                <p>Editing becomes available after the persistent inventory is loaded.</p>
+                <p>
+                  Editing becomes available after the persistent inventory is
+                  loaded.
+                </p>
               </div>
             </section>
           ) : libraryErrorKind === "load" ? (
-            <section className="empty-plan" aria-labelledby="library-unavailable-heading">
+            <section
+              className="empty-plan"
+              aria-labelledby="library-unavailable-heading"
+            >
               <TriangleAlert aria-hidden="true" />
               <div>
-                <h2 id="library-unavailable-heading">Filament library unavailable</h2>
+                <h2 id="library-unavailable-heading">
+                  Filament library unavailable
+                </h2>
                 <p>Restart the app after resolving the storage error.</p>
               </div>
             </section>
@@ -2309,19 +3015,36 @@ export default function App() {
           <p className="library-persistence-status" role="status">
             {calibrationPersistenceStatus}
           </p>
-          {isCalibrationLoading || (!calibrationLibrary && !calibrationError) ? (
-            <section className="empty-plan" aria-labelledby="calibration-loading-heading">
+          {isCalibrationLoading ||
+          (!calibrationLibrary && !calibrationError) ? (
+            <section
+              className="empty-plan"
+              aria-labelledby="calibration-loading-heading"
+            >
               <div>
-                <h2 id="calibration-loading-heading">Loading color calibration</h2>
-                <p>Measurement tools become available after stored records are loaded.</p>
+                <h2 id="calibration-loading-heading">
+                  Loading color calibration
+                </h2>
+                <p>
+                  Measurement tools become available after stored records are
+                  loaded.
+                </p>
               </div>
             </section>
           ) : calibrationErrorKind === "load" || !calibrationLibrary ? (
-            <section className="empty-plan" aria-labelledby="calibration-unavailable-heading">
+            <section
+              className="empty-plan"
+              aria-labelledby="calibration-unavailable-heading"
+            >
               <TriangleAlert aria-hidden="true" />
               <div>
-                <h2 id="calibration-unavailable-heading">Color calibration unavailable</h2>
-                <p>Resolve the storage problem, then retry without changing the stored data.</p>
+                <h2 id="calibration-unavailable-heading">
+                  Color calibration unavailable
+                </h2>
+                <p>
+                  Resolve the storage problem, then retry without changing the
+                  stored data.
+                </p>
                 <button
                   className="button"
                   type="button"
@@ -2337,7 +3060,9 @@ export default function App() {
               library={calibrationLibrary}
               spools={librarySpools}
               isNative={isNative}
-              isInventoryReady={!isLibraryLoading && libraryErrorKind !== "load"}
+              isInventoryReady={
+                !isLibraryLoading && libraryErrorKind !== "load"
+              }
               isSaving={isCalibrationSaving}
               isGeneratingProject={isCalibrationProjectGenerating}
               onGenerateProject={generateCalibrationProject}
@@ -2358,6 +3083,13 @@ export default function App() {
               analysisSource === "tauri"
             }
             publishedBundle={publishedPrintRunBundle}
+            finalLoadoutSaved={printerLoadoutEquals(printerLoadout, {
+              schemaVersion: 1,
+              currentLoadout: plan.plannedFinalLoadout,
+              currentA1SpoolId: plan.plannedFinalA1SpoolId,
+              updatedFrom: "print-run",
+            })}
+            onSaveFinalLoadout={saveCompletedPrintRunLoadout}
             onCurrentTargetChange={setSelectedPlateId}
             onOpenArtifact={(artifact) => openConvertedOutput(artifact)}
           />
@@ -2381,9 +3113,18 @@ export default function App() {
           void runConversionOutputAction("reveal", artifact);
         }}
         onRetryPreflight={retryConversionPreflight}
+        onOpenPrintRun={() => {
+          closeConversionDialog();
+          openApplicationView("run");
+        }}
         onClose={closeConversionDialog}
       />
-      <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+      <div
+        className="visually-hidden"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
         {liveMessage}
       </div>
     </div>

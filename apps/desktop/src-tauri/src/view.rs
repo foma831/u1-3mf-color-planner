@@ -21,13 +21,43 @@ use u1_three_mf::{ProjectAnalysis, ProjectDialect};
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct PlanningRequestView {
+    default_strategy: Option<PlanningStrategyView>,
     confirmed_spools: Vec<ConfirmedSpoolInputView>,
     scope_overrides: Vec<ScopePlanningInputView>,
     unit_printer_overrides: Vec<UnitPrinterInputView>,
     current_loadout: Option<Vec<LoadedToolheadInputView>>,
+    current_a1_spool_id: Option<String>,
     restore_cmy_after_direct: Option<bool>,
+    #[serde(default)]
+    allow_direct_palette_reduction: bool,
     a1_mini_enabled: bool,
     included_alternative_plate_ids: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InitialPlanningIntentView {
+    default_strategy: PlanningStrategyView,
+    a1_mini_enabled: bool,
+    /// Exact U1 starting state. `None` retains the legacy CMY+Grey defaults;
+    /// an explicitly supplied empty array means every U1 toolhead is unknown.
+    #[serde(default)]
+    current_loadout: Option<Vec<LoadedToolheadInputView>>,
+    /// Legacy T4-only input retained for saved v1 frontend state.
+    current_t4_spool_id: Option<String>,
+    current_a1_spool_id: Option<String>,
+}
+
+impl Default for InitialPlanningIntentView {
+    fn default() -> Self {
+        Self {
+            default_strategy: PlanningStrategyView::Auto,
+            a1_mini_enabled: false,
+            current_loadout: None,
+            current_t4_spool_id: None,
+            current_a1_spool_id: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -107,6 +137,16 @@ enum PlanningStrategyView {
     Direct,
 }
 
+impl PlanningStrategyView {
+    fn into_scope_strategy(self) -> ScopeStrategy {
+        match self {
+            Self::Auto => ScopeStrategy::Auto,
+            Self::Cmyx => ScopeStrategy::CmyxFullSpectrum,
+            Self::Direct => ScopeStrategy::DirectSpools,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DirectAssignmentInputView {
@@ -145,7 +185,11 @@ pub struct ProjectPlanView {
     partial_conversion: PartialConversionView,
     spools: Vec<FilamentSpoolView>,
     current_loadout: Vec<LoadedToolheadView>,
+    current_a1_spool_id: Option<String>,
+    planned_final_loadout: Vec<LoadedToolheadView>,
+    planned_final_a1_spool_id: Option<String>,
     restore_cmy_by_default: bool,
+    custom_direct_palettes_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -345,6 +389,7 @@ struct T4ChangeView {
 #[serde(rename_all = "camelCase")]
 struct PlatePlanView {
     id: String,
+    planning_status: &'static str,
     scope_id: String,
     source_unit_ids: Vec<String>,
     order: usize,
@@ -394,6 +439,7 @@ enum ToolChangeView {
 struct DirectColorMappingView {
     id: String,
     physical_identity_id: String,
+    inheritance_key: String,
     source_slot: String,
     source_name: String,
     source_hex: String,
@@ -433,11 +479,14 @@ impl PlanningRequestView {
         cmyx_geometry_context: CmyxGeometryContext,
     ) -> Result<PreliminaryPlanOptions, String> {
         let PlanningRequestView {
+            default_strategy,
             confirmed_spools,
             scope_overrides,
             unit_printer_overrides,
             current_loadout,
+            current_a1_spool_id,
             restore_cmy_after_direct,
+            allow_direct_palette_reduction,
             a1_mini_enabled,
             included_alternative_plate_ids,
         } = self;
@@ -466,17 +515,25 @@ impl PlanningRequestView {
             Some(loadout) => current_toolhead_request(loadout)?,
             None => defaults.current_toolheads,
         };
+        let current_a1_spool_id = current_a1_spool_id
+            .map(|spool_id| spool_id.trim().to_owned())
+            .filter(|spool_id| !spool_id.is_empty());
+        validate_cross_printer_current_loadout(&current_toolheads, current_a1_spool_id.as_deref())?;
 
         Ok(PreliminaryPlanOptions {
             current_toolheads,
-            scope_strategy: defaults.scope_strategy,
+            scope_strategy: default_strategy
+                .map(PlanningStrategyView::into_scope_strategy)
+                .unwrap_or(defaults.scope_strategy),
             restore_cmy_after_direct: restore_cmy_after_direct
                 .unwrap_or(defaults.restore_cmy_after_direct),
+            allow_direct_palette_reduction,
             confirmed_spools,
             scope_overrides,
             unit_printer_overrides,
             a1_mini: A1MiniConfig {
                 enabled: a1_mini_enabled,
+                current_spool_id: current_a1_spool_id,
                 ..A1MiniConfig::default()
             },
             included_alternative_plate_ids,
@@ -484,6 +541,59 @@ impl PlanningRequestView {
             cmyx_geometry_context,
         })
     }
+}
+
+impl InitialPlanningIntentView {
+    fn into_options_with_backend_state(
+        self,
+        library_spools: Vec<Spool>,
+        confirmed_calibration_samples: Vec<UserCmyxCalibrationRecord>,
+        cmyx_geometry_context: CmyxGeometryContext,
+    ) -> Result<PreliminaryPlanOptions, ApplicationError> {
+        let InitialPlanningIntentView {
+            default_strategy,
+            a1_mini_enabled,
+            current_loadout,
+            current_t4_spool_id,
+            current_a1_spool_id,
+        } = self;
+        let defaults = PreliminaryPlanOptions::default();
+        let current_toolheads = match current_loadout {
+            Some(loadout) => current_toolhead_request(loadout)
+                .map_err(|message| ApplicationError::InvalidCurrentPrinterLoadout { message })?,
+            None => {
+                let mut current_toolheads = defaults.current_toolheads.clone();
+                if let Some(spool_id) = normalized_optional_spool_id(current_t4_spool_id) {
+                    current_toolheads.slots[Toolhead::T4.index()] =
+                        ToolheadSlotState::Loaded(spool_id);
+                }
+                current_toolheads
+            }
+        };
+        let current_a1_spool_id = normalized_optional_spool_id(current_a1_spool_id);
+        validate_cross_printer_current_loadout(&current_toolheads, current_a1_spool_id.as_deref())
+            .map_err(|message| ApplicationError::InvalidCurrentPrinterLoadout { message })?;
+
+        Ok(PreliminaryPlanOptions {
+            current_toolheads,
+            scope_strategy: default_strategy.into_scope_strategy(),
+            confirmed_spools: library_spools,
+            a1_mini: A1MiniConfig {
+                enabled: a1_mini_enabled,
+                current_spool_id: current_a1_spool_id,
+                ..A1MiniConfig::default()
+            },
+            confirmed_calibration_samples,
+            cmyx_geometry_context,
+            ..defaults
+        })
+    }
+}
+
+fn normalized_optional_spool_id(spool_id: Option<String>) -> Option<String> {
+    spool_id
+        .map(|spool_id| spool_id.trim().to_owned())
+        .filter(|spool_id| !spool_id.is_empty())
 }
 
 impl ConfirmedSpoolInputView {
@@ -559,11 +669,7 @@ impl ScopePlanningInputView {
             approved_color_fallbacks,
             material_substitutions,
         } = self;
-        let strategy = match strategy {
-            PlanningStrategyView::Auto => ScopeStrategy::Auto,
-            PlanningStrategyView::Cmyx => ScopeStrategy::CmyxFullSpectrum,
-            PlanningStrategyView::Direct => ScopeStrategy::DirectSpools,
-        };
+        let strategy = strategy.into_scope_strategy();
         let direct_assignments = assignments
             .into_iter()
             .map(|assignment| {
@@ -616,27 +722,46 @@ fn current_toolhead_request(
     let mut seen_spools = BTreeSet::new();
     for loaded in loadout {
         let toolhead = parse_toolhead(&loaded.toolhead)?;
+        let spool_id = loaded.spool_id.trim().to_owned();
         if !seen.insert(toolhead) {
             return Err(format!(
                 "Current loadout lists {} more than once.",
                 toolhead_name(toolhead)
             ));
         }
-        if loaded.spool_id.trim().is_empty() {
+        if spool_id.is_empty() {
             return Err(format!(
                 "Current {} spool ID cannot be empty.",
                 toolhead_name(toolhead)
             ));
         }
-        if !seen_spools.insert(loaded.spool_id.clone()) {
+        if !seen_spools.insert(spool_id.clone()) {
             return Err(format!(
                 "Physical spool '{}' cannot be loaded in more than one toolhead.",
-                loaded.spool_id
+                spool_id
             ));
         }
-        slots[toolhead.index()] = ToolheadSlotState::Loaded(loaded.spool_id);
+        slots[toolhead.index()] = ToolheadSlotState::Loaded(spool_id);
     }
     Ok(CurrentToolheadState { slots })
+}
+
+fn validate_cross_printer_current_loadout(
+    current_toolheads: &CurrentToolheadState,
+    current_a1_spool_id: Option<&str>,
+) -> Result<(), String> {
+    let Some(current_a1_spool_id) = current_a1_spool_id else {
+        return Ok(());
+    };
+    if current_toolheads.slots.iter().any(|slot| match slot {
+        ToolheadSlotState::Loaded(spool_id) => spool_id == current_a1_spool_id,
+        ToolheadSlotState::Unknown | ToolheadSlotState::Empty => false,
+    }) {
+        return Err(format!(
+            "Physical spool '{current_a1_spool_id}' cannot be loaded on the U1 and A1 mini at the same time."
+        ));
+    }
+    Ok(())
 }
 
 fn parse_hex_color(value: &str) -> Result<RgbColor, String> {
@@ -720,6 +845,7 @@ pub fn analyze_native_project_data_with_library(
 ) -> Result<(ProjectAnalysis, NativePlanningOutcome), ApplicationError> {
     analyze_native_project_data_with_backend_state(
         path,
+        InitialPlanningIntentView::default(),
         library_spools,
         Vec::new(),
         CmyxGeometryContext::default(),
@@ -728,16 +854,16 @@ pub fn analyze_native_project_data_with_library(
 
 pub fn analyze_native_project_data_with_backend_state(
     path: &str,
+    planning_intent: InitialPlanningIntentView,
     library_spools: Vec<Spool>,
     confirmed_calibration_samples: Vec<UserCmyxCalibrationRecord>,
     cmyx_geometry_context: CmyxGeometryContext,
 ) -> Result<(ProjectAnalysis, NativePlanningOutcome), ApplicationError> {
-    let options = PreliminaryPlanOptions {
-        confirmed_spools: library_spools,
+    let options = planning_intent.into_options_with_backend_state(
+        library_spools,
         confirmed_calibration_samples,
         cmyx_geometry_context,
-        ..PreliminaryPlanOptions::default()
-    };
+    )?;
     let report = analyze_and_plan_with_options(path, &options)?;
     let input = report.planning_input;
     let view = project_plan_view(
@@ -959,6 +1085,7 @@ fn project_plan_view(
                 .sum::<usize>();
             Some(PlatePlanView {
                 id: plate.id.clone(),
+                planning_status: "printable",
                 scope_id: job.scope_ids.first().cloned().unwrap_or_default(),
                 source_unit_ids: plate
                     .units
@@ -1049,6 +1176,7 @@ fn project_plan_view(
         let order = plates.len() + 1;
         plates.push(PlatePlanView {
             id: format!("blocked-{}", scope.id),
+            planning_status: "blocked",
             scope_id: scope.id.clone(),
             source_unit_ids,
             order,
@@ -1180,6 +1308,12 @@ fn project_plan_view(
             },
         }
     };
+    let planned_final_a1 = planned_final_a1_spool_id(
+        &result.batches,
+        input.config.a1_mini.current_spool_id.as_deref(),
+    );
+    let planned_final_loadout =
+        planned_final_u1_loadout(&result.final_toolheads, planned_final_a1.as_deref());
 
     ProjectPlanView {
         summary: ProjectSummaryView {
@@ -1228,7 +1362,11 @@ fn project_plan_view(
         omitted_unit_count,
         spools: input.inventory.iter().filter_map(spool_view).collect(),
         current_loadout: current_loadout(input),
+        current_a1_spool_id: input.config.a1_mini.current_spool_id.clone(),
+        planned_final_loadout,
+        planned_final_a1_spool_id: planned_final_a1,
         restore_cmy_by_default: input.config.restore_cmy_after_direct,
+        custom_direct_palettes_enabled: input.config.allow_direct_palette_reduction,
     }
 }
 
@@ -1364,8 +1502,11 @@ fn spool_view(spool: &Spool) -> Option<FilamentSpoolView> {
 }
 
 fn current_loadout(input: &PlanningInput) -> Vec<LoadedToolheadView> {
-    input
-        .current_toolheads
+    loaded_toolhead_views(&input.current_toolheads)
+}
+
+fn loaded_toolhead_views(current: &CurrentToolheadState) -> Vec<LoadedToolheadView> {
+    current
         .slots
         .iter()
         .enumerate()
@@ -1377,6 +1518,30 @@ fn current_loadout(input: &PlanningInput) -> Vec<LoadedToolheadView> {
             ToolheadSlotState::Unknown | ToolheadSlotState::Empty => None,
         })
         .collect()
+}
+
+fn planned_final_u1_loadout(
+    final_toolheads: &CurrentToolheadState,
+    planned_final_a1_spool_id: Option<&str>,
+) -> Vec<LoadedToolheadView> {
+    loaded_toolhead_views(final_toolheads)
+        .into_iter()
+        .filter(|loaded| Some(loaded.spool_id.as_str()) != planned_final_a1_spool_id)
+        .collect()
+}
+
+fn planned_final_a1_spool_id(
+    batches: &[u1_planner::PlannedBatch],
+    current_a1_spool_id: Option<&str>,
+) -> Option<String> {
+    batches
+        .iter()
+        .rev()
+        .find_map(|batch| match &batch.loadout {
+            PrinterLoadout::A1Mini { spool_id } => Some(spool_id.clone()),
+            PrinterLoadout::U1 { .. } => None,
+        })
+        .or_else(|| current_a1_spool_id.map(str::to_owned))
 }
 
 fn scope_selections(scopes: &[u1_planner::PrintScope]) -> Vec<ScopeSelectionView> {
@@ -1773,7 +1938,7 @@ fn color_mappings(
     let structurally_direct = job.scope_ids.iter().all(|scope| {
         options
             .get(scope.as_str())
-            .is_some_and(|option| (1..=4).contains(&option.direct_pair_count))
+            .is_some_and(|option| direct_option_is_exposable(option))
     });
     if !structurally_direct {
         return None;
@@ -1793,23 +1958,14 @@ fn color_mappings(
             .iter()
             .filter_map(source_requirement_for_mapping),
     );
-    let direct_assignments = job
-        .scope_ids
-        .iter()
-        .filter_map(|scope| options.get(scope.as_str()).copied())
-        .filter_map(|option| match &option.direct_spools {
-            DirectSpoolEligibility::Eligible { assignments } => Some(assignments.as_slice()),
-            DirectSpoolEligibility::Ineligible { .. } => None,
-        })
-        .flatten()
-        .collect::<Vec<_>>();
     let mappings = job
         .color_mappings
         .iter()
         .enumerate()
         .filter_map(|(index, mapping)| {
             let material = ui_material(&mapping.source_material)?;
-            let physical_metadata = source_requirement_for_mapping(mapping)
+            let source_requirement = source_requirement_for_mapping(mapping);
+            let physical_metadata = source_requirement
                 .map(direct_physical_mapping_identity)
                 .and_then(|identity| physical_identity_metadata.get(&identity));
             let physical_identity_id = physical_metadata.map_or_else(
@@ -1817,12 +1973,20 @@ fn color_mappings(
                 |metadata| metadata.0.clone(),
             );
             let physical_index = physical_metadata.map_or(index, |metadata| metadata.1);
-            let assignment = direct_assignments.iter().find(|assignment| {
-                assignment
-                    .source_requirement_ids
-                    .iter()
-                    .any(|id| mapping.source_requirement_ids.contains(id))
-            });
+            let assignment =
+                options.get(mapping.scope_id.as_str()).and_then(|option| {
+                    match &option.direct_spools {
+                        DirectSpoolEligibility::Eligible { assignments } => {
+                            assignments.iter().find(|assignment| {
+                                assignment
+                                    .source_requirement_ids
+                                    .iter()
+                                    .any(|id| mapping.source_requirement_ids.contains(id))
+                            })
+                        }
+                        DirectSpoolEligibility::Ineligible { .. } => None,
+                    }
+                });
             let requested_assignment = scopes.get(mapping.scope_id.as_str()).and_then(|scope| {
                 scope.direct_assignments.iter().find(|request| {
                     mapping
@@ -1834,10 +1998,9 @@ fn color_mappings(
                 .direct_toolhead
                 .or_else(|| assignment.map(|assignment| assignment.toolhead))
                 .unwrap_or(Toolhead::ALL[physical_index.min(Toolhead::ALL.len() - 1)]);
-            let spool_id = mapping
-                .actual_spool_id
-                .clone()
-                .or_else(|| assignment.map(|assignment| assignment.spool_id.clone()))
+            let spool_id = assignment
+                .map(|assignment| assignment.spool_id.clone())
+                .or_else(|| mapping.actual_spool_id.clone())
                 .unwrap_or_default();
             let used_by = scopes
                 .get(mapping.scope_id.as_str())
@@ -1850,6 +2013,10 @@ fn color_mappings(
                     .cloned()
                     .unwrap_or_else(|| mapping.scope_id.clone()),
                 physical_identity_id,
+                inheritance_key: source_requirement.map_or_else(
+                    || format!("scope:{}:mapping:{}", mapping.scope_id, index + 1),
+                    direct_mapping_inheritance_key,
+                ),
                 source_slot: mapping.source_slots.join(", "),
                 source_name: format!("Source {}", mapping.source_slots.join(" + ")),
                 source_hex: color_hex(mapping.source_color),
@@ -1874,7 +2041,7 @@ fn unresolved_mappings(
     option: Option<&ScopeStrategyOptions>,
 ) -> Option<Vec<DirectColorMappingView>> {
     let option = option?;
-    if !(1..=4).contains(&option.direct_pair_count) {
+    if !direct_option_is_exposable(option) {
         return None;
     }
     let assignments = match &option.direct_spools {
@@ -1909,6 +2076,7 @@ fn unresolved_mappings(
             Some(DirectColorMappingView {
                 id: requirement.id.clone(),
                 physical_identity_id: physical_identity_id.clone(),
+                inheritance_key: direct_mapping_inheritance_key(requirement),
                 source_slot: requirement.source_slots.join(", "),
                 source_name: format!("Source {}", requirement.source_slots.join(" + ")),
                 source_hex: color_hex(requirement.source_color),
@@ -2009,6 +2177,29 @@ fn direct_physical_mapping_identity(
     }
 }
 
+fn direct_mapping_inheritance_key(requirement: &MaterialColorRequirement) -> String {
+    let identity = direct_physical_mapping_identity(requirement);
+    let material = material_name(&identity.material).to_owned();
+    let color = color_hex(identity.color);
+    match identity.source_profile {
+        DirectPhysicalMappingSourceProfile::Declared(profiles) => {
+            serde_json::to_string(&("direct-source-v1", material, color, "declared", profiles))
+        }
+        DirectPhysicalMappingSourceProfile::Unknown {
+            role,
+            discriminator,
+        } => serde_json::to_string(&(
+            "direct-source-v1",
+            material,
+            color,
+            "unknown",
+            material_role_name(role),
+            discriminator,
+        )),
+    }
+    .expect("Direct inheritance identity is JSON serializable")
+}
+
 fn direct_physical_identity_metadata<'a>(
     requirements: impl Iterator<Item = &'a MaterialColorRequirement>,
 ) -> BTreeMap<DirectPhysicalMappingIdentity, (String, usize)> {
@@ -2051,9 +2242,10 @@ fn direct_status(
             Some("Direct Spools eligibility is unavailable.".to_owned()),
         );
     }
-    if selected
-        .iter()
-        .all(|option| (1..=4).contains(&option.direct_pair_count))
+    if selected.len() == scope_ids.len()
+        && selected
+            .iter()
+            .all(|option| direct_option_is_exposable(option))
     {
         return (true, None);
     }
@@ -2064,6 +2256,28 @@ fn direct_status(
             DirectSpoolEligibility::Eligible { .. } => None,
         });
     (false, reason)
+}
+
+fn direct_option_has_printable_loadout(option: &ScopeStrategyOptions) -> bool {
+    match &option.direct_spools {
+        DirectSpoolEligibility::Eligible { assignments } => {
+            let spools = assignments
+                .iter()
+                .map(|assignment| assignment.spool_id.as_str())
+                .filter(|spool_id| !spool_id.is_empty())
+                .collect::<BTreeSet<_>>();
+            !assignments.is_empty()
+                && assignments
+                    .iter()
+                    .all(|assignment| !assignment.spool_id.is_empty())
+                && (1..=4).contains(&spools.len())
+        }
+        DirectSpoolEligibility::Ineligible { .. } => false,
+    }
+}
+
+fn direct_option_is_exposable(option: &ScopeStrategyOptions) -> bool {
+    (1..=4).contains(&option.direct_pair_count) || direct_option_has_printable_loadout(option)
 }
 
 fn direct_reason(reason: &DirectIneligibility) -> String {
@@ -2600,7 +2814,14 @@ mod tests {
                 available: false,
             }],
             current_loadout: Vec::new(),
+            current_a1_spool_id: Some("user-orange".to_owned()),
+            planned_final_loadout: vec![LoadedToolheadView {
+                toolhead: "T4",
+                spool_id: "user-orange".to_owned(),
+            }],
+            planned_final_a1_spool_id: Some("user-white".to_owned()),
             restore_cmy_by_default: true,
+            custom_direct_palettes_enabled: false,
         };
         let json = serde_json::to_value(view).expect("view must serialize");
 
@@ -2628,6 +2849,7 @@ mod tests {
         assert_eq!(json["unitPrinterSelections"][0]["preference"], "auto");
         assert!(json["colorResolutions"].is_array());
         assert!(json["plates"].is_array());
+        assert_eq!(json["currentA1SpoolId"], "user-orange");
         assert!(json["batches"].is_array());
         assert_eq!(json["t4SwapCount"], 0);
         assert_eq!(json["a1SpoolChangeCount"], 0);
@@ -2640,12 +2862,248 @@ mod tests {
         assert_eq!(json["spools"][0]["available"], false);
         assert_eq!(json["spools"][0]["source"], "user");
         assert!(json["currentLoadout"].is_array());
+        assert_eq!(json["plannedFinalLoadout"][0]["toolhead"], "T4");
+        assert_eq!(json["plannedFinalLoadout"][0]["spoolId"], "user-orange");
+        assert_eq!(json["plannedFinalA1SpoolId"], "user-white");
         assert_eq!(json["restoreCmyByDefault"], true);
+        assert_eq!(json["customDirectPalettesEnabled"], false);
+    }
+
+    #[test]
+    fn initial_planning_intent_maps_full_u1_and_a1_loadouts() {
+        let intent: InitialPlanningIntentView = serde_json::from_value(serde_json::json!({
+            "defaultStrategy": "direct",
+            "a1MiniEnabled": true,
+            "currentLoadout": [
+                { "toolhead": " T1 ", "spoolId": "  user-cyan  " },
+                { "toolhead": "T2", "spoolId": "user-magenta" },
+                { "toolhead": "T3", "spoolId": "user-yellow" },
+                { "toolhead": "T4", "spoolId": "user-black" }
+            ],
+            "currentT4SpoolId": "legacy-grey-is-ignored",
+            "currentA1SpoolId": "  user-white  "
+        }))
+        .expect("camelCase initial planning intent must deserialize");
+        let options = intent
+            .into_options_with_backend_state(Vec::new(), Vec::new(), CmyxGeometryContext::default())
+            .expect("the exact current loadout must validate");
+
+        assert_eq!(options.scope_strategy, ScopeStrategy::DirectSpools);
+        assert!(options.a1_mini.enabled);
+        assert_eq!(
+            options.a1_mini.current_spool_id,
+            Some("user-white".to_owned())
+        );
+        assert_eq!(
+            options.current_toolheads.slots,
+            [
+                ToolheadSlotState::Loaded("user-cyan".to_owned()),
+                ToolheadSlotState::Loaded("user-magenta".to_owned()),
+                ToolheadSlotState::Loaded("user-yellow".to_owned()),
+                ToolheadSlotState::Loaded("user-black".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn initial_planning_intent_maps_cmyx_and_ignores_blank_t4() {
+        let intent: InitialPlanningIntentView = serde_json::from_value(serde_json::json!({
+            "defaultStrategy": "cmyx",
+            "a1MiniEnabled": false,
+            "currentT4SpoolId": "   ",
+            "currentA1SpoolId": null
+        }))
+        .expect("camelCase initial planning intent must deserialize");
+        let defaults = PreliminaryPlanOptions::default();
+        let options = intent
+            .into_options_with_backend_state(Vec::new(), Vec::new(), CmyxGeometryContext::default())
+            .expect("legacy initial intent must remain valid");
+
+        assert_eq!(options.scope_strategy, ScopeStrategy::CmyxFullSpectrum);
+        assert!(!options.a1_mini.enabled);
+        assert_eq!(options.a1_mini.current_spool_id, None);
+        assert_eq!(options.current_toolheads, defaults.current_toolheads);
+    }
+
+    #[test]
+    fn explicit_empty_initial_u1_loadout_is_all_unknown() {
+        let intent: InitialPlanningIntentView = serde_json::from_value(serde_json::json!({
+            "defaultStrategy": "auto",
+            "a1MiniEnabled": false,
+            "currentLoadout": [],
+            "currentT4SpoolId": "legacy-grey-is-ignored",
+            "currentA1SpoolId": null
+        }))
+        .expect("explicit empty loadout must deserialize");
+
+        let options = intent
+            .into_options_with_backend_state(Vec::new(), Vec::new(), CmyxGeometryContext::default())
+            .expect("unknown U1 state is a valid conservative input");
+
+        assert_eq!(options.current_toolheads, CurrentToolheadState::default());
+    }
+
+    #[test]
+    fn initial_planning_intent_rejects_one_spool_on_u1_and_a1() {
+        let intent: InitialPlanningIntentView = serde_json::from_value(serde_json::json!({
+            "defaultStrategy": "auto",
+            "a1MiniEnabled": true,
+            "currentLoadout": [
+                { "toolhead": "T1", "spoolId": " shared-spool " }
+            ],
+            "currentT4SpoolId": null,
+            "currentA1SpoolId": "shared-spool"
+        }))
+        .expect("duplicate physical placement must deserialize before validation");
+
+        let error = intent
+            .into_options_with_backend_state(Vec::new(), Vec::new(), CmyxGeometryContext::default())
+            .expect_err("one physical spool cannot start on both printers");
+
+        assert!(matches!(
+            error,
+            ApplicationError::InvalidCurrentPrinterLoadout { message }
+                if message.contains("cannot be loaded on the U1 and A1 mini")
+        ));
+    }
+
+    #[test]
+    fn replan_request_rejects_one_spool_on_u1_and_a1() {
+        let request: PlanningRequestView = serde_json::from_value(serde_json::json!({
+            "currentLoadout": [
+                { "toolhead": "T2", "spoolId": "shared-spool" }
+            ],
+            "currentA1SpoolId": " shared-spool ",
+            "a1MiniEnabled": true
+        }))
+        .expect("duplicate physical placement must deserialize before validation");
+
+        let error = request
+            .into_options()
+            .expect_err("one physical spool cannot start on both printers");
+
+        assert!(error.contains("cannot be loaded on the U1 and A1 mini"));
+    }
+
+    #[test]
+    fn current_loadout_normalizes_before_duplicate_spool_validation() {
+        let error = current_toolhead_request(vec![
+            LoadedToolheadInputView {
+                toolhead: "T1".to_owned(),
+                spool_id: " shared-spool".to_owned(),
+            },
+            LoadedToolheadInputView {
+                toolhead: "T2".to_owned(),
+                spool_id: "shared-spool ".to_owned(),
+            },
+        ])
+        .expect_err("trim-equivalent physical IDs must remain unique");
+
+        assert!(error.contains("cannot be loaded in more than one toolhead"));
+    }
+
+    #[test]
+    fn planned_final_a1_uses_the_last_batch_or_the_current_spool() {
+        let batches = vec![
+            u1_planner::PlannedBatch {
+                id: "a1-first".to_owned(),
+                printer: Printer::A1Mini,
+                strategy: ColorStrategy::A1Mono,
+                loadout: PrinterLoadout::A1Mini {
+                    spool_id: "first-spool".to_owned(),
+                },
+                job_ids: Vec::new(),
+                plate_ids: Vec::new(),
+                setup_actions: Vec::new(),
+                t4_swap_before: false,
+            },
+            u1_planner::PlannedBatch {
+                id: "a1-last".to_owned(),
+                printer: Printer::A1Mini,
+                strategy: ColorStrategy::A1Mono,
+                loadout: PrinterLoadout::A1Mini {
+                    spool_id: "last-spool".to_owned(),
+                },
+                job_ids: Vec::new(),
+                plate_ids: Vec::new(),
+                setup_actions: Vec::new(),
+                t4_swap_before: false,
+            },
+        ];
+
+        assert_eq!(
+            planned_final_a1_spool_id(&batches, Some("starting-spool")),
+            Some("last-spool".to_owned())
+        );
+        assert_eq!(
+            planned_final_a1_spool_id(&[], Some("starting-spool")),
+            Some("starting-spool".to_owned())
+        );
+        assert_eq!(planned_final_a1_spool_id(&[], None), None);
+    }
+
+    #[test]
+    fn loaded_toolhead_views_preserve_exact_u1_positions() {
+        let final_toolheads = CurrentToolheadState {
+            slots: [
+                ToolheadSlotState::Loaded("cyan".to_owned()),
+                ToolheadSlotState::Unknown,
+                ToolheadSlotState::Empty,
+                ToolheadSlotState::Loaded("black".to_owned()),
+            ],
+        };
+
+        let loadout = loaded_toolhead_views(&final_toolheads);
+
+        assert_eq!(loadout.len(), 2);
+        assert_eq!(loadout[0].toolhead, "T1");
+        assert_eq!(loadout[0].spool_id, "cyan");
+        assert_eq!(loadout[1].toolhead, "T4");
+        assert_eq!(loadout[1].spool_id, "black");
+    }
+
+    #[test]
+    fn planned_final_u1_omits_the_spool_transferred_to_a1() {
+        let final_toolheads = CurrentToolheadState {
+            slots: [
+                ToolheadSlotState::Loaded("shared-spool".to_owned()),
+                ToolheadSlotState::Loaded("magenta".to_owned()),
+                ToolheadSlotState::Unknown,
+                ToolheadSlotState::Empty,
+            ],
+        };
+
+        let loadout = planned_final_u1_loadout(&final_toolheads, Some("shared-spool"));
+
+        assert_eq!(loadout.len(), 1);
+        assert_eq!(loadout[0].toolhead, "T2");
+        assert_eq!(loadout[0].spool_id, "magenta");
+        assert!(
+            loadout
+                .iter()
+                .all(|loaded| loaded.spool_id != "shared-spool")
+        );
+    }
+
+    #[test]
+    fn initial_planning_intent_rejects_unknown_fields() {
+        assert!(
+            serde_json::from_value::<InitialPlanningIntentView>(serde_json::json!({
+                "defaultStrategy": "auto",
+                "a1MiniEnabled": false,
+                "currentT4SpoolId": null,
+                "currentA1SpoolId": null,
+                "confirmedSpools": []
+            }))
+            .is_err(),
+            "initial planning intent must not inject authoritative backend state"
+        );
     }
 
     #[test]
     fn native_replan_request_accepts_confirmed_spools_and_exact_assignments() {
         let request: PlanningRequestView = serde_json::from_value(serde_json::json!({
+            "defaultStrategy": "direct",
             "confirmedSpools": [{
                 "id": "user-orange",
                 "name": "User Orange",
@@ -2680,12 +3138,15 @@ mod tests {
                 "preference": "a1-mini"
             }],
             "includedAlternativePlateIds": [7],
+            "currentA1SpoolId": "user-orange",
             "restoreCmyAfterDirect": false,
+            "allowDirectPaletteReduction": true,
             "a1MiniEnabled": true
         }))
         .expect("camelCase request must deserialize");
         let options = request.into_options().expect("request must validate");
 
+        assert_eq!(options.scope_strategy, ScopeStrategy::DirectSpools);
         assert_eq!(options.confirmed_spools.len(), 1);
         assert_eq!(
             options.confirmed_spools[0].measured_color,
@@ -2701,6 +3162,10 @@ mod tests {
             Some(Toolhead::T4)
         );
         assert!(options.scope_overrides[0].direct_assignments[0].allow_material_substitution);
+        assert_eq!(
+            options.a1_mini.current_spool_id,
+            Some("user-orange".to_owned())
+        );
         assert_eq!(
             options.unit_printer_overrides,
             vec![UnitPrinterOverride {
@@ -2726,6 +3191,7 @@ mod tests {
             }]
         );
         assert!(!options.restore_cmy_after_direct);
+        assert!(options.allow_direct_palette_reduction);
         assert!(options.a1_mini.enabled);
         assert_eq!(options.included_alternative_plate_ids, vec![7]);
     }
@@ -2764,6 +3230,7 @@ mod tests {
         let options = request
             .into_options_with_backend_state(Vec::new(), vec![trusted.clone()], geometry.clone())
             .unwrap();
+        assert_eq!(options.scope_strategy, ScopeStrategy::Auto);
         assert_eq!(options.confirmed_calibration_samples, vec![trusted]);
         assert_eq!(options.cmyx_geometry_context, geometry);
 
@@ -3422,6 +3889,72 @@ mod tests {
             .expect("support grey row");
         assert_eq!(cosmetic.physical_identity_id, support.physical_identity_id);
         assert_eq!(cosmetic.direct_toolhead, support.direct_toolhead);
+    }
+
+    #[test]
+    fn custom_direct_palette_exposes_seven_sources_mapped_to_four_spools() {
+        let requirements = (0..7)
+            .map(|index| {
+                let id = format!("source-{index}");
+                let profile = format!("profile-{index}");
+                let slot = format!("F{}", index + 1);
+                let mut requirement =
+                    fallback_requirement(&id, MaterialRole::Cosmetic, &[&slot], &[&profile]);
+                requirement.source_color =
+                    RgbColor::new(20 + index * 20, 40 + index * 10, 70 + index * 5);
+                requirement
+            })
+            .collect::<Vec<_>>();
+        let mut scope = fallback_scope(requirements.clone());
+        scope.id = "seven-color-scope".to_owned();
+        scope.display_name = "Seven color plate".to_owned();
+        let assignments = requirements
+            .iter()
+            .enumerate()
+            .map(
+                |(index, requirement)| u1_planner::DirectToolheadAssignment {
+                    source_requirement_ids: vec![requirement.id.clone()],
+                    source_profile_ids: requirement.source_profile_ids.clone(),
+                    source_material: requirement.material.clone(),
+                    source_color: requirement.source_color,
+                    toolhead: Toolhead::ALL[index % 4],
+                    spool_id: format!("spool-{}", index % 4),
+                    actual_color: requirement.source_color,
+                    delta_e00: Some(0.0),
+                    confidence: ColorConfidence::Nominal,
+                    status: u1_planner::MappingStatus::Exact,
+                },
+            )
+            .collect();
+        let option = ScopeStrategyOptions {
+            scope_id: scope.id.clone(),
+            effective_pair_count: 7,
+            direct_pair_count: 7,
+            cmyx_available: true,
+            direct_spools: DirectSpoolEligibility::Eligible { assignments },
+            selected_strategy: ScopeStrategy::Auto,
+        };
+
+        let mappings = unresolved_mappings(&scope, Some(&option))
+            .expect("the reduced four-spool palette must remain editable");
+
+        assert_eq!(mappings.len(), 7);
+        assert_eq!(
+            mappings
+                .iter()
+                .map(|mapping| mapping.selected_spool_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            4
+        );
+        assert!(
+            mappings
+                .iter()
+                .all(|mapping| !mapping.inheritance_key.is_empty())
+        );
+        let scope_ids = vec![scope.id.clone()];
+        let options = BTreeMap::from([(scope.id.as_str(), &option)]);
+        assert_eq!(direct_status(&scope_ids, &options), (true, None));
     }
 
     #[test]

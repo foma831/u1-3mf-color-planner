@@ -11,7 +11,6 @@ The product UI, CLI, source code, logs, and generated machine-readable reports a
 Build and open the current local Apple Silicon application:
 
 ```sh
-export PATH="/Users/evgeny/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/opt/homebrew/bin:$PATH"
 npm install
 npm run build
 open "target/release/bundle/macos/U1 3MF Color Planner.app"
@@ -81,7 +80,7 @@ color threshold, the UI shows its predicted color, Delta E, recipe, and required
 T4. The user may approve that exact fingerprinted candidate or add a physical
 spool; PETG-to-PLA remains a separate mechanical-risk decision. Known bounds are
 used conservatively; unknown or degenerate bounds stay on U1. For Direct Spools,
-`Approve & Convert` is available only when the plan is valid and every adapter
+`Review conversion…` is available only when the plan is valid and every adapter
 required by that specific mixed plan matches its exact executable, profile,
 and qualification gate.
 
@@ -293,13 +292,13 @@ marks.
 
 ## Development
 
-Rust is managed with `rustup`. On this machine the active stable toolchain is
-installed under `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin`.
+Rust is managed with `rustup`. Repository npm scripts locate the active Cargo
+toolchain automatically, including Homebrew rustup installations whose Cargo
+proxy is not present in the interactive shell `PATH`.
 
 ```sh
-export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/opt/homebrew/bin:$PATH"
 npm install
-cargo test --workspace
+npm run test:rust
 npm run check
 npm run dev
 ```

@@ -143,6 +143,7 @@ fn planning_request_from_fixture(options: &PreliminaryPlanOptions) -> PlanningRe
         .collect::<Vec<_>>();
 
     serde_json::from_value(serde_json::json!({
+        "defaultStrategy": strategy_name(options.scope_strategy),
         // Deliberately empty: the authoritative replan must merge the saved
         // native filament library supplied by the backend, not a UI copy.
         "confirmedSpools": [],
@@ -308,6 +309,11 @@ fn rewrite_published_metadata_after_tamper(root: &Path, manifest: &serde_json::V
         render_conversion_report(manifest).expect("tampered report must render"),
     )
     .expect("tampered report must write");
+    fs::write(
+        root.join(PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME),
+        render_print_instructions(manifest).expect("tampered instructions must render"),
+    )
+    .expect("tampered instructions must write");
 
     let mut checksums = manifest["artifacts"]
         .as_array()
@@ -327,6 +333,7 @@ fn rewrite_published_metadata_after_tamper(root: &Path, manifest: &serde_json::V
         PUBLISHED_MANIFEST_FILE_NAME,
         PUBLISHED_CONVERSION_PLAN_FILE_NAME,
         PUBLISHED_CONVERSION_REPORT_FILE_NAME,
+        PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME,
     ] {
         let (_, sha256) = hash_file(&root.join(file_name)).expect("metadata identity");
         checksums.push(format!("{sha256}  {file_name}"));
@@ -406,6 +413,7 @@ fn native_mixed_withered_foxy_publishes_and_recovers_without_user_writes() {
     eprintln!("native mixed E2E: analyzing immutable Withered_Foxy source");
     let (analysis, initial) = view::analyze_native_project_data_with_backend_state(
         source.to_str().expect("UTF-8 source path"),
+        view::InitialPlanningIntentView::default(),
         library_spools.clone(),
         Vec::new(),
         CmyxGeometryContext::default(),
@@ -573,6 +581,14 @@ fn native_mixed_withered_foxy_publishes_and_recovers_without_user_writes() {
     );
     assert!(published.manifest_path.is_file());
     assert!(published.report_path.is_file());
+    let instructions_path = published
+        .output_directory
+        .join(PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME);
+    assert!(instructions_path.is_file());
+    let instructions =
+        fs::read_to_string(&instructions_path).expect("published print instructions");
+    assert!(instructions.contains("STEP 1 OF"));
+    assert!(instructions.contains("REQUIRED PHYSICAL LOADOUT"));
     assert!(
         published
             .output_directory
@@ -586,8 +602,8 @@ fn native_mixed_withered_foxy_publishes_and_recovers_without_user_writes() {
     let checksums = fs::read_to_string(&checksums_path).expect("published checksum list");
     assert_eq!(
         checksums.lines().count(),
-        published.artifacts.len() + 3,
-        "checksums must cover every 3MF plus manifest, plan, and report"
+        published.artifacts.len() + 4,
+        "checksums must cover every 3MF plus manifest, plan, report, and print instructions"
     );
     for artifact in &published.artifacts {
         assert!(artifact.path.is_file());
@@ -655,6 +671,7 @@ fn native_mixed_withered_foxy_publishes_and_recovers_without_user_writes() {
     let (restarted_analysis, restarted_initial) =
         view::analyze_native_project_data_with_backend_state(
             source.to_str().expect("UTF-8 source path"),
+            view::InitialPlanningIntentView::default(),
             restart_library_spools.clone(),
             Vec::new(),
             CmyxGeometryContext::default(),

@@ -69,6 +69,13 @@ struct DirectPhysicalRequirement {
     direct_candidates: Vec<DirectSpoolCandidate>,
 }
 
+struct DirectEligibilityContext<'a> {
+    inventory: &'a BTreeMap<String, Spool>,
+    current: &'a CurrentToolheadState,
+    allow_palette_reduction: bool,
+    requirement_to_key: &'a BTreeMap<String, EffectiveKey>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct JobKey {
     printer: Printer,
@@ -88,14 +95,6 @@ struct UnitPlan {
     key: JobKey,
     mappings: Vec<SourceToActualMapping>,
     bounds: crate::BoundsMm,
-    a1_required: bool,
-    u1_fallback: Option<U1Fallback>,
-}
-
-#[derive(Clone, Debug)]
-struct U1Fallback {
-    key: JobKey,
-    mappings: Vec<SourceToActualMapping>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,6 +133,14 @@ struct MatchState {
     choices: Vec<Option<MatchChoice>>,
 }
 
+#[derive(Clone, Debug)]
+struct ReducedPaletteMatch {
+    score: f64,
+    current_misses: usize,
+    spool_ids: Vec<String>,
+    choices: Vec<MatchChoice>,
+}
+
 /// Build a deterministic, conservative first-pass print plan.
 ///
 /// The function intentionally returns a partial plan plus structured hard
@@ -163,7 +170,7 @@ pub fn plan(input: &PlanningInput) -> PlanningResult {
             &mut errors,
         );
     }
-    resolve_cross_printer_spool_conflicts(&mut unit_plans, &mut warnings, &mut errors);
+    warn_about_cross_printer_spool_transfers(&unit_plans, &mut warnings);
 
     let (jobs, plates) =
         group_jobs_and_plates(unit_plans, &input.config, &mut warnings, &mut errors);
@@ -333,9 +340,12 @@ fn plan_scope(
         &effective,
         &direct_physical,
         &physical_index_by_effective,
-        inventory,
-        current,
-        &requirement_to_key,
+        DirectEligibilityContext {
+            inventory,
+            current,
+            allow_palette_reduction: config.allow_direct_palette_reduction,
+            requirement_to_key: &requirement_to_key,
+        },
     );
     let cmyx_available = effective.iter().all(|requirement| {
         recipe_slots(&requirement.cmyx.recipe).is_some()
@@ -825,16 +835,14 @@ fn direct_eligibility(
     effective: &[EffectiveRequirement],
     physical: &[DirectPhysicalRequirement],
     physical_index_by_effective: &[usize],
-    inventory: &BTreeMap<String, Spool>,
-    current: &CurrentToolheadState,
-    requirement_to_key: &BTreeMap<String, EffectiveKey>,
+    context: DirectEligibilityContext<'_>,
 ) -> DirectSpoolEligibility {
     if physical.is_empty() {
         return DirectSpoolEligibility::Ineligible {
             reason: DirectIneligibility::NoEffectivePairs,
         };
     }
-    if physical.len() > 4 {
+    if physical.len() > 4 && !context.allow_palette_reduction {
         return DirectSpoolEligibility::Ineligible {
             reason: DirectIneligibility::TooManyEffectivePairs {
                 count: physical.len(),
@@ -860,7 +868,7 @@ fn direct_eligibility(
     });
 
     for request in requests {
-        let Some(key) = requirement_to_key.get(&request.requirement_id) else {
+        let Some(key) = context.requirement_to_key.get(&request.requirement_id) else {
             return invalid_direct(format!(
                 "Direct assignment references unused or unknown requirement '{}'.",
                 request.requirement_id
@@ -900,11 +908,22 @@ fn direct_eligibility(
         }
     }
 
+    let forced_spool_ids = forced_spools
+        .iter()
+        .filter_map(Option::as_deref)
+        .collect::<BTreeSet<_>>();
+    if forced_spool_ids.len() > Toolhead::ALL.len() {
+        return invalid_direct(format!(
+            "Direct assignments select {} physical spools; the U1 can load at most four per plate.",
+            forced_spool_ids.len()
+        ));
+    }
+
     let mut forced_spool_toolheads = BTreeMap::new();
     let mut forced_toolhead_spools = BTreeMap::new();
     for (physical_index, forced) in forced_spools.iter().enumerate() {
         if let Some(spool_id) = forced {
-            let Some(spool) = inventory.get(spool_id) else {
+            let Some(spool) = context.inventory.get(spool_id) else {
                 return invalid_direct(format!("Selected spool '{spool_id}' is not in inventory."));
             };
             if !spool.available {
@@ -944,7 +963,11 @@ fn direct_eligibility(
         }
     }
 
-    let available: Vec<_> = inventory.values().filter(|spool| spool.available).collect();
+    let available: Vec<_> = context
+        .inventory
+        .values()
+        .filter(|spool| spool.available)
+        .collect();
     for (index, requirement) in physical.iter().enumerate() {
         if forced_spools[index].is_none()
             && !available
@@ -959,8 +982,19 @@ fn direct_eligibility(
         }
     }
 
-    let selected = match_spools(physical, &available, &forced_spools, current);
+    let palette_reduction = physical.len() > Toolhead::ALL.len();
+    let selected = if palette_reduction {
+        match_reduced_spools(physical, &available, &forced_spools, context.current)
+    } else {
+        match_spools(physical, &available, &forced_spools, context.current)
+    };
     let Some(selected) = selected else {
+        if palette_reduction {
+            return invalid_direct(
+                "Custom Direct palette could not cover every source material with at most four in-stock physical spools. Choose explicit replacements or add compatible spools."
+                    .into(),
+            );
+        }
         let material = physical
             .iter()
             .find_map(|requirement| {
@@ -980,7 +1014,7 @@ fn direct_eligibility(
         };
     };
 
-    let toolheads = assign_toolheads(&selected, &forced_toolheads, current);
+    let toolheads = assign_toolheads(&selected, &forced_toolheads, context.current);
     let assignments = effective
         .iter()
         .enumerate()
@@ -988,7 +1022,8 @@ fn direct_eligibility(
             let physical_index = physical_index_by_effective[effective_index];
             let choice = &selected[physical_index];
             let toolhead = toolheads[physical_index];
-            let spool = inventory
+            let spool = context
+                .inventory
                 .get(&choice.spool_id)
                 .expect("matched inventory spool exists");
             DirectToolheadAssignment {
@@ -1018,6 +1053,270 @@ fn invalid_direct(message: String) -> DirectSpoolEligibility {
     DirectSpoolEligibility::Ineligible {
         reason: DirectIneligibility::InvalidManualAssignment { message },
     }
+}
+
+fn match_reduced_spools(
+    physical: &[DirectPhysicalRequirement],
+    available: &[&Spool],
+    forced_spools: &[Option<String>],
+    current: &CurrentToolheadState,
+) -> Option<Vec<MatchChoice>> {
+    const MAXIMUM_SPOOLS: usize = 4;
+    const MAXIMUM_AUTO_CANDIDATES: usize = 20;
+    const NEAREST_PER_REQUIREMENT: usize = 4;
+
+    let forced_ids = forced_spools
+        .iter()
+        .filter_map(Clone::clone)
+        .collect::<BTreeSet<_>>();
+    if forced_ids.len() > MAXIMUM_SPOOLS {
+        return None;
+    }
+
+    let mut required_materials = physical
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| forced_spools[*index].is_none())
+        .map(|(_, requirement)| requirement.key.material.clone())
+        .collect::<BTreeSet<_>>();
+    for forced_id in &forced_ids {
+        if let Some(spool) = available.iter().find(|spool| spool.id == *forced_id) {
+            required_materials.remove(&spool.material);
+        }
+    }
+
+    let available_by_id = available
+        .iter()
+        .map(|spool| (spool.id.as_str(), *spool))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidate_ids = forced_ids.clone();
+
+    // Preserve at least one compatible candidate for every unforced material
+    // before applying the bounded optimization candidate set.
+    for material in &required_materials {
+        let best = available
+            .iter()
+            .filter(|spool| spool.material == *material)
+            .min_by(|left, right| {
+                aggregate_spool_score(physical, forced_spools, left)
+                    .total_cmp(&aggregate_spool_score(physical, forced_spools, right))
+                    .then_with(|| left.id.cmp(&right.id))
+            })?;
+        candidate_ids.insert(best.id.clone());
+    }
+
+    let mut suggestions = BTreeSet::new();
+    for (index, requirement) in physical.iter().enumerate() {
+        if forced_spools[index].is_some() {
+            continue;
+        }
+        let mut compatible = available
+            .iter()
+            .filter(|spool| spool.material == requirement.key.material)
+            .map(|spool| match_choice(requirement, spool))
+            .collect::<Vec<_>>();
+        compatible.sort_by(compare_match_choice);
+        suggestions.extend(
+            compatible
+                .into_iter()
+                .take(NEAREST_PER_REQUIREMENT)
+                .map(|choice| choice.spool_id),
+        );
+    }
+    for material in physical
+        .iter()
+        .map(|requirement| requirement.key.material.clone())
+        .collect::<BTreeSet<_>>()
+    {
+        let mut aggregate = available
+            .iter()
+            .filter(|spool| spool.material == material)
+            .map(|spool| {
+                (
+                    aggregate_spool_score(physical, forced_spools, spool),
+                    spool.id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        aggregate.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        suggestions.extend(
+            aggregate
+                .into_iter()
+                .take(MAXIMUM_SPOOLS)
+                .map(|(_, spool_id)| spool_id),
+        );
+    }
+
+    let mut ranked_suggestions = suggestions.into_iter().collect::<Vec<_>>();
+    ranked_suggestions.sort_by(|left, right| {
+        let left_spool = available_by_id[left.as_str()];
+        let right_spool = available_by_id[right.as_str()];
+        aggregate_spool_score(physical, forced_spools, left_spool)
+            .total_cmp(&aggregate_spool_score(physical, forced_spools, right_spool))
+            .then_with(|| left.cmp(right))
+    });
+    for spool_id in ranked_suggestions {
+        if candidate_ids.len() >= MAXIMUM_AUTO_CANDIDATES {
+            break;
+        }
+        candidate_ids.insert(spool_id);
+    }
+
+    let optional_ids = candidate_ids
+        .difference(&forced_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut selected_ids = forced_ids.iter().cloned().collect::<Vec<_>>();
+    let mut best = evaluate_reduced_palette(
+        physical,
+        forced_spools,
+        current,
+        &available_by_id,
+        &selected_ids,
+    );
+    search_reduced_palettes(
+        physical,
+        forced_spools,
+        current,
+        &available_by_id,
+        &optional_ids,
+        0,
+        &mut selected_ids,
+        &mut best,
+    );
+    best.map(|candidate| candidate.choices)
+}
+
+fn aggregate_spool_score(
+    physical: &[DirectPhysicalRequirement],
+    forced_spools: &[Option<String>],
+    spool: &Spool,
+) -> f64 {
+    physical
+        .iter()
+        .enumerate()
+        .filter(|(index, requirement)| {
+            forced_spools[*index].is_none() && requirement.key.material == spool.material
+        })
+        .map(|(_, requirement)| match_choice(requirement, spool).score)
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_reduced_palettes(
+    physical: &[DirectPhysicalRequirement],
+    forced_spools: &[Option<String>],
+    current: &CurrentToolheadState,
+    available_by_id: &BTreeMap<&str, &Spool>,
+    optional_ids: &[String],
+    start: usize,
+    selected_ids: &mut Vec<String>,
+    best: &mut Option<ReducedPaletteMatch>,
+) {
+    const MAXIMUM_SPOOLS: usize = 4;
+    if selected_ids.len() >= MAXIMUM_SPOOLS {
+        return;
+    }
+
+    for index in start..optional_ids.len() {
+        selected_ids.push(optional_ids[index].clone());
+        if let Some(candidate) = evaluate_reduced_palette(
+            physical,
+            forced_spools,
+            current,
+            available_by_id,
+            selected_ids,
+        ) && reduced_palette_is_better(&candidate, best.as_ref())
+        {
+            *best = Some(candidate);
+        }
+        search_reduced_palettes(
+            physical,
+            forced_spools,
+            current,
+            available_by_id,
+            optional_ids,
+            index + 1,
+            selected_ids,
+            best,
+        );
+        selected_ids.pop();
+    }
+}
+
+fn evaluate_reduced_palette(
+    physical: &[DirectPhysicalRequirement],
+    forced_spools: &[Option<String>],
+    current: &CurrentToolheadState,
+    available_by_id: &BTreeMap<&str, &Spool>,
+    selected_ids: &[String],
+) -> Option<ReducedPaletteMatch> {
+    if selected_ids.is_empty() {
+        return None;
+    }
+    let mut choices = Vec::with_capacity(physical.len());
+    for (index, requirement) in physical.iter().enumerate() {
+        let choice = if let Some(forced_id) = &forced_spools[index] {
+            match_choice(requirement, available_by_id[forced_id.as_str()])
+        } else {
+            selected_ids
+                .iter()
+                .filter_map(|spool_id| available_by_id.get(spool_id.as_str()).copied())
+                .filter(|spool| spool.material == requirement.key.material)
+                .map(|spool| match_choice(requirement, spool))
+                .min_by(compare_match_choice)?
+        };
+        choices.push(choice);
+    }
+
+    let spool_ids = choices
+        .iter()
+        .map(|choice| choice.spool_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let current_misses = spool_ids
+        .iter()
+        .filter(|spool_id| {
+            !current
+                .slots
+                .iter()
+                .any(|slot| matches!(slot, ToolheadSlotState::Loaded(id) if id == *spool_id))
+        })
+        .count();
+    Some(ReducedPaletteMatch {
+        score: choices.iter().map(|choice| choice.score).sum(),
+        current_misses,
+        spool_ids,
+        choices,
+    })
+}
+
+fn compare_match_choice(left: &MatchChoice, right: &MatchChoice) -> Ordering {
+    left.score
+        .total_cmp(&right.score)
+        .then_with(|| left.confidence.cmp(&right.confidence))
+        .then_with(|| left.spool_id.cmp(&right.spool_id))
+}
+
+fn reduced_palette_is_better(
+    candidate: &ReducedPaletteMatch,
+    incumbent: Option<&ReducedPaletteMatch>,
+) -> bool {
+    let Some(incumbent) = incumbent else {
+        return true;
+    };
+    candidate
+        .score
+        .total_cmp(&incumbent.score)
+        .then_with(|| candidate.current_misses.cmp(&incumbent.current_misses))
+        .then_with(|| candidate.spool_ids.len().cmp(&incumbent.spool_ids.len()))
+        .then_with(|| candidate.spool_ids.cmp(&incumbent.spool_ids))
+        == Ordering::Less
 }
 
 fn match_spools(
@@ -1352,59 +1651,55 @@ fn plan_direct_unit(
             .contains(unit.bounds.required_volume());
     let a1_material_supported =
         materials.len() == 1 && config.a1_mini.supported_materials.contains(&materials[0]);
-    let printer = if a1_considered
-        && fast_mono
-        && a1_spool_available
-        && a1_fit
-        && a1_material_supported
-    {
-        Printer::A1Mini
-    } else {
-        if a1_considered || a1_requested {
-            if !fast_mono {
-                warnings.push(unit_warning(
-                    WarningCode::A1NotSinglePhysicalSpool,
+    let printer =
+        if a1_considered && fast_mono && a1_spool_available && a1_fit && a1_material_supported {
+            Printer::A1Mini
+        } else {
+            if a1_considered || a1_requested {
+                if !fast_mono {
+                    warnings.push(unit_warning(
+                        WarningCode::A1NotSinglePhysicalSpool,
+                        scope,
+                        unit,
+                        "A1 mini accepts only single-physical-spool units in this planner.",
+                    ));
+                }
+                if fast_mono && !a1_spool_available {
+                    warnings.push(unit_warning(
+                        WarningCode::A1SpoolReservedForU1,
+                        scope,
+                        unit,
+                        "The physical spool is explicitly marked unavailable to the A1 mini.",
+                    ));
+                }
+                if unit.bounds.has_known_size() && !a1_fit {
+                    warnings.push(unit_warning(
+                        WarningCode::A1OutOfBounds,
+                        scope,
+                        unit,
+                        "Unit including clearance exceeds the 180 × 180 × 180 mm A1 mini volume.",
+                    ));
+                }
+                if !a1_material_supported {
+                    warnings.push(unit_warning(
+                        WarningCode::A1UnsupportedMaterial,
+                        scope,
+                        unit,
+                        "A1 mini profile does not support the unit's printable material.",
+                    ));
+                }
+            }
+            if a1_requested {
+                errors.push(unit_error(
+                    ErrorCode::RequestedA1Unavailable,
                     scope,
                     unit,
-                    "A1 mini accepts only single-physical-spool units in this planner.",
+                    "Unit is pinned to A1 mini but is not an eligible A1 mono unit.",
                 ));
+                return None;
             }
-            if fast_mono && !a1_spool_available {
-                warnings.push(unit_warning(
-                    WarningCode::A1SpoolReservedForU1,
-                    scope,
-                    unit,
-                    "The physical spool is reserved by the U1 schedule; confirm a separate A1 spool to route this unit.",
-                ));
-            }
-            if unit.bounds.has_known_size() && !a1_fit {
-                warnings.push(unit_warning(
-                    WarningCode::A1OutOfBounds,
-                    scope,
-                    unit,
-                    "Unit including clearance exceeds the 180 × 180 × 180 mm A1 mini volume.",
-                ));
-            }
-            if !a1_material_supported {
-                warnings.push(unit_warning(
-                    WarningCode::A1UnsupportedMaterial,
-                    scope,
-                    unit,
-                    "A1 mini profile does not support the unit's printable material.",
-                ));
-            }
-        }
-        if a1_requested {
-            errors.push(unit_error(
-                ErrorCode::RequestedA1Unavailable,
-                scope,
-                unit,
-                "Unit is pinned to A1 mini but is not an eligible A1 mono unit.",
-            ));
-            return None;
-        }
-        Printer::U1
-    };
+            Printer::U1
+        };
 
     if printer == Printer::U1
         && !config
@@ -1419,24 +1714,6 @@ fn plan_direct_unit(
         ));
         return None;
     }
-    // Preserve the exact U1 candidate so a later global physical-spool
-    // conflict can fail closed without recomputing color assignments.
-    let u1_fallback = (printer == Printer::A1Mini).then(|| U1Fallback {
-        key: JobKey {
-            printer: Printer::U1,
-            strategy: ColorStrategy::DirectSpools,
-            loadout: PrinterLoadout::U1 {
-                loadout: U1Loadout {
-                    slots: loadout.clone(),
-                },
-            },
-            printable_materials: materials.clone(),
-            fast_mono,
-            mono_spool_id: mono_spool_id.clone(),
-            full_spectrum_process: None,
-        },
-        mappings: mappings.clone(),
-    });
     if printer == Printer::A1Mini {
         for mapping in &mut mappings {
             mapping.strategy = ColorStrategy::A1Mono;
@@ -1478,8 +1755,6 @@ fn plan_direct_unit(
         },
         mappings,
         bounds: unit.bounds,
-        a1_required: a1_requested,
-        u1_fallback,
     })
 }
 
@@ -1728,59 +2003,55 @@ fn plan_cmyx_unit(
     let a1_material_supported =
         materials.len() == 1 && config.a1_mini.supported_materials.contains(&materials[0]);
 
-    let printer = if a1_considered
-        && fast_mono
-        && a1_spool_available
-        && a1_fit
-        && a1_material_supported
-    {
-        Printer::A1Mini
-    } else {
-        if a1_considered || a1_requested {
-            if !fast_mono {
-                warnings.push(unit_warning(
-                    WarningCode::A1NotSinglePhysicalSpool,
+    let printer =
+        if a1_considered && fast_mono && a1_spool_available && a1_fit && a1_material_supported {
+            Printer::A1Mini
+        } else {
+            if a1_considered || a1_requested {
+                if !fast_mono {
+                    warnings.push(unit_warning(
+                        WarningCode::A1NotSinglePhysicalSpool,
+                        scope,
+                        unit,
+                        "A1 mini accepts only single-physical-spool units in this planner.",
+                    ));
+                }
+                if fast_mono && !a1_spool_available {
+                    warnings.push(unit_warning(
+                        WarningCode::A1SpoolReservedForU1,
+                        scope,
+                        unit,
+                        "The physical spool is explicitly marked unavailable to the A1 mini.",
+                    ));
+                }
+                if unit.bounds.has_known_size() && !a1_fit {
+                    warnings.push(unit_warning(
+                        WarningCode::A1OutOfBounds,
+                        scope,
+                        unit,
+                        "Unit including clearance exceeds the 180 × 180 × 180 mm A1 mini volume.",
+                    ));
+                }
+                if !a1_material_supported {
+                    warnings.push(unit_warning(
+                        WarningCode::A1UnsupportedMaterial,
+                        scope,
+                        unit,
+                        "A1 mini profile does not support the unit's printable material.",
+                    ));
+                }
+            }
+            if a1_requested {
+                errors.push(unit_error(
+                    ErrorCode::RequestedA1Unavailable,
                     scope,
                     unit,
-                    "A1 mini accepts only single-physical-spool units in this planner.",
+                    "Unit is pinned to A1 mini but is not an eligible A1 mono unit.",
                 ));
+                return None;
             }
-            if fast_mono && !a1_spool_available {
-                warnings.push(unit_warning(
-                    WarningCode::A1SpoolReservedForU1,
-                    scope,
-                    unit,
-                    "The physical spool is reserved by the U1 schedule; confirm a separate A1 spool to route this unit.",
-                ));
-            }
-            if unit.bounds.has_known_size() && !a1_fit {
-                warnings.push(unit_warning(
-                    WarningCode::A1OutOfBounds,
-                    scope,
-                    unit,
-                    "Unit including clearance exceeds the 180 × 180 × 180 mm A1 mini volume.",
-                ));
-            }
-            if !a1_material_supported {
-                warnings.push(unit_warning(
-                    WarningCode::A1UnsupportedMaterial,
-                    scope,
-                    unit,
-                    "A1 mini profile does not support the unit's printable material.",
-                ));
-            }
-        }
-        if a1_requested {
-            errors.push(unit_error(
-                ErrorCode::RequestedA1Unavailable,
-                scope,
-                unit,
-                "Unit is pinned to A1 mini but is not an eligible A1 mono unit.",
-            ));
-            return None;
-        }
-        Printer::U1
-    };
+            Printer::U1
+        };
 
     let u1_t4 = required_t4.iter().next().cloned();
     let u1_loadout = PrinterLoadout::U1 {
@@ -1801,23 +2072,6 @@ fn plan_cmyx_unit(
     for mapping in &mut mappings {
         mapping.strategy = u1_strategy;
     }
-    let u1_fallback = (printer == Printer::A1Mini).then(|| U1Fallback {
-        key: JobKey {
-            printer: Printer::U1,
-            strategy: u1_strategy,
-            loadout: u1_loadout.clone(),
-            printable_materials: materials.clone(),
-            fast_mono,
-            mono_spool_id: mono_spool_id.clone(),
-            full_spectrum_process: if u1_strategy == ColorStrategy::CmyxFullSpectrum {
-                full_spectrum_process.clone()
-            } else {
-                None
-            },
-        },
-        mappings: mappings.clone(),
-    });
-
     let strategy = if printer == Printer::A1Mini {
         ColorStrategy::A1Mono
     } else {
@@ -1874,8 +2128,6 @@ fn plan_cmyx_unit(
         },
         mappings,
         bounds: unit.bounds,
-        a1_required: a1_requested,
-        u1_fallback,
     })
 }
 
@@ -2002,10 +2254,9 @@ fn source_boundary(scope: &PrintScope, unit: &PrintableUnit) -> SourceBoundary {
         .unwrap_or_else(|| SourceBoundary::Scope(scope.id.clone()))
 }
 
-fn resolve_cross_printer_spool_conflicts(
-    unit_plans: &mut Vec<UnitPlan>,
+fn warn_about_cross_printer_spool_transfers(
+    unit_plans: &[UnitPlan],
     warnings: &mut Vec<PlanWarning>,
-    errors: &mut Vec<PlanError>,
 ) {
     let u1_spool_ids = unit_plans
         .iter()
@@ -2018,42 +2269,26 @@ fn resolve_cross_printer_spool_conflicts(
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    unit_plans.retain_mut(|unit_plan| {
-        let conflicting_spool = match &unit_plan.key.loadout {
+    let shared_spool_ids = unit_plans
+        .iter()
+        .filter_map(|unit_plan| match &unit_plan.key.loadout {
             PrinterLoadout::A1Mini { spool_id } if u1_spool_ids.contains(spool_id) => {
                 Some(spool_id.clone())
             }
             _ => None,
-        };
-        let Some(spool_id) = conflicting_spool else {
-            return true;
-        };
-        if unit_plan.a1_required {
-            errors.push(PlanError {
-                code: ErrorCode::RequestedA1Unavailable,
-                scope_id: Some(unit_plan.scope_id.clone()),
-                unit_id: Some(unit_plan.unit_ref.unit_id.clone()),
-                message: format!(
-                    "Unit is pinned to A1 mini, but physical spool '{spool_id}' is also committed to the U1 schedule. Confirm a separate A1 spool identity."
-                ),
-            });
-            return false;
-        }
-        let Some(fallback) = unit_plan.u1_fallback.take() else {
-            return true;
-        };
-        unit_plan.key = fallback.key;
-        unit_plan.mappings = fallback.mappings;
+        })
+        .collect::<BTreeSet<_>>();
+
+    for spool_id in shared_spool_ids {
         warnings.push(PlanWarning {
-            code: WarningCode::A1SpoolReservedForU1,
-            scope_id: Some(unit_plan.scope_id.clone()),
-            unit_id: Some(unit_plan.unit_ref.unit_id.clone()),
+            code: WarningCode::A1SpoolSharedWithU1,
+            scope_id: None,
+            unit_id: None,
             message: format!(
-                "Physical spool '{spool_id}' is also used by the U1 schedule; this unit remains on U1. Confirm a separate A1 spool identity to print it on A1 mini."
+                "Physical spool '{spool_id}' is used by both printers. Follow the sequential batch order and move this spool from the U1 to the A1 mini when instructed; these batches cannot run in parallel with one spool."
             ),
         });
-        true
-    });
+    }
 }
 
 fn group_jobs_and_plates(
@@ -2486,26 +2721,41 @@ fn schedule_batches(
             .push(job);
     }
 
-    let mut cmy = Vec::new();
-    let mut direct = Vec::new();
+    let mut u1 = Vec::new();
     let mut a1 = Vec::new();
     for group in grouped {
-        match group.0.strategy {
-            ColorStrategy::CmyxFullSpectrum | ColorStrategy::CmyxSolid => cmy.push(group),
-            ColorStrategy::DirectSpools => direct.push(group),
-            ColorStrategy::A1Mono => a1.push(group),
+        match group.0.printer {
+            Printer::U1 => u1.push(group),
+            Printer::A1Mini => a1.push(group),
         }
     }
 
-    cmy.sort_by(|left, right| compare_cmy_batch(left, right, initial));
-    direct.sort_by(|left, right| left.0.cmp(&right.0));
-    a1.sort_by(|left, right| left.0.cmp(&right.0));
+    a1.sort_by(|left, right| {
+        let current_spool = config.a1_mini.current_spool_id.as_deref();
+        a1_initial_spool_rank(&left.0, current_spool)
+            .cmp(&a1_initial_spool_rank(&right.0, current_spool))
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     let mut batches = Vec::new();
     let mut current = initial.clone();
     let mut t4_swap_count = 0_u32;
 
-    for (key, jobs) in cmy.into_iter().chain(direct) {
+    while !u1.is_empty() {
+        let next_index = u1
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                u1_batch_transition_cost(&current, &left.0, config)
+                    .cmp(&u1_batch_transition_cost(&current, &right.0, config))
+                    .then_with(|| {
+                        u1_batch_specificity(&right.0).cmp(&u1_batch_specificity(&left.0))
+                    })
+                    .then_with(|| left.0.cmp(&right.0))
+            })
+            .map(|(index, _)| index)
+            .expect("a non-empty U1 queue has a next batch");
+        let (key, jobs) = u1.remove(next_index);
         let mut actions = Vec::new();
         let PrinterLoadout::U1 { loadout } = &key.loadout else {
             unreachable!("U1 strategies always have a U1 loadout")
@@ -2565,18 +2815,79 @@ fn schedule_batches(
     }
 
     let mut a1_spool_change_count = 0_u32;
-    let mut last_a1_spool: Option<String> = None;
+    let mut current_a1_spool = config
+        .a1_mini
+        .current_spool_id
+        .clone()
+        .map_or(ToolheadSlotState::Unknown, ToolheadSlotState::Loaded);
     for (key, jobs) in a1 {
         let PrinterLoadout::A1Mini { spool_id } = &key.loadout else {
             unreachable!("A1 strategy always has an A1 loadout")
         };
-        if last_a1_spool
-            .as_deref()
-            .is_some_and(|previous| previous != spool_id)
-        {
-            a1_spool_change_count += 1;
+        let mut actions = Vec::new();
+        match &current_a1_spool {
+            ToolheadSlotState::Loaded(current) if current == spool_id => {
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Keep,
+                    toolhead: None,
+                    from: current_a1_spool.clone(),
+                    to: current_a1_spool.clone(),
+                });
+            }
+            ToolheadSlotState::Loaded(_) => {
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Unload,
+                    toolhead: None,
+                    from: current_a1_spool.clone(),
+                    to: ToolheadSlotState::Empty,
+                });
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Load,
+                    toolhead: None,
+                    from: ToolheadSlotState::Empty,
+                    to: ToolheadSlotState::Loaded(spool_id.clone()),
+                });
+                a1_spool_change_count += 1;
+            }
+            ToolheadSlotState::Unknown => {
+                warnings.push(PlanWarning {
+                    code: WarningCode::UnknownCurrentToolhead,
+                    scope_id: None,
+                    unit_id: None,
+                    message: "Current A1 mini spool is unknown; the first A1 spool setup is counted conservatively."
+                        .to_owned(),
+                });
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Unload,
+                    toolhead: None,
+                    from: ToolheadSlotState::Unknown,
+                    to: ToolheadSlotState::Empty,
+                });
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Load,
+                    toolhead: None,
+                    from: ToolheadSlotState::Empty,
+                    to: ToolheadSlotState::Loaded(spool_id.clone()),
+                });
+                a1_spool_change_count += 1;
+            }
+            ToolheadSlotState::Empty => {
+                actions.push(SetupAction {
+                    phase: SetupPhase::BeforeBatch,
+                    kind: SetupActionKind::Load,
+                    toolhead: None,
+                    from: ToolheadSlotState::Empty,
+                    to: ToolheadSlotState::Loaded(spool_id.clone()),
+                });
+                a1_spool_change_count += 1;
+            }
         }
-        last_a1_spool = Some(spool_id.clone());
+        current_a1_spool = ToolheadSlotState::Loaded(spool_id.clone());
         let mut job_ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
         job_ids.sort();
         let mut plate_ids: Vec<_> = job_ids
@@ -2591,7 +2902,7 @@ fn schedule_batches(
             loadout: key.loadout,
             job_ids,
             plate_ids,
-            setup_actions: Vec::new(),
+            setup_actions: actions,
             t4_swap_before: false,
         });
     }
@@ -2599,27 +2910,57 @@ fn schedule_batches(
     (batches, t4_swap_count, a1_spool_change_count, current)
 }
 
-fn compare_cmy_batch(
-    left: &(BatchKey, Vec<&PlannedJob>),
-    right: &(BatchKey, Vec<&PlannedJob>),
-    initial: &CurrentToolheadState,
-) -> Ordering {
-    let initial_t4 = match &initial.slots[Toolhead::T4.index()] {
-        ToolheadSlotState::Loaded(spool_id) => Some(spool_id.as_str()),
-        ToolheadSlotState::Unknown | ToolheadSlotState::Empty => None,
+fn a1_initial_spool_rank(key: &BatchKey, current_spool: Option<&str>) -> u8 {
+    match (&key.loadout, current_spool) {
+        (PrinterLoadout::A1Mini { spool_id }, Some(current)) if spool_id == current => 0,
+        _ => 1,
+    }
+}
+
+fn u1_batch_transition_cost(
+    current: &CurrentToolheadState,
+    key: &BatchKey,
+    config: &PlannerConfig,
+) -> usize {
+    let PrinterLoadout::U1 { loadout } = &key.loadout else {
+        return usize::MAX;
     };
-    let t4 = |key: &BatchKey| match &key.loadout {
-        PrinterLoadout::U1 { loadout } => loadout.spool(Toolhead::T4).map(ToOwned::to_owned),
-        PrinterLoadout::A1Mini { .. } => None,
-    };
-    let rank = |spool: Option<&str>| match (spool, initial_t4) {
-        (Some(spool), Some(initial)) if spool == initial => 0,
-        (None, _) => 1,
-        _ => 2,
-    };
-    rank(t4(&left.0).as_deref())
-        .cmp(&rank(t4(&right.0).as_deref()))
-        .then_with(|| left.0.cmp(&right.0))
+    let mut simulated = current.clone();
+    let mut cost = apply_u1_loadout_for_cost(&mut simulated, loadout);
+    if key.strategy == ColorStrategy::DirectSpools && config.restore_cmy_after_direct {
+        let restore = U1Loadout {
+            slots: [
+                Some(config.cmy_setup.cyan_spool_id.clone()),
+                Some(config.cmy_setup.magenta_spool_id.clone()),
+                Some(config.cmy_setup.yellow_spool_id.clone()),
+                config.cmy_setup.default_t4_spool_id.clone(),
+            ],
+        };
+        cost += apply_u1_loadout_for_cost(&mut simulated, &restore);
+    }
+    cost
+}
+
+fn u1_batch_specificity(key: &BatchKey) -> usize {
+    match &key.loadout {
+        PrinterLoadout::U1 { loadout } => loadout.slots.iter().flatten().count(),
+        PrinterLoadout::A1Mini { .. } => 0,
+    }
+}
+
+fn apply_u1_loadout_for_cost(current: &mut CurrentToolheadState, target: &U1Loadout) -> usize {
+    let mut changes = 0;
+    for toolhead in Toolhead::ALL {
+        let Some(target_id) = target.slots[toolhead.index()].as_ref() else {
+            continue;
+        };
+        let target_state = ToolheadSlotState::Loaded(target_id.clone());
+        if current.slots[toolhead.index()] != target_state {
+            changes += 1;
+            current.slots[toolhead.index()] = target_state;
+        }
+    }
+    changes
 }
 
 fn cmy_t4_swap_needed(current: &ToolheadSlotState, target: Option<&str>) -> bool {

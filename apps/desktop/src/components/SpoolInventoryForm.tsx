@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 
 import type { NewPhysicalSpoolInput } from "../types";
@@ -12,6 +12,7 @@ interface SpoolInventoryFormProps {
   summaryLabel?: string;
   initialValues?: Partial<NewPhysicalSpoolInput>;
   initiallyOpen?: boolean;
+  focusOnMount?: boolean;
   submitLabel?: string;
   onCancel?: () => void;
 }
@@ -51,11 +52,11 @@ export function SpoolInventoryForm({
   spoolCount,
   onAddSpool,
   heading = "Physical spool inventory",
-  description =
-    "This scope has four or fewer mappings. Assign a spool to each source color; choose the same spool more than once to intentionally combine colors on one toolhead.",
+  description = "This scope has four or fewer mappings. Assign a spool to each source color; choose the same spool more than once to intentionally combine colors on one toolhead.",
   summaryLabel = "Add physical spool",
   initialValues,
   initiallyOpen = false,
+  focusOnMount = false,
   submitLabel = "Add spool",
   onCancel,
 }: SpoolInventoryFormProps) {
@@ -63,8 +64,14 @@ export function SpoolInventoryForm({
   const [draft, setDraft] = useState(seededDraft);
   const [hexError, setHexError] = useState<string | null>(null);
   const [temperatureError, setTemperatureError] = useState<string | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const advancedDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const maximumTemperatureRef = useRef<HTMLInputElement | null>(null);
   const pickerValue = validHex.test(draft.hex) ? draft.hex : "#808080";
+
+  useEffect(() => {
+    if (focusOnMount) headingRef.current?.focus();
+  }, [focusOnMount]);
 
   const updateDraft = <Key extends keyof NewPhysicalSpoolInput>(
     key: Key,
@@ -73,7 +80,11 @@ export function SpoolInventoryForm({
 
   const submitSpool = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!draft.name.trim() || !draft.colorName.trim() || !validHex.test(draft.hex)) {
+    if (
+      !draft.name.trim() ||
+      !draft.colorName.trim() ||
+      !validHex.test(draft.hex)
+    ) {
       return;
     }
     if (
@@ -84,6 +95,7 @@ export function SpoolInventoryForm({
       setTemperatureError(
         "Maximum nozzle temperature must be greater than or equal to the minimum.",
       );
+      if (advancedDetailsRef.current) advancedDetailsRef.current.open = true;
       maximumTemperatureRef.current?.focus();
       return;
     }
@@ -132,15 +144,27 @@ export function SpoolInventoryForm({
   const notesId = `${idPrefix}-notes`;
 
   return (
-    <section className="spool-inventory" aria-labelledby={`${idPrefix}-inventory-heading`}>
+    <section
+      className="spool-inventory"
+      aria-labelledby={`${idPrefix}-inventory-heading`}
+    >
       <div className="spool-inventory__heading">
         <div>
-          <h3 id={`${idPrefix}-inventory-heading`}>{heading}</h3>
+          <h3
+            ref={headingRef}
+            id={`${idPrefix}-inventory-heading`}
+            tabIndex={focusOnMount ? -1 : undefined}
+          >
+            {heading}
+          </h3>
           <p>{description}</p>
         </div>
         <span>{spoolCount} available</span>
       </div>
-      <details className="spool-inventory__details" open={initiallyOpen || undefined}>
+      <details
+        className="spool-inventory__details"
+        open={initiallyOpen || undefined}
+      >
         <summary>
           <Plus aria-hidden="true" />
           {summaryLabel}
@@ -178,7 +202,9 @@ export function SpoolInventoryForm({
                   maxLength={60}
                   pattern=".*\S.*"
                   required
-                  onChange={(event) => updateDraft("colorName", event.target.value)}
+                  onChange={(event) =>
+                    updateDraft("colorName", event.target.value)
+                  }
                 />
               </div>
               <div className="spool-color-fields">
@@ -214,7 +240,9 @@ export function SpoolInventoryForm({
                     aria-invalid={hexError ? "true" : undefined}
                     required
                     onInvalid={() =>
-                      setHexError("Enter a six-digit HEX color such as #C72E2A.")
+                      setHexError(
+                        "Enter a six-digit HEX color such as #C72E2A.",
+                      )
                     }
                     onChange={(event) => {
                       setHexError(null);
@@ -252,188 +280,209 @@ export function SpoolInventoryForm({
                   );
                 })}
               </fieldset>
-              <div className="field spool-form-field">
-                <label htmlFor={skuId}>SKU (optional)</label>
-                <input
-                  id={skuId}
-                  name="sku"
-                  type="text"
-                  value={draft.sku}
-                  maxLength={60}
-                  onChange={(event) => updateDraft("sku", event.target.value)}
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={profileId}>Profile (optional)</label>
-                <input
-                  id={profileId}
-                  name="profile"
-                  type="text"
-                  value={draft.profile}
-                  maxLength={100}
-                  onChange={(event) => updateDraft("profile", event.target.value)}
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={vendorId}>Vendor (optional)</label>
-                <input
-                  id={vendorId}
-                  name="vendor"
-                  type="text"
-                  value={draft.vendor}
-                  maxLength={120}
-                  onChange={(event) => updateDraft("vendor", event.target.value)}
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={productLineId}>Product line (optional)</label>
-                <input
-                  id={productLineId}
-                  name="product-line"
-                  type="text"
-                  value={draft.productLine}
-                  maxLength={120}
-                  onChange={(event) =>
-                    updateDraft("productLine", event.target.value)
-                  }
-                />
-              </div>
-              <div className="field spool-form-field spool-form-field--wide">
-                <label htmlFor={opticalDescriptorId}>
-                  Optical / translucency descriptor (optional)
-                </label>
-                <input
-                  id={opticalDescriptorId}
-                  name="optical-descriptor"
-                  type="text"
-                  value={draft.opticalDescriptor}
-                  maxLength={240}
-                  placeholder="For example: translucent, matte, or opaque"
-                  onChange={(event) =>
-                    updateDraft("opticalDescriptor", event.target.value)
-                  }
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={minimumTemperatureId}>
-                  Minimum nozzle temperature °C (optional)
-                </label>
-                <input
-                  id={minimumTemperatureId}
-                  name="minimum-nozzle-temperature"
-                  type="number"
-                  value={draft.minNozzleTemperatureC ?? ""}
-                  min={0}
-                  max={500}
-                  step={1}
-                  inputMode="numeric"
-                  aria-describedby={temperatureHelpId}
-                  onChange={(event) => {
-                    setTemperatureError(null);
-                    updateDraft(
-                      "minNozzleTemperatureC",
-                      event.target.value === ""
-                        ? undefined
-                        : Number(event.target.value),
-                    );
-                  }}
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={maximumTemperatureId}>
-                  Maximum nozzle temperature °C (optional)
-                </label>
-                <input
-                  ref={maximumTemperatureRef}
-                  id={maximumTemperatureId}
-                  name="maximum-nozzle-temperature"
-                  type="number"
-                  value={draft.maxNozzleTemperatureC ?? ""}
-                  min={0}
-                  max={500}
-                  step={1}
-                  inputMode="numeric"
-                  aria-describedby={`${temperatureHelpId}${
-                    temperatureError ? ` ${temperatureErrorId}` : ""
-                  }`}
-                  aria-invalid={temperatureError ? "true" : undefined}
-                  onChange={(event) => {
-                    setTemperatureError(null);
-                    updateDraft(
-                      "maxNozzleTemperatureC",
-                      event.target.value === ""
-                        ? undefined
-                        : Number(event.target.value),
-                    );
-                  }}
-                />
-              </div>
-              <p
-                id={temperatureHelpId}
-                className="spool-form-hint spool-form-field--wide"
-              >
-                Store the manufacturer's recommended nozzle range. Slicer
-                profiles remain authoritative at conversion time.
-              </p>
-              {temperatureError ? (
-                <p
-                  id={temperatureErrorId}
-                  className="field-error spool-form-field--wide"
-                  role="alert"
-                >
-                  {temperatureError}
-                </p>
-              ) : null}
-              <div className="field spool-form-field">
-                <label htmlFor={batchLotId}>Batch / lot (optional)</label>
-                <input
-                  id={batchLotId}
-                  name="batch-lot"
-                  type="text"
-                  value={draft.batchLot}
-                  maxLength={240}
-                  aria-describedby={calibrationIdentityHelpId}
-                  onChange={(event) => updateDraft("batchLot", event.target.value)}
-                />
-              </div>
-              <div className="field spool-form-field">
-                <label htmlFor={calibrationReferenceId}>
-                  Calibration set / reference (optional)
-                </label>
-                <input
-                  id={calibrationReferenceId}
-                  name="calibration-reference"
-                  type="text"
-                  value={draft.calibrationReference}
-                  maxLength={240}
-                  aria-describedby={calibrationIdentityHelpId}
-                  onChange={(event) =>
-                    updateDraft("calibrationReference", event.target.value)
-                  }
-                />
-              </div>
-              <p
-                id={calibrationIdentityHelpId}
-                className="spool-form-hint spool-form-field--wide"
-              >
-                Changing either value creates a new physical calibration
-                identity. Previous measured CMY+X samples will not be reused.
-              </p>
-              <div className="field spool-form-field spool-form-field--wide">
-                <label htmlFor={notesId}>Notes (optional)</label>
-                <textarea
-                  id={notesId}
-                  name="notes"
-                  value={draft.notes}
-                  rows={3}
-                  maxLength={2000}
-                  onChange={(event) => updateDraft("notes", event.target.value)}
-                />
-              </div>
             </div>
+            <details ref={advancedDetailsRef} className="spool-form-advanced">
+              <summary>
+                <span>Advanced traceability &amp; calibration</span>
+                <small>Optional</small>
+              </summary>
+              <div className="spool-form-grid">
+                <div className="field spool-form-field">
+                  <label htmlFor={skuId}>SKU (optional)</label>
+                  <input
+                    id={skuId}
+                    name="sku"
+                    type="text"
+                    value={draft.sku}
+                    maxLength={60}
+                    onChange={(event) => updateDraft("sku", event.target.value)}
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={profileId}>Profile (optional)</label>
+                  <input
+                    id={profileId}
+                    name="profile"
+                    type="text"
+                    value={draft.profile}
+                    maxLength={100}
+                    onChange={(event) =>
+                      updateDraft("profile", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={vendorId}>Vendor (optional)</label>
+                  <input
+                    id={vendorId}
+                    name="vendor"
+                    type="text"
+                    value={draft.vendor}
+                    maxLength={120}
+                    onChange={(event) =>
+                      updateDraft("vendor", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={productLineId}>Product line (optional)</label>
+                  <input
+                    id={productLineId}
+                    name="product-line"
+                    type="text"
+                    value={draft.productLine}
+                    maxLength={120}
+                    onChange={(event) =>
+                      updateDraft("productLine", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="field spool-form-field spool-form-field--wide">
+                  <label htmlFor={opticalDescriptorId}>
+                    Optical / translucency descriptor (optional)
+                  </label>
+                  <input
+                    id={opticalDescriptorId}
+                    name="optical-descriptor"
+                    type="text"
+                    value={draft.opticalDescriptor}
+                    maxLength={240}
+                    placeholder="For example: translucent, matte, or opaque"
+                    onChange={(event) =>
+                      updateDraft("opticalDescriptor", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={minimumTemperatureId}>
+                    Minimum nozzle temperature °C (optional)
+                  </label>
+                  <input
+                    id={minimumTemperatureId}
+                    name="minimum-nozzle-temperature"
+                    type="number"
+                    value={draft.minNozzleTemperatureC ?? ""}
+                    min={0}
+                    max={500}
+                    step={1}
+                    inputMode="numeric"
+                    aria-describedby={temperatureHelpId}
+                    onChange={(event) => {
+                      setTemperatureError(null);
+                      updateDraft(
+                        "minNozzleTemperatureC",
+                        event.target.value === ""
+                          ? undefined
+                          : Number(event.target.value),
+                      );
+                    }}
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={maximumTemperatureId}>
+                    Maximum nozzle temperature °C (optional)
+                  </label>
+                  <input
+                    ref={maximumTemperatureRef}
+                    id={maximumTemperatureId}
+                    name="maximum-nozzle-temperature"
+                    type="number"
+                    value={draft.maxNozzleTemperatureC ?? ""}
+                    min={0}
+                    max={500}
+                    step={1}
+                    inputMode="numeric"
+                    aria-describedby={`${temperatureHelpId}${
+                      temperatureError ? ` ${temperatureErrorId}` : ""
+                    }`}
+                    aria-invalid={temperatureError ? "true" : undefined}
+                    onChange={(event) => {
+                      setTemperatureError(null);
+                      updateDraft(
+                        "maxNozzleTemperatureC",
+                        event.target.value === ""
+                          ? undefined
+                          : Number(event.target.value),
+                      );
+                    }}
+                  />
+                </div>
+                <p
+                  id={temperatureHelpId}
+                  className="spool-form-hint spool-form-field--wide"
+                >
+                  Store the manufacturer's recommended nozzle range. Slicer
+                  profiles remain authoritative at conversion time.
+                </p>
+                {temperatureError ? (
+                  <p
+                    id={temperatureErrorId}
+                    className="field-error spool-form-field--wide"
+                    role="alert"
+                  >
+                    {temperatureError}
+                  </p>
+                ) : null}
+                <div className="field spool-form-field">
+                  <label htmlFor={batchLotId}>Batch / lot (optional)</label>
+                  <input
+                    id={batchLotId}
+                    name="batch-lot"
+                    type="text"
+                    value={draft.batchLot}
+                    maxLength={240}
+                    aria-describedby={calibrationIdentityHelpId}
+                    onChange={(event) =>
+                      updateDraft("batchLot", event.target.value)
+                    }
+                  />
+                </div>
+                <div className="field spool-form-field">
+                  <label htmlFor={calibrationReferenceId}>
+                    Calibration set / reference (optional)
+                  </label>
+                  <input
+                    id={calibrationReferenceId}
+                    name="calibration-reference"
+                    type="text"
+                    value={draft.calibrationReference}
+                    maxLength={240}
+                    aria-describedby={calibrationIdentityHelpId}
+                    onChange={(event) =>
+                      updateDraft("calibrationReference", event.target.value)
+                    }
+                  />
+                </div>
+                <p
+                  id={calibrationIdentityHelpId}
+                  className="spool-form-hint spool-form-field--wide"
+                >
+                  Changing either value creates a new physical calibration
+                  identity. Previous measured CMY+X samples will not be reused.
+                </p>
+                <div className="field spool-form-field spool-form-field--wide">
+                  <label htmlFor={notesId}>Notes (optional)</label>
+                  <textarea
+                    id={notesId}
+                    name="notes"
+                    value={draft.notes}
+                    rows={3}
+                    maxLength={2000}
+                    onChange={(event) =>
+                      updateDraft("notes", event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+            </details>
             <div className="spool-form-actions">
-              <button className="button button--primary button--compact" type="submit">
-                {submitLabel === "Add spool" ? <Plus aria-hidden="true" /> : null}
+              <button
+                className="button button--primary button--compact"
+                type="submit"
+              >
+                {submitLabel === "Add spool" ? (
+                  <Plus aria-hidden="true" />
+                ) : null}
                 {submitLabel}
               </button>
               {onCancel ? (

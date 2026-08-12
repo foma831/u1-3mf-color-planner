@@ -66,6 +66,7 @@
 }
 
 .print-run-exclusions > div {
+  min-width: 0;
   display: grid;
   gap: 0.5rem;
 }
@@ -106,11 +107,17 @@
 }
 
 .print-run-exclusions li > div {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem 0.75rem;
   justify-content: space-between;
   font-size: 0.75rem;
+}
+
+.print-run-exclusions strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .print-run-progress {
@@ -516,6 +523,93 @@
   color: var(--color-success-text);
 }
 
+.print-run-complete > div {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.print-run-final-loadout {
+  display: grid;
+  gap: var(--space-3);
+  margin-block-start: var(--space-3);
+  border-block-start: 1px solid #a9cfb9;
+  padding-block-start: var(--space-3);
+}
+
+.print-run-final-loadout h4 {
+  font-size: 0.875rem;
+  line-height: 1.3;
+}
+
+.print-run-final-loadout p {
+  max-width: 70ch;
+  margin: var(--space-1) 0 0;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.print-run-final-loadout__slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.print-run-final-loadout__slots > div {
+  min-inline-size: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.15rem;
+  border: 1px solid #b8d6c4;
+  border-radius: var(--radius-control);
+  padding: 0.55rem 0.65rem;
+  background: var(--color-surface);
+}
+
+.print-run-final-loadout__slots dt {
+  color: var(--color-muted);
+  font-size: 0.625rem;
+  font-weight: 800;
+}
+
+.print-run-final-loadout__slots dd {
+  min-inline-size: 0;
+  display: grid;
+  gap: 0.1rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+
+.print-run-final-loadout__slots dd strong {
+  color: var(--color-ink);
+}
+
+.print-run-final-loadout__slots dd small {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+}
+
+.print-run-final-loadout__action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: safe center;
+}
+
+.print-run-final-loadout__action .button[aria-disabled="true"] {
+  border-color: #75b793;
+  background: #e2f3e9;
+  color: var(--color-success-text);
+  cursor: default;
+}
+
+.print-run-final-loadout__action .print-run-final-loadout__saved {
+  margin: 0;
+  color: var(--color-success-text);
+  font-weight: 750;
+}
+
 .print-run-locked {
   border-color: #d4a543;
   background: #fffaf0;
@@ -581,6 +675,7 @@
 }
 
 .print-run-storage-warning {
+  min-width: 0;
   display: flex;
   gap: var(--space-2);
   align-items: center;
@@ -590,6 +685,7 @@
   background: #fffaf0;
   color: #714900;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .print-run-storage-warning svg {
@@ -648,7 +744,8 @@
 
   .print-run-current > .button,
   .print-run-checkpoint > .button,
-  .print-run-footer > .button {
+  .print-run-footer > .button,
+  .print-run-final-loadout__action .button {
     width: 100%;
   }
 }
@@ -670,7 +767,8 @@
   .print-run-complete,
   .print-run-locked,
   .print-run-target-details,
-  .print-run-change-actions li {
+  .print-run-change-actions li,
+  .print-run-final-loadout__slots > div {
     border-width: 0.125rem;
   }
 }
@@ -683,7 +781,9 @@
   .print-run-complete,
   .print-run-locked,
   .print-run-change-actions li,
-  .print-run-step-status {
+  .print-run-step-status,
+  .print-run-final-loadout__slots > div,
+  .print-run-final-loadout__action .button[aria-disabled="true"] {
     border: 1px solid CanvasText;
   }
 

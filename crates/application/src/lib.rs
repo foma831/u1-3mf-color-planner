@@ -75,6 +75,8 @@ pub enum ApplicationError {
     DuplicateSourceUnitOverride { source_unit_id: String },
     #[error("physical spool {spool_id:?} is loaded in more than one U1 toolhead")]
     DuplicateLoadedSpool { spool_id: String },
+    #[error("current printer loadout is invalid: {message}")]
+    InvalidCurrentPrinterLoadout { message: String },
     #[error(
         "planning options include plate {plate_id}, which is not an alternative plate candidate"
     )]
@@ -102,6 +104,9 @@ pub struct PreliminaryPlanOptions {
     /// Default strategy for scopes without an explicit override.
     pub scope_strategy: ScopeStrategy,
     pub restore_cmy_after_direct: bool,
+    /// Explicit operator opt-in for reducing more than four Direct source
+    /// identities to a maximum of four physical U1 spools per scope.
+    pub allow_direct_palette_reduction: bool,
     /// Physical spools explicitly confirmed by the user. Project metadata is
     /// never promoted into this collection automatically.
     pub confirmed_spools: Vec<Spool>,
@@ -153,6 +158,7 @@ impl Default for PreliminaryPlanOptions {
             },
             scope_strategy: ScopeStrategy::Auto,
             restore_cmy_after_direct: true,
+            allow_direct_palette_reduction: false,
             confirmed_spools: Vec::new(),
             scope_overrides: Vec::new(),
             unit_printer_overrides: Vec::new(),
@@ -377,26 +383,8 @@ pub fn build_planning_input(
         height: 270.0,
     };
     config.a1_mini = options.a1_mini.clone();
-    config
-        .a1_mini
-        .reserved_spool_ids
-        .extend(catalog.spools.iter().map(|spool| spool.id.clone()));
-    config
-        .a1_mini
-        .reserved_spool_ids
-        .extend(
-            options
-                .current_toolheads
-                .slots
-                .iter()
-                .filter_map(|slot| match slot {
-                    ToolheadSlotState::Loaded(spool_id) => Some(spool_id.clone()),
-                    ToolheadSlotState::Unknown | ToolheadSlotState::Empty => None,
-                }),
-        );
-    config.a1_mini.reserved_spool_ids.sort();
-    config.a1_mini.reserved_spool_ids.dedup();
     config.restore_cmy_after_direct = options.restore_cmy_after_direct;
+    config.allow_direct_palette_reduction = options.allow_direct_palette_reduction;
 
     Ok(PlanningInput {
         scopes,
@@ -3344,6 +3332,7 @@ mod tests {
         let mut options = PreliminaryPlanOptions::default();
         options.a1_mini.enabled = true;
         options.a1_mini.route_fast_mono = false;
+        options.a1_mini.current_spool_id = Some("custom".to_owned());
         options.confirmed_spools = vec![confirmed_spool("custom", "#123456")];
         options.cmyx_geometry_context = calibrated_geometry_context();
         options.confirmed_calibration_samples = vec![calibrated_t4_record(
@@ -3369,13 +3358,11 @@ mod tests {
             input.config.a1_mini.supported_materials,
             options.a1_mini.supported_materials
         );
-        assert!(
-            input
-                .config
-                .a1_mini
-                .reserved_spool_ids
-                .contains(&CYAN_ID.to_owned())
+        assert_eq!(
+            input.config.a1_mini.current_spool_id,
+            Some("custom".to_owned())
         );
+        assert!(input.config.a1_mini.reserved_spool_ids.is_empty());
         assert_eq!(
             input.scopes[0].units[0].printer_preference,
             PrinterPreference::Auto

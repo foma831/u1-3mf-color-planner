@@ -3,6 +3,7 @@ mod conversion_report;
 mod filament_library;
 #[cfg(test)]
 mod native_e2e;
+mod print_instructions;
 mod view;
 
 use calibration_library::{
@@ -13,6 +14,7 @@ use calibration_library::{
 };
 use conversion_report::render_conversion_report;
 use filament_library::{FilamentLibraryView, load_for_app, save_for_app};
+use print_instructions::render_print_instructions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -60,7 +62,7 @@ use u1_planner::{ColorStrategy, PlanningInput, PlanningResult};
 use u1_three_mf::{
     DialectSupport, InputIdentity, ProjectAnalysis, ProjectDialect, SourceApplication,
 };
-use view::{PlanningRequestView, ProjectPlanView};
+use view::{InitialPlanningIntentView, PlanningRequestView, ProjectPlanView};
 
 #[derive(Default)]
 struct ProjectCache {
@@ -213,6 +215,7 @@ const MAX_PRIVATE_ADAPTER_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PUBLISHED_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PUBLISHED_CONVERSION_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PUBLISHED_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_PUBLISHED_PRINT_INSTRUCTIONS_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PUBLISHED_CHECKSUM_BYTES: u64 = 1024 * 1024;
 #[allow(dead_code)]
 const MAX_PUBLISHED_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -220,6 +223,7 @@ const PUBLISHED_BUNDLE_SCHEMA_VERSION: u32 = 2;
 const PUBLISHED_MANIFEST_FILE_NAME: &str = "manifest.json";
 const PUBLISHED_CONVERSION_PLAN_FILE_NAME: &str = "conversion-plan.json";
 const PUBLISHED_CONVERSION_REPORT_FILE_NAME: &str = "conversion-report.html";
+const PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME: &str = "PRINT-INSTRUCTIONS.txt";
 const PUBLISHED_CHECKSUMS_FILE_NAME: &str = "checksums.sha256";
 
 #[derive(Clone)]
@@ -454,6 +458,7 @@ fn cancel_analysis(cache: tauri::State<'_, ProjectCache>) -> Result<CancelAnalys
 #[tauri::command]
 async fn analyze_project(
     source_path: String,
+    planning_intent: InitialPlanningIntentView,
     app: tauri::AppHandle,
     cache: tauri::State<'_, ProjectCache>,
 ) -> Result<ProjectPlanView, String> {
@@ -476,6 +481,7 @@ async fn analyze_project(
     let worker_result = tauri::async_runtime::spawn_blocking(move || {
         view::analyze_native_project_data_with_backend_state(
             worker_path.to_string_lossy().as_ref(),
+            planning_intent,
             library_spools,
             calibration_samples,
             calibration_geometry,
@@ -3815,6 +3821,7 @@ fn validate_staged_bundle_tree(
             PUBLISHED_MANIFEST_FILE_NAME.to_owned(),
             PUBLISHED_CONVERSION_PLAN_FILE_NAME.to_owned(),
             PUBLISHED_CONVERSION_REPORT_FILE_NAME.to_owned(),
+            PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME.to_owned(),
             PUBLISHED_CHECKSUMS_FILE_NAME.to_owned(),
         ])
     } else {
@@ -4254,6 +4261,14 @@ fn perform_native_conversion(
         "conversion report",
     )?;
     write_staged_file(&report_path, &report)?;
+    let instructions_path = staging.path().join(PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME);
+    let instructions = render_print_instructions(&manifest_value)?;
+    ensure_generated_metadata_within_limit(
+        &instructions,
+        MAX_PUBLISHED_PRINT_INSTRUCTIONS_BYTES,
+        "print instructions",
+    )?;
+    write_staged_file(&instructions_path, &instructions)?;
     let mut checksums = artifacts
         .iter()
         .map(|artifact| format!("{}  {}", artifact.sha256, artifact.relative_path))
@@ -4269,6 +4284,10 @@ fn perform_native_conversion(
     checksums.push(format!(
         "{}  {PUBLISHED_CONVERSION_REPORT_FILE_NAME}",
         hash_file(&report_path)?.1
+    ));
+    checksums.push(format!(
+        "{}  {PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME}",
+        hash_file(&instructions_path)?.1
     ));
     checksums.sort();
     let checksums = format!("{}\n", checksums.join("\n"));
@@ -4291,6 +4310,7 @@ fn perform_native_conversion(
         (PUBLISHED_MANIFEST_FILE_NAME, &manifest_path),
         (PUBLISHED_CONVERSION_PLAN_FILE_NAME, &plan_path),
         (PUBLISHED_CONVERSION_REPORT_FILE_NAME, &report_path),
+        (PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME, &instructions_path),
         (PUBLISHED_CHECKSUMS_FILE_NAME, &checksums_path),
     ]
     .into_iter()
@@ -5633,6 +5653,20 @@ fn revalidate_published_bundle(
         );
     }
 
+    let instructions_path = output_directory.join(PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME);
+    let (instructions_bytes, instructions_identity) = bounded_regular_file(
+        &instructions_path,
+        MAX_PUBLISHED_PRINT_INSTRUCTIONS_BYTES,
+        "published print instructions",
+    )?;
+    let expected_instructions = render_print_instructions(&manifest_value)?;
+    if instructions_bytes != expected_instructions {
+        return Err(
+            "conversion_revalidation_invalid_bundle: The published print instructions do not match the verified manifest."
+                .into(),
+        );
+    }
+
     let mut expected_checksums = artifacts
         .iter()
         .map(|artifact| format!("{}  {}", artifact.sha256, artifact.relative_path))
@@ -5648,6 +5682,10 @@ fn revalidate_published_bundle(
     expected_checksums.push(format!(
         "{}  {PUBLISHED_CONVERSION_REPORT_FILE_NAME}",
         report_identity.sha256
+    ));
+    expected_checksums.push(format!(
+        "{}  {PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME}",
+        instructions_identity.sha256
     ));
     expected_checksums.sort();
     let expected_checksums = format!("{}\n", expected_checksums.join("\n"));
@@ -5687,6 +5725,11 @@ fn revalidate_published_bundle(
                 sha256: report_identity.sha256.clone(),
             },
             PublicationReceiptFile {
+                relative_path: PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME.into(),
+                byte_size: instructions_identity.byte_size,
+                sha256: instructions_identity.sha256.clone(),
+            },
+            PublicationReceiptFile {
                 relative_path: PUBLISHED_CHECKSUMS_FILE_NAME.into(),
                 byte_size: checksums_identity.byte_size,
                 sha256: checksums_identity.sha256.clone(),
@@ -5714,6 +5757,7 @@ fn revalidate_published_bundle(
         manifest_identity,
         conversion_plan_identity,
         report_identity,
+        instructions_identity,
         checksums_identity,
     ];
     restore_revalidated_output_registry_if_current(
@@ -7263,6 +7307,13 @@ mod tests {
             b"<!doctype html>",
         )
         .unwrap();
+        fs::write(
+            temporary
+                .path()
+                .join(PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME),
+            b"Print step 1",
+        )
+        .unwrap();
         fs::write(temporary.path().join(PUBLISHED_CHECKSUMS_FILE_NAME), b"").unwrap();
         validate_staged_bundle_tree(temporary.path(), &artifacts, true).unwrap();
 
@@ -7358,6 +7409,7 @@ mod tests {
             PUBLISHED_MANIFEST_FILE_NAME,
             PUBLISHED_CONVERSION_PLAN_FILE_NAME,
             PUBLISHED_CONVERSION_REPORT_FILE_NAME,
+            PUBLISHED_PRINT_INSTRUCTIONS_FILE_NAME,
             PUBLISHED_CHECKSUMS_FILE_NAME,
         ] {
             let path = root.join(name);

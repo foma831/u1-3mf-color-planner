@@ -136,7 +136,7 @@ export function SourcePaletteDetails({ plate }: { plate: PlatePlan }) {
         <p className="source-palette-details__note source-palette-details__note--a1">
           <Info aria-hidden="true" />
           {plate.isFastMono
-            ? "The final recipe uses one physical spool. If A1 mini routing is enabled but this job remains on U1, check its geometry, material support, and whether a separate A1 spool identity is available."
+            ? "The final recipe uses one physical spool. If A1 mini routing is enabled but this job remains on U1, check its geometry and material support, then recalculate. The currently loaded A1 spool does not limit later plate colors."
             : "This result does not yet resolve to one physical spool. For A1 mini, select Direct Spools, assign the same compatible spool to every source mapping you want to merge, then recalculate."}
         </p>
       ) : null}

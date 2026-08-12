@@ -82,9 +82,7 @@ export interface PrintRunA1SpoolStep {
 }
 
 export type PrintRunCheckpointStep =
-  | PrintRunFilamentStep
-  | PrintRunSetupStep
-  | PrintRunA1SpoolStep;
+  PrintRunFilamentStep | PrintRunSetupStep | PrintRunA1SpoolStep;
 
 export type PrintRunStep = PrintRunPlateStep | PrintRunCheckpointStep;
 
@@ -115,6 +113,9 @@ export type PrintRunPlan = Pick<
   | "blockingErrors"
   | "omittedUnitCount"
   | "partialConversion"
+  | "spools"
+  | "plannedFinalLoadout"
+  | "plannedFinalA1SpoolId"
 >;
 
 export interface PrintRunDescriptor {
@@ -219,8 +220,7 @@ function parseSetupAction(action: string): ParsedSetupAction {
     };
   }
   return {
-    phase:
-      match[1].toLowerCase() === "after" ? "after-batch" : "before-batch",
+    phase: match[1].toLowerCase() === "after" ? "after-batch" : "before-batch",
     toolhead: nonemptyString(match[2]),
     kind: match[3].toLowerCase() as ParsedSetupAction["kind"],
     payload: nonemptyString(match[4]),
@@ -315,7 +315,8 @@ export function createPrintRunSteps(
   bundle: PublishedPrintRunBundle | null = null,
 ): PrintRunStep[] {
   const plates = [...plan.plates].sort(
-    (left, right) => left.order - right.order || left.id.localeCompare(right.id),
+    (left, right) =>
+      left.order - right.order || left.id.localeCompare(right.id),
   );
   const batches = [...plan.batches].sort(
     (left, right) =>
@@ -338,9 +339,7 @@ export function createPrintRunSteps(
     const startsBatch = batch?.startOrder === plate.order;
     const t4Change = startsBatch && batch ? resolveBatchT4Change(batch) : null;
     const beforeActions =
-      startsBatch && batch
-        ? nonKeepSetupActions(batch, "before-batch")
-        : [];
+      startsBatch && batch ? nonKeepSetupActions(batch, "before-batch") : [];
 
     if (batch && startsBatch && batch.printer === "A1 mini") {
       const artifact = artifactsByPlate.get(plate.id);
@@ -814,7 +813,6 @@ export function publishedArtifactsForPlan(
     return new Map();
   }
 
-
   for (const batch of plan.batches.filter(
     (candidate) => candidate.printer === "A1 mini",
   )) {
@@ -869,7 +867,9 @@ export function createEmptyPrintRunProgress(
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function isPrintRunEvent(value: unknown): value is PrintRunEvent {
@@ -941,7 +941,8 @@ function isValidProgress(
       expectedConfirmedCheckpointIds,
     ) &&
     (progress.status !== "not-started" || currentStepIndex === 0) &&
-    (progress.status !== "active" || currentStepIndex < descriptor.steps.length) &&
+    (progress.status !== "active" ||
+      currentStepIndex < descriptor.steps.length) &&
     (progress.status !== "complete" ||
       currentStepIndex === descriptor.steps.length)
   );

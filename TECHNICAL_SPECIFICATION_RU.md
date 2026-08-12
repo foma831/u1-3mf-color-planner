@@ -1,7 +1,7 @@
 # Техническое задание: конвертер многоцветных 3MF-проектов для Snapmaker U1
 
-Версия документа: 1.2 (production writers, project-wide Direct Spools и trusted recovery)  
-Дата: 4 августа 2026 года  
+Версия документа: 1.4 (persisted printer loadout, custom four-spool palettes, production writers и trusted recovery)
+Дата: 11 августа 2026 года
 Рабочее название продукта: **U1 3MF Color Planner**  
 Язык документа и обсуждения: русский  
 Язык исходного кода, комментариев в коде, логов, CLI и пользовательского интерфейса: английский
@@ -56,6 +56,14 @@
 
 Расположение T1=C, T2=M, T3=Y является правилом данного приложения, а не аппаратным ограничением U1. Перед каждой печатью пользователь должен проверить фактическое сопоставление Project Filaments → Toolheads в Snapmaker Orca. При похожих цветах автоматическое сопоставление Orca может быть неверным.
 
+Перед первым анализом пользователь подтверждает фактическое текущее состояние
+всех позиций U1 T1–T4 и внешней катушки A1 mini. Это состояние хранится отдельно
+от project intent, передаётся уже в первый planning request и используется для
+минимизации физических перестановок и построения точных `Keep`/`Unload`/`Load`
+инструкций. Отсутствующая запись означает `Unknown`, а не молчаливое предположение
+о стандартной CMY+Grey загрузке. Одна physical spool ID не может одновременно
+быть подтверждена в нескольких позициях или на двух принтерах.
+
 ### 3.2. Поддерживаемые loadout
 
 В первой производственной конфигурации должны поддерживаться как минимум:
@@ -107,6 +115,22 @@ Print scope может быть всем выбранным проектом, о
 - какие катушки нужно выгрузить, загрузить и при желании вернуть после задания.
 
 Direct Spool не объявляется автоматически более точным: он помечается `Recommended for color fidelity` только если выбранные реальные катушки дают лучший измеренный либо nominal ΔE00, чем CMY+X recipes. Пользователь принимает стратегию до конвертации.
+
+Явное opt-in действие `Create 4-spool palette` непосредственно в недоступной
+Direct-карточке и дополнительный project-wide переключатель `Allow custom
+four-spool palettes per U1 plate` расширяют Direct Spools для scope, содержащих
+больше четырёх physical Direct identities. Контекстное действие обязано сразу
+запустить авторитетный backend-пересчёт выбранного scope; скрытый advanced
+переключатель не может быть единственным выходом из недоступного состояния. В
+этом режиме исходные identities не удаляются и не сливаются в модели данных:
+каждая остаётся отдельной строкой `Source → CMY+X → Actual spool`, но несколько
+строк могут намеренно ссылаться на одну физическую катушку. Итоговый U1 loadout
+каждого scope содержит от одной до четырёх уникальных катушек.
+
+Режим не меняет исходное CMY+X-разбиение на target plates. Он добавляет к каждой
+существующей плате альтернативное Direct-назначение, допускает полную перезагрузку
+T1–T4 между Direct batches и сохраняет A1 mini routing: scope, сведённый к одной
+совместимой катушке, повторно проверяется как A1 Mono candidate.
 
 ## 4. Поддерживаемая программная среда
 
@@ -176,7 +200,7 @@ Direct Spool не объявляется автоматически более �
 | Physical spool | конкретная катушка с материалом, SKU и калибровкой |
 | Solid recipe | печать одним физическим филаментом |
 | Mixed recipe | Full Spectrum-последовательность из 2–4 слотов; точный предел зависит от режима |
-| Direct Spool Mode | печать до четырёх logical colors выбранными реальными катушками без Full Spectrum |
+| Direct Spool Mode | печать source colors выбранными реальными катушками без Full Spectrum; итоговый physical loadout содержит не более четырёх spools |
 | Print scope | проект, исходная плата, неделимый object или выбранная группа, для которой сравниваются стратегии |
 | Loadout | полный набор T1–T4 для одной партии U1 |
 | Target plate | плата в результирующем проекте |
@@ -527,12 +551,27 @@ Grey входит в официальный CMYG Full Spectrum bundle. White и 
 
 ### FR-016. Режим Direct Spool и ручное назначение катушек
 
-`Direct Spools` предлагается, если в выбранном print scope не более четырёх
+По умолчанию `Direct Spools` предлагается, если в выбранном print scope не более четырёх
 physical Direct identities и существует допустимое назначение на U1. Число
 semantic material-color-role pairs при этом может быть больше четырёх:
 role-only пары с одинаковыми material, RGB и явно объявленным source profile
 сохраняются отдельными строками решений, но используют одну physical identity.
 При неизвестном source profile такие строки консервативно остаются разными.
+
+При явном `allowDirectPaletteReduction=true` scope с большим числом physical
+Direct identities также получает Direct-вариант, если все его требования можно
+назначить максимум четырём доступным физическим катушкам. Backend строит
+детерминированное начальное предложение со следующей лексикографической целью:
+
+1. выполнить все явные назначения и material constraints;
+2. минимизировать сумму color-distance по всем source identities;
+3. минимизировать число катушек, отсутствующих в текущем loadout;
+4. при равенстве предпочесть меньше уникальных катушек и стабильный порядок ID.
+
+Автоподбор использует ограниченный набор ближайших и aggregate-кандидатов, чтобы
+время пересчёта не зависело комбинаторно от всей постоянной библиотеки филаментов.
+Независимо от исходного числа строк итоговое множество `spool_id` одного scope
+не может превышать четыре.
 
 Программа строит экран сравнения со строкой на каждую source material-color pair и следующими полями:
 
@@ -572,6 +611,34 @@ role-only пары с одинаковыми material, RGB и явно объя�
 - фактический project filament order записывается в профиль и manifest;
 - перед печатью всё равно требуется ручная проверка Project Filament → Toolhead mapping в Snapmaker Orca.
 
+Правила opt-in custom palette:
+
+- режим выключен по умолчанию; контекстное действие или project-wide
+  переключатель требуют авторитетного backend-пересчёта;
+- контекстное действие отправляет для выбранного scope стратегию `Direct`,
+  пустые стартовые assignments и `allowDirectPaletteReduction=true`, чтобы
+  backend построил предложение максимум из четырёх совместимых катушек;
+- при невозможности построить предложение UI показывает backend-причину,
+  переход в Filament Library и повторную попытку; автоматическая замена material
+  запрещена;
+- базовое CMY+X plate partition остаётся неизменным; custom Direct является
+  альтернативной стратегией существующего scope;
+- физическая source identity получает стабильный cross-scope `inheritanceKey`,
+  построенный из material, RGB и declared source profile; при неизвестном profile
+  в ключ дополнительно входят role и безопасный source discriminator;
+- ручное source→spool назначение распространяется на последующие scopes с тем же
+  `inheritanceKey`, только если пользователь ещё не редактировал эту identity в
+  соответствующем scope;
+- любое ручное изменение spool или material-risk acknowledgement помечает решение
+  scope-local и защищает его от последующего наследования;
+- наследование не добавляет пятую уникальную катушку: scope без свободного T1–T4
+  сохраняет прежнее назначение и получает понятное уведомление;
+- assignments хранятся и передаются backend даже пока пользователь оставляет
+  стратегию scope равной CMY+X, чтобы предложенная и унаследованная палитра не
+  терялась до выбора `Custom 4-Spool Direct`;
+- отключение режима возвращает scopes с более чем четырьмя identities к CMY+X и
+  после пересчёта восстанавливает обычное правило Direct eligibility.
+
 Для project-wide варианта planner сохраняет semantic effective identity по
 material, role, RGB и source profile/unknown discriminator, но eligibility
 проверяет число physical Direct identities всех включённых source scopes.
@@ -595,7 +662,8 @@ scopes, UI показывает `Varies by scope` и все соответств
 - `Apply project-wide palette` меняет planning intent, а авторитетная проверка выполняется только после `Recalculate Plan`;
 - при `>4` physical Direct identities UI показывает точное число semantic-пар,
   число физических позиций и конкретную причину недоступности, не предлагая
-  кнопку применения.
+  кнопку project-wide применения. Per-scope custom palette при включённом opt-in
+  остаётся отдельным допустимым workflow.
 
 План должен показывать `Keep`, `Unload`, `Load` и опциональные `Restore CMY setup` для каждого T1–T4. Эти операции считаются отдельно от T4 swaps стандартного CMY+X режима.
 
@@ -723,6 +791,21 @@ Color approximation внутри того же material и material substitution
 
 Direct Spool batch является отдельной setup boundary. До него показывается полный T1–T4 transition от текущего loadout, после него — следующий loadout или опциональное восстановление постоянного CMY+X setup. Программа не смешивает Direct Spool и CMY+X plates внутри одного batch.
 
+### FR-022A. Сохранённое физическое состояние принтеров
+
+Приложение хранит versioned локальный профиль текущей загрузки отдельно от
+намерения проекта: до четырёх записей `toolhead → spoolId` для U1 и одну внешнюю
+катушку A1 mini. Профиль подтверждается в видимом Step 2 и целиком передаётся в
+первый `analyze_project`; последующий `replan_project` использует тот же полный
+snapshot, включая явное очищение ранее известной позиции до `Unknown`.
+
+План возвращает ожидаемую финальную U1-загрузку после всех batch и restore actions,
+а также последнюю A1-катушку. Если одна катушка последовательно переносится с U1
+на A1 mini, финальный U1 slot не может продолжать заявлять её как одновременно
+загруженную. Конвертация файлов не меняет сохранённый профиль. Обновление для
+следующего проекта доступно только после завершения всех Print Run checkpoints и
+явного подтверждения пользователя.
+
 ### FR-023. Назначение на A1 mini
 
 Объект может быть назначен на A1 mini, если одновременно:
@@ -736,6 +819,62 @@ Direct Spool batch является отдельной setup boundary. До не
 - сохранены ориентация и настройки, важные для механики детали.
 
 Планировщик может объединять несколько mono objects на одной A1 plate по одинаковой катушке. Смена катушки A1 показывается отдельно от T4 swaps U1.
+
+### FR-023A. Project setup до первого анализа
+
+Первичный onboarding обязан разделять три разных вида состояния:
+
+1. persisted hardware capability: `Snapmaker U1` всегда primary,
+   `Bambu Lab A1 mini` — опциональный secondary printer;
+2. подтверждённый physical inventory;
+3. project-scoped planning intent для текущего 3MF.
+
+После подтверждения inventory и до выбора 3MF интерфейс показывает отдельный
+видимый **Step 2 · Project setup**. Настройки нельзя прятать только в footer,
+secondary disclosure или post-analysis recommendation. Пользователь обязан иметь
+возможность до первого плана выбрать:
+
+- `Snapmaker U1 only` либо `Snapmaker U1 + Bambu Lab A1 mini`;
+- `Automatic`, `Direct Spools only` либо `CMY+X Full Spectrum only`;
+- опциональный currently loaded T4 spool;
+- при включённом A1 mini — опциональный currently loaded A1 spool.
+
+Hardware capability и project routing не являются одним boolean. Сохранённый
+A1 mini разрешает показать project-level вариант U1+A1; выбранный для проекта
+U1+A1 включает проверку A1 уже в первом плане. При hardware-профиле U1-only этот
+вариант недоступен с видимой причиной и действием для изменения Available
+equipment.
+
+Project intent передаётся в тот же авторитетный `analyze_project`, который читает
+immutable 3MF. До результата запрещено строить скрытый U1/Auto-план и затем
+автоматически вызывать replan. Минимальный DTO:
+
+```text
+PlanningIntent {
+  defaultStrategy: Auto | Cmyx | Direct,
+  a1MiniEnabled: bool,
+  currentT4SpoolId: SpoolId?,
+  currentA1SpoolId: SpoolId?
+}
+```
+
+DTO не содержит inventory или calibration records: backend добавляет их только
+из собственных persisted библиотек. Неизвестные поля отклоняются. Тот же
+`defaultStrategy` сохраняется в последующих replan requests, чтобы новые scopes
+не возвращались молча к `Auto`.
+
+`Direct Spools only` является строгим intent. Если scope нельзя напечатать
+реальными катушками либо он требует более четырёх effective physical loadout
+positions без явного допустимого palette-reduction решения, результат содержит
+блокирующую причину и не переключает scope на CMY+X. `CMY+X Full Spectrum only`
+аналогично не выбирает Direct Spools. `Automatic` разрешает сравнение вариантов
+по каждому scope.
+
+После анализа **Project setup** остаётся видимым в верхней части плана и отдельно
+показывает requested intent и authoritative result, включая состояние `A1 mini
+requested · 0 eligible plates`. Редактирование создаёт `Changes pending` и требует
+явного **Apply & recalculate**. Нижняя action rail содержит только контекстные
+действия плана и не дублирует эти настройки.
 
 ### FR-024. Предварительный план до конвертации
 
@@ -787,8 +926,13 @@ Direct Spool batch является отдельной setup boundary. До не
 
 На экране плана пользователь может:
 
-- включить/выключить A1 mini;
+- изменить подтверждённый project-level набор принтеров и global U1 strategy с
+  явным пересчётом;
+- включить/выключить A1 mini для последующего плана;
 - переключить допустимый scope между `CMY+X Full Spectrum` и `Direct Spools`;
+- выбрать все или произвольное подмножество U1 plates и массово применить
+  `Direct Spools` либо `CMY+X`; операция адресует уникальные source scope IDs,
+  поэтому несколько target plates одного scope переключаются вместе;
 - выбрать реальную катушку и T1–T4 для каждого source color;
 - включить либо отключить `Restore CMY setup after this job`;
 - закрепить object за принтером или платой;
@@ -804,6 +948,12 @@ Direct Spool batch является отдельной setup boundary. До не
 - пересчитать план.
 
 Любое изменение пересчитывает swaps, fit, recipes и warnings до экспорта.
+Bulk Direct action недоступен, если хотя бы один выбранный scope не проходит
+текущую Direct eligibility. UI показывает число заблокированных scopes и
+предлагает включить explicit palette reduction с последующим пересчётом либо
+снять их выделение. Селектор физической катушки сохраняет native control, но
+рядом обязательно показывает фактический swatch; accessible label/title
+содержит color name и HEX.
 Изменение A1 mini не меняет таблицы молча: UI показывает состояние `Pending
 recalculation` и расположенную рядом кнопку `Recalculate plan`. После успешного
 пересчёта результат отображается двумя независимыми очередями `U1 Plates` и
@@ -877,8 +1027,17 @@ Adapter Snapmaker Orca 2.3.5 формирует все необходимые ve
   manifest.json
   conversion-plan.json
   conversion-report.html
+  PRINT-INSTRUCTIONS.txt
   checksums.sha256
 ```
+
+`PRINT-INSTRUCTIONS.txt` — детерминированная человекочитаемая инструкция в
+каноническом порядке output artifacts. Для каждого шага она содержит printer,
+slicer, strategy, batch, relative project path, target plates, фактический
+physical loadout и действия до/после задания. В финальном разделе перечисляются
+exclusions и warnings. Недоверенные имена очищаются от управляющих символов и
+переносов строк. Инструкция создаётся только из проверенного manifest, имеет
+лимит размера, включается в `checksums.sha256` и publication receipt.
 
 Дополнительно разрешён `Combined review project`, содержащий все U1 plates, но UI должен явно предупреждать, что `Slice All`/`Print All` нельзя выполнять через границу смены T4 без проверки.
 
@@ -929,7 +1088,8 @@ Private receipt связывает в одном типизированном д
 - канонический host path исходника, его точный byte size и SHA-256;
 - backend plan fingerprint и SHA-256 canonical preflight;
 - канонический output root path и identity опубликованного каталога;
-- relative path, byte size и SHA-256 каждого `manifest.json`, `conversion-plan.json`, `conversion-report.html` и `checksums.sha256`;
+- relative path, byte size и SHA-256 каждого `manifest.json`, `conversion-plan.json`,
+  `conversion-report.html`, `PRINT-INSTRUCTIONS.txt` и `checksums.sha256`;
 - adapter, target, batch, file/relative path, byte size и SHA-256 каждого выходного 3MF.
 
 Receipt публикуется backend атомарно и не входит в переносимый output bundle.
@@ -1520,12 +1680,34 @@ T4/inventory делает старое решение невалидным. PETG
 color approval и отдельного material-risk acknowledgement; same-material bulk
 approval его не затрагивает.
 
-### AC-009B. Явный пересчёт A1 mini
+### AC-009B. Initial intent и явный пересчёт A1 mini
 
-После изменения A1 mini checkbox появляется `Recalculate plan`, а текущие
-printer assignments помечаются pending. После успешного пересчёта UI показывает
-отдельные таблицы `U1 Plates` и `A1 mini Plates` с независимыми counts и empty
-states. При ошибке пересчёта pending-состояние сохраняется.
+Fixture с сохранённым hardware-профилем U1+A1 и подтверждённым project intent
+U1+A1 передаёт `a1MiniEnabled=true` уже в первый `analyze_project`; до получения
+этого результата `replan_project` не вызывается. Fixture U1-only не позволяет
+включить A1 routing без изменения Available equipment.
+
+После post-analysis изменения набора принтеров появляется `Changes pending` и
+доступное рядом действие `Apply & recalculate`, а текущие printer assignments
+помечаются устаревшими. После успешного пересчёта UI показывает отдельные таблицы
+`U1 Plates` и `A1 mini Plates` с независимыми counts и empty states. При ошибке
+пересчёта pending-состояние сохраняется. Запрошенный A1 при нуле допустимых jobs
+остаётся видимым как intent, а не превращается в состояние «выключено».
+
+### AC-009C. Полная начальная и финальная загрузка принтеров
+
+Fixture с подтверждёнными разными катушками в T1–T4 и на A1 mini передаёт весь
+`currentLoadout` и `currentA1SpoolId` уже в единственный первый
+`analyze_project`; предварительный `replan_project` не требуется. План начинается
+с этого физического состояния и формирует минимальный допустимый набор setup
+actions. Дублирование одной physical spool ID в двух одновременных позициях
+отклоняется до планирования.
+
+После завершения Print Run UI показывает backend-authored `plannedFinalLoadout`
+и `plannedFinalA1SpoolId`, но не сохраняет их автоматически. Только нажатие **Use
+as current printer loadout** обновляет versioned профиль для следующего проекта.
+Закрытие результата конвертации, отмена Print Run или незавершённые checkpoints не
+изменяют сохранённое физическое состояние.
 
 ### AC-010. Геометрия
 
@@ -1560,7 +1742,7 @@ SHA-256 исходного файла до и после операции сов
 
 ### AC-013. Отчёт
 
-Manifest и HTML-report содержат source→target mapping, исключённые scopes, loadout timeline, Direct Spool source→actual mapping, все user decisions, warnings, validation status и hashes output.
+Manifest и HTML-report содержат source→target mapping, исключённые scopes, loadout timeline, Direct Spool source→actual mapping, все user decisions, warnings, validation status и hashes output. `PRINT-INSTRUCTIONS.txt` следует каноническому artifact order, перечисляет точный физический loadout и все межзаданные setup/restore actions; его hash также проверяется при recovery.
 
 ## 15. Тестовая стратегия
 

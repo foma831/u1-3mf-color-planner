@@ -40,6 +40,44 @@ describe("plan helpers", () => {
     expect(isDirectStrategyAvailable(plate)).toBe(false);
   });
 
+  it("accepts seven source identities when the authoritative Direct loadout uses four spools", () => {
+    const plate = structuredClone(createDemoPlan().plates[0]);
+    const templates = plate.mappings!;
+    plate.directEligible = true;
+    plate.directPairCount = 7;
+    plate.mappings = Array.from({ length: 7 }, (_, index) => ({
+      ...structuredClone(templates[index % templates.length]),
+      id: `source-${index + 1}`,
+      inheritanceKey: `source-key-${index + 1}`,
+      physicalIdentityId: `source-identity-${index + 1}`,
+      selectedSpoolId: templates[index % 4].selectedSpoolId,
+    }));
+
+    expect(isDirectStrategyAvailable(plate)).toBe(true);
+  });
+
+  it("retains draft Direct mappings on CMY plates while custom palettes are enabled", () => {
+    const plan = createDemoPlan();
+    plan.plates[0].strategy = "cmyx";
+
+    const disabled = buildReplanRequest(plan, false, false, false);
+    const enabled = buildReplanRequest(plan, false, false, true);
+    const disabledScope = disabled.scopeOverrides.find(
+      (scope) => scope.scopeId === plan.plates[0].scopeId,
+    );
+    const enabledScope = enabled.scopeOverrides.find(
+      (scope) => scope.scopeId === plan.plates[0].scopeId,
+    );
+
+    expect(disabled.allowDirectPaletteReduction).toBe(false);
+    expect(disabledScope?.assignments).toHaveLength(0);
+    expect(enabled.allowDirectPaletteReduction).toBe(true);
+    expect(enabledScope?.strategy).toBe("cmyx");
+    expect(enabledScope?.assignments).toHaveLength(
+      plan.plates[0].mappings!.length,
+    );
+  });
+
   it("uses the planner Direct Spool ΔE00 quality boundaries", () => {
     expect(qualityForDelta(0)).toBe("Exact");
     expect(qualityForDelta(0.001)).toBe("Close");
@@ -249,6 +287,7 @@ describe("plan helpers", () => {
     });
     expect(request.restoreCmyAfterDirect).toBe(false);
     expect(request.a1MiniEnabled).toBe(false);
+    expect(request.currentA1SpoolId).toBeNull();
     expect(request.includedAlternativePlateIds).toEqual([]);
     expect(buildReplanRequest(plan, true, true).a1MiniEnabled).toBe(true);
   });

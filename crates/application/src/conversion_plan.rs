@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use u1_planner::{
-    ColorStrategy, ErrorCode, PlanError, PlanningInput, PlanningResult, Printer, PrinterLoadout,
-    ScopeStrategy,
+    ColorStrategy, ErrorCode, PlanError, PlanningInput, PlanningResult, Printer, ScopeStrategy,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1135,18 +1134,15 @@ pub fn slice_conversion_plan(
 }
 
 fn selected_a1_spool_changes(batches: &[u1_planner::PlannedBatch]) -> u32 {
-    let mut previous = None::<&str>;
-    let mut changes = 0_u32;
-    for batch in batches {
-        let PrinterLoadout::A1Mini { spool_id } = &batch.loadout else {
-            continue;
-        };
-        if previous.is_some_and(|value| value != spool_id) {
-            changes += 1;
-        }
-        previous = Some(spool_id);
-    }
-    changes
+    batches
+        .iter()
+        .filter(|batch| batch.printer == Printer::A1Mini)
+        .filter(|batch| {
+            batch.setup_actions.iter().any(|action| {
+                action.toolhead.is_none() && action.kind == u1_planner::SetupActionKind::Load
+            })
+        })
+        .count() as u32
 }
 
 #[cfg(test)]

@@ -419,10 +419,15 @@ pub struct A1MiniConfig {
     pub route_fast_mono: bool,
     pub build_volume: BuildVolumeMm,
     pub supported_materials: Vec<Material>,
-    /// Physical spools committed to the U1 schedule. A1 routing may use a
-    /// separately confirmed duplicate, but never the same spool identity.
+    /// Physical spools explicitly unavailable to the A1 mini. The canonical
+    /// schedule is sequential, so a spool may otherwise move between the U1
+    /// and A1 mini when the setup actions say so.
     #[serde(default)]
     pub reserved_spool_ids: Vec<String>,
+    /// Physical spool currently loaded on the A1 mini. This only determines
+    /// the first setup transition and never limits later A1 plate colors.
+    #[serde(default)]
+    pub current_spool_id: Option<String>,
 }
 
 impl Default for A1MiniConfig {
@@ -437,6 +442,7 @@ impl Default for A1MiniConfig {
             },
             supported_materials: vec![Material::Pla, Material::Petg],
             reserved_spool_ids: Vec::new(),
+            current_spool_id: None,
         }
     }
 }
@@ -451,6 +457,11 @@ pub struct PlannerConfig {
     pub a1_mini: A1MiniConfig,
     /// Expert override. It is intentionally false by default.
     pub allow_mixed_materials_on_plate: bool,
+    /// Explicit opt-in for a lossy per-scope Direct palette. When enabled,
+    /// more than four source physical identities may intentionally share at
+    /// most four physical spools and U1 toolheads.
+    #[serde(default)]
+    pub allow_direct_palette_reduction: bool,
     pub restore_cmy_after_direct: bool,
 }
 
@@ -467,6 +478,7 @@ impl PlannerConfig {
             },
             a1_mini: A1MiniConfig::default(),
             allow_mixed_materials_on_plate: false,
+            allow_direct_palette_reduction: false,
             restore_cmy_after_direct: true,
         }
     }
@@ -729,6 +741,7 @@ pub enum WarningCode {
     A1NotSinglePhysicalSpool,
     A1PinnedUnitRejected,
     A1SpoolReservedForU1,
+    A1SpoolSharedWithU1,
     UnknownCurrentToolhead,
     FallbackRecipe,
     ApprovedColorFallback,

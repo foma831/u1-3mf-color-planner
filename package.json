@@ -11,8 +11,8 @@
     "build:web": "npm run build:web --workspace @u1-planner/desktop",
     "check": "npm run check --workspace @u1-planner/desktop",
     "test": "npm run test --workspace @u1-planner/desktop",
-    "test:rust": "cargo test --workspace --all-targets --locked && cargo test --workspace --doc --locked",
-    "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "test:rust": "node scripts/run-with-rust.mjs cargo test --workspace --all-targets --locked && node scripts/run-with-rust.mjs cargo test --workspace --doc --locked",
+    "check:rust": "node scripts/run-with-rust.mjs cargo fmt --all -- --check && node scripts/run-with-rust.mjs cargo clippy --workspace --all-targets --locked -- -D warnings",
     "verify": "npm test && npm run check && npm run build:web && npm run check:rust && npm run test:rust"
   },
   "engines": {

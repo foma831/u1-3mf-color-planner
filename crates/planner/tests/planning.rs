@@ -134,6 +134,9 @@ fn direct_input(color_count: usize) -> PlanningInput {
         rgb(220, 80, 10),
         rgb(90, 20, 130),
         rgb(20, 170, 60),
+        rgb(20, 90, 220),
+        rgb(230, 170, 25),
+        rgb(180, 40, 150),
     ];
     let mut inventory = base_inventory();
     let mut requirements = Vec::new();
@@ -200,6 +203,56 @@ fn direct_spools_accepts_one_through_four_effective_pairs() {
         );
         assert_eq!(result.jobs[0].color_mappings.len(), color_count);
     }
+}
+
+#[test]
+fn u1_batch_order_starts_with_the_lowest_physical_loadout_cost() {
+    let mut input = direct_input(4);
+    input.current_toolheads = CurrentToolheadState {
+        slots: [
+            ToolheadSlotState::Loaded("direct-0".into()),
+            ToolheadSlotState::Loaded("direct-1".into()),
+            ToolheadSlotState::Loaded("direct-2".into()),
+            ToolheadSlotState::Loaded("direct-3".into()),
+        ],
+    };
+    input.scopes[0].direct_assignments = (0..4)
+        .map(|index| u1_planner::DirectAssignmentRequest {
+            requirement_id: format!("color-{index}"),
+            spool_id: format!("direct-{index}"),
+            toolhead: Some(Toolhead::ALL[index]),
+            allow_material_substitution: false,
+        })
+        .collect();
+
+    let mut one_spool_scope = input.scopes[0].clone();
+    one_spool_scope.id = "one-spool-scope".into();
+    one_spool_scope.display_name = "One spool scope".into();
+    one_spool_scope.requirements = vec![one_spool_scope.requirements[3].clone()];
+    one_spool_scope.units = vec![unit("one-spool-unit", vec!["color-3".into()], 20.0)];
+    one_spool_scope.direct_assignments = vec![u1_planner::DirectAssignmentRequest {
+        requirement_id: "color-3".into(),
+        spool_id: "direct-3".into(),
+        toolhead: Some(Toolhead::T1),
+        allow_material_substitution: false,
+    }];
+    input.scopes.push(one_spool_scope);
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    let PrinterLoadout::U1 { loadout } = &result.batches[0].loadout else {
+        panic!("the first optimized batch should target the U1");
+    };
+    assert_eq!(
+        loadout.slots,
+        [
+            Some("direct-0".into()),
+            Some("direct-1".into()),
+            Some("direct-2".into()),
+            Some("direct-3".into()),
+        ]
+    );
 }
 
 #[test]
@@ -520,7 +573,7 @@ fn explicitly_merged_source_colors_share_one_spool_and_route_as_a1_mono() {
 }
 
 #[test]
-fn a1_does_not_share_a_physical_spool_with_a_u1_job() {
+fn a1_can_reuse_a_physical_spool_after_its_u1_batch() {
     let mut input = direct_input(2);
     input.scopes[0].units.push(unit(
         "mono-sharing-direct-zero",
@@ -532,15 +585,16 @@ fn a1_does_not_share_a_physical_spool_with_a_u1_job() {
     let result = plan(&input);
 
     assert!(result.errors.is_empty(), "{:#?}", result.errors);
-    assert!(result.jobs.iter().all(|job| job.printer == Printer::U1));
+    assert!(result.jobs.iter().any(|job| job.printer == Printer::U1));
+    assert!(result.jobs.iter().any(|job| job.printer == Printer::A1Mini));
     assert!(result.warnings.iter().any(|warning| {
-        warning.code == WarningCode::A1SpoolReservedForU1
-            && warning.unit_id.as_deref() == Some("mono-sharing-direct-zero")
+        warning.code == WarningCode::A1SpoolSharedWithU1
+            && warning.message.contains("cannot run in parallel")
     }));
 }
 
 #[test]
-fn explicit_a1_pin_does_not_silently_fall_back_on_spool_conflict() {
+fn explicit_a1_pin_can_schedule_a_sequential_shared_spool_transfer() {
     let mut input = direct_input(2);
     let mut pinned = unit("pinned-a1", vec!["color-0".into()], 20.0);
     pinned.printer_preference = PrinterPreference::A1Mini;
@@ -549,15 +603,73 @@ fn explicit_a1_pin_does_not_silently_fall_back_on_spool_conflict() {
 
     let result = plan(&input);
 
-    assert!(result.errors.iter().any(|error| {
-        error.code == ErrorCode::RequestedA1Unavailable
-            && error.unit_id.as_deref() == Some("pinned-a1")
-            && error.message.contains("also committed to the U1 schedule")
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert!(result.jobs.iter().any(|job| {
+        job.printer == Printer::A1Mini && job.units.iter().any(|unit| unit.unit_id == "pinned-a1")
     }));
-    assert!(result.jobs.iter().all(|job| job.printer == Printer::U1));
-    assert!(!result.warnings.iter().any(|warning| {
-        warning.code == WarningCode::A1SpoolReservedForU1
-            && warning.unit_id.as_deref() == Some("pinned-a1")
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| { warning.code == WarningCode::A1SpoolSharedWithU1 })
+    );
+}
+
+#[test]
+fn a1_batches_group_each_color_and_start_with_the_loaded_spool() {
+    let mut input = direct_input(2);
+    input.scopes[0].units = vec![
+        unit("first-color", vec!["color-0".into()], 20.0),
+        unit("second-color", vec!["color-1".into()], 20.0),
+    ];
+    input.config.a1_mini.enabled = true;
+    input.config.a1_mini.current_spool_id = Some("direct-1".into());
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.batches.len(), 2);
+    assert!(
+        result
+            .batches
+            .iter()
+            .all(|batch| batch.printer == Printer::A1Mini)
+    );
+    assert!(matches!(
+        &result.batches[0].loadout,
+        PrinterLoadout::A1Mini { spool_id } if spool_id == "direct-1"
+    ));
+    assert_eq!(result.a1_spool_change_count, 1);
+    assert_eq!(
+        result.batches[0].setup_actions[0].kind,
+        SetupActionKind::Keep
+    );
+    assert!(
+        result.batches[1]
+            .setup_actions
+            .iter()
+            .any(|action| { action.kind == SetupActionKind::Unload && action.toolhead.is_none() })
+    );
+    assert!(
+        result.batches[1]
+            .setup_actions
+            .iter()
+            .any(|action| { action.kind == SetupActionKind::Load && action.toolhead.is_none() })
+    );
+}
+
+#[test]
+fn unknown_a1_spool_counts_the_first_setup_conservatively() {
+    let mut input = direct_input(1);
+    input.config.a1_mini.enabled = true;
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.a1_spool_change_count, 1);
+    assert!(result.warnings.iter().any(|warning| {
+        warning.code == WarningCode::UnknownCurrentToolhead
+            && warning.message.contains("A1 mini spool")
     }));
 }
 
@@ -580,6 +692,104 @@ fn fifth_effective_pair_rejects_direct_spools() {
             .errors
             .iter()
             .any(|error| { error.code == ErrorCode::RequestedDirectSpoolsUnavailable })
+    );
+}
+
+#[test]
+fn custom_direct_palette_reduces_seven_source_identities_to_four_spools() {
+    let mut input = direct_input(7);
+    input.config.allow_direct_palette_reduction = true;
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.scope_options[0].direct_pair_count, 7);
+    let DirectSpoolEligibility::Eligible { assignments } = &result.scope_options[0].direct_spools
+    else {
+        panic!("the opted-in custom palette should be eligible");
+    };
+    assert_eq!(assignments.len(), 7);
+    assert_eq!(
+        assignments
+            .iter()
+            .map(|assignment| assignment.spool_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        4
+    );
+    assert_eq!(
+        assignments
+            .iter()
+            .map(|assignment| assignment.toolhead)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        4
+    );
+    assert_eq!(result.jobs[0].strategy, ColorStrategy::DirectSpools);
+    assert!(result.warnings.iter().any(|warning| {
+        warning.code == WarningCode::IntentionalColorMerge
+            && warning
+                .message
+                .contains("source colors intentionally use physical spool")
+    }));
+}
+
+#[test]
+fn custom_direct_palette_honors_explicit_many_to_one_assignments() {
+    let mut input = direct_input(7);
+    input.config.allow_direct_palette_reduction = true;
+    input.scopes[0].direct_assignments = (0..7)
+        .map(|index| u1_planner::DirectAssignmentRequest {
+            requirement_id: format!("color-{index}"),
+            spool_id: format!("direct-{}", index % 4),
+            toolhead: Some(Toolhead::ALL[index % 4]),
+            allow_material_substitution: false,
+        })
+        .collect();
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    let DirectSpoolEligibility::Eligible { assignments } = &result.scope_options[0].direct_spools
+    else {
+        panic!("explicit custom palette should be eligible");
+    };
+    for assignment in assignments {
+        let index = assignment.source_requirement_ids[0]
+            .strip_prefix("color-")
+            .expect("test requirement prefix")
+            .parse::<usize>()
+            .expect("test requirement index");
+        assert_eq!(assignment.spool_id, format!("direct-{}", index % 4));
+        assert_eq!(assignment.toolhead, Toolhead::ALL[index % 4]);
+    }
+}
+
+#[test]
+fn seven_source_colors_can_be_reduced_to_one_a1_mini_spool() {
+    let mut input = direct_input(7);
+    input.config.allow_direct_palette_reduction = true;
+    input.config.a1_mini.enabled = true;
+    input.scopes[0].direct_assignments = (0..7)
+        .map(|index| u1_planner::DirectAssignmentRequest {
+            requirement_id: format!("color-{index}"),
+            spool_id: "direct-0".into(),
+            toolhead: Some(Toolhead::T1),
+            allow_material_substitution: false,
+        })
+        .collect();
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 1);
+    assert_eq!(result.jobs[0].printer, Printer::A1Mini);
+    assert_eq!(result.jobs[0].strategy, ColorStrategy::A1Mono);
+    assert!(
+        result.jobs[0]
+            .color_mappings
+            .iter()
+            .all(|mapping| mapping.actual_spool_id.as_deref() == Some("direct-0"))
     );
 }
 
@@ -713,6 +923,7 @@ fn a1_rejects_a_unit_taller_than_180_mm_and_leaves_it_on_u1() {
         },
         supported_materials: vec![Material::Pla],
         reserved_spool_ids: Vec::new(),
+        current_spool_id: None,
     };
     let input = PlanningInput {
         scopes: vec![PrintScope {

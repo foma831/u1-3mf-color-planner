@@ -42,8 +42,13 @@ describe("ProjectHeader analysis evidence", () => {
       />,
     );
 
+    expect(screen.getByText("sha256:fixture")).not.toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Analyze Project" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Analysis details"));
 
+    expect(screen.getByText("sha256:fixture")).toBeVisible();
     expect(screen.getByText("Bambu Studio 02.02.00.85")).toBeInTheDocument();
     expect(screen.getByText("193 MB")).toBeInTheDocument();
     expect(screen.getByText("89 / 89")).toBeInTheDocument();
