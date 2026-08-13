@@ -151,6 +151,7 @@ fn planning_request_from_fixture(options: &PreliminaryPlanOptions) -> PlanningRe
         "unitPrinterOverrides": unit_printer_overrides,
         "currentLoadout": current_loadout,
         "restoreCmyAfterDirect": options.restore_cmy_after_direct,
+        "allowU1CrossSourceRepacking": options.allow_u1_cross_source_repacking,
         "a1MiniEnabled": options.a1_mini.enabled,
         "includedAlternativePlateIds": options.included_alternative_plate_ids,
     }))

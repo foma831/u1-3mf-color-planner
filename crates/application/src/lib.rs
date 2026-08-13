@@ -107,6 +107,10 @@ pub struct PreliminaryPlanOptions {
     /// Explicit operator opt-in for reducing more than four Direct source
     /// identities to a maximum of four physical U1 spools per scope.
     pub allow_direct_palette_reduction: bool,
+    /// Explicit operator opt-in for packing compatible U1 units from
+    /// different source plates onto fewer target plates. The source archive
+    /// remains immutable; only the generated target layout may change.
+    pub allow_u1_cross_source_repacking: bool,
     /// Physical spools explicitly confirmed by the user. Project metadata is
     /// never promoted into this collection automatically.
     pub confirmed_spools: Vec<Spool>,
@@ -159,6 +163,7 @@ impl Default for PreliminaryPlanOptions {
             scope_strategy: ScopeStrategy::Auto,
             restore_cmy_after_direct: true,
             allow_direct_palette_reduction: false,
+            allow_u1_cross_source_repacking: false,
             confirmed_spools: Vec::new(),
             scope_overrides: Vec::new(),
             unit_printer_overrides: Vec::new(),
@@ -385,6 +390,7 @@ pub fn build_planning_input(
     config.a1_mini = options.a1_mini.clone();
     config.restore_cmy_after_direct = options.restore_cmy_after_direct;
     config.allow_direct_palette_reduction = options.allow_direct_palette_reduction;
+    config.allow_u1_cross_source_repacking = options.allow_u1_cross_source_repacking;
 
     Ok(PlanningInput {
         scopes,

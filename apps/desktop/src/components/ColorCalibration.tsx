@@ -19,6 +19,7 @@ import {
 import type {
   CmyxCalibrationLibraryDocument,
   CmyxCalibrationMeasurementInput,
+  CmyxCalibrationChartMode,
   CmyxCalibrationProjectInput,
   CmyxCalibrationProjectResult,
   CmyxCalibrationRecord,
@@ -156,6 +157,24 @@ const measurementMethodOptions: ReadonlyArray<{
     label: "Visual swatch comparison",
     description:
       "You compared the physical print under controlled light; this is lower-confidence evidence.",
+  },
+];
+
+const chartModeOptions: ReadonlyArray<{
+  id: CmyxCalibrationChartMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "full",
+    label: "Full · 26 swatches (recommended)",
+    description:
+      "All solids, 1:1 pairs, both 2:1 pair directions, and equal three-color mixes.",
+  },
+  {
+    id: "quick",
+    label: "Quick · 10 swatches",
+    description: "Four solids and every 1:1 pair for a fast visual screening print.",
   },
 ];
 
@@ -345,6 +364,8 @@ export function ColorCalibration({
   const [physicalMeasurementConfirmed, setPhysicalMeasurementConfirmed] =
     useState(false);
   const [projectId, setProjectId] = useState("cmyx-calibration-chart");
+  const [chartMode, setChartMode] =
+    useState<CmyxCalibrationChartMode>("full");
   const [projectError, setProjectError] = useState("");
   const [projectStatus, setProjectStatus] = useState("");
   const [generatedProject, setGeneratedProject] =
@@ -420,6 +441,7 @@ export function ColorCalibration({
     try {
       const result = await onGenerateProject({
         projectId: projectId.trim(),
+        chartMode,
         spoolIds: [
           fixedSpools.T1.id,
           fixedSpools.T2.id,
@@ -735,7 +757,7 @@ export function ColorCalibration({
       <section className="calibration-panel" aria-labelledby={`${id}-project-heading`}>
         <div className="calibration-panel__heading">
           <div>
-            <h3 id={`${id}-project-heading`}>Generate the recommended 18-swatch chart</h3>
+            <h3 id={`${id}-project-heading`}>Generate a CMY+X calibration chart</h3>
             <p>
               Creates a new, numbered 3MF qualification candidate and validates
               its embedded manifest and Full Spectrum contract before reporting it.
@@ -744,6 +766,29 @@ export function ColorCalibration({
           <span className="calibration-reuse-status is-disabled">Candidate only</span>
         </div>
         <form className="calibration-project-form" onSubmit={generateProject}>
+          <fieldset className="calibration-mode-fieldset calibration-chart-mode">
+            <legend>Chart detail</legend>
+            <div className="calibration-mode-options">
+              {chartModeOptions.map((option) => (
+                <label key={option.id}>
+                  <input
+                    type="radio"
+                    name={`${id}-chart-mode`}
+                    value={option.id}
+                    checked={chartMode === option.id}
+                    onChange={() => {
+                      setChartMode(option.id);
+                      setGeneratedProject(null);
+                      setProjectError("");
+                      setProjectStatus("");
+                    }}
+                  />
+                  <span>{option.label}</span>
+                  <small>{option.description}</small>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <div className="calibration-field">
             <label htmlFor={`${id}-project-id`}>Calibration project ID</label>
             <input
@@ -808,7 +853,10 @@ export function ColorCalibration({
               <CheckCircle2 aria-hidden="true" />
               <div>
                 <h4 id={`${id}-project-result-heading`}>Validated qualification candidate</h4>
-                <p>{generatedProject.fileName} · {generatedProject.swatchCount} numbered swatches</p>
+                <p>
+                  {generatedProject.fileName} · {generatedProject.chartMode === "full" ? "Full" : "Quick"} ·{" "}
+                  {generatedProject.swatchCount} numbered swatches
+                </p>
               </div>
               <strong>Native validation passed</strong>
             </header>

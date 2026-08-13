@@ -24,7 +24,7 @@ use u1_planner::{
 };
 use u1_three_mf::{
     AnalysisLimits, ExpectedSourceIdentity, OpcPackageWriter, StagedPackageValidationError,
-    StaleArtifactPolicy, ValidatedStagedPackage, analyze_project_with_limits,
+    StaleArtifactPolicy, SupportInformation, ValidatedStagedPackage, analyze_project_with_limits,
     decode_paint_annotation,
 };
 use zip::ZipArchive;
@@ -685,6 +685,8 @@ pub struct U1FullSpectrumPreparedArtifact {
     pub loadout: [U1FullSpectrumPhysicalSlot; 4],
     pub calibration_fingerprint: String,
     pub process: FullSpectrumProcessCompatibility,
+    #[serde(default)]
+    pub support: SupportInformation,
     pub recipe_table: U1FullSpectrumRecipeTable,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recipe_calibration_sample_ids: Vec<String>,
@@ -1567,6 +1569,14 @@ pub fn prepare_u1_full_spectrum_conversion(
     input: &PlanningInput,
     result: &PlanningResult,
 ) -> Result<U1FullSpectrumPreparation, U1FullSpectrumError> {
+    prepare_u1_full_spectrum_conversion_with_support(input, result, &SupportInformation::default())
+}
+
+pub fn prepare_u1_full_spectrum_conversion_with_support(
+    input: &PlanningInput,
+    result: &PlanningResult,
+    support: &SupportInformation,
+) -> Result<U1FullSpectrumPreparation, U1FullSpectrumError> {
     if result.has_hard_errors() {
         return Err(U1FullSpectrumError::Plan(format!(
             "{} blocking planner error(s) remain",
@@ -1605,7 +1615,7 @@ pub fn prepare_u1_full_spectrum_conversion(
         batch.printer == Printer::U1 && batch.strategy == ColorStrategy::CmyxFullSpectrum
     }) {
         artifacts.push(prepare_full_spectrum_artifact(
-            batch, input, &units, &jobs, &plates,
+            batch, input, &units, &jobs, &plates, support,
         )?);
     }
     if artifacts.is_empty() {
@@ -1634,6 +1644,7 @@ fn prepare_full_spectrum_artifact(
     units: &BTreeMap<(&str, &str), &u1_planner::PrintableUnit>,
     jobs: &BTreeMap<&str, &PlannedJob>,
     plates: &BTreeMap<&str, &PlannedPlate>,
+    support: &SupportInformation,
 ) -> Result<U1FullSpectrumPreparedArtifact, U1FullSpectrumError> {
     let PrinterLoadout::U1 { loadout } = &batch.loadout else {
         return Err(U1FullSpectrumError::Plan(format!(
@@ -1889,6 +1900,7 @@ fn prepare_full_spectrum_artifact(
         loadout,
         calibration_fingerprint,
         process,
+        support: support.clone(),
         recipe_table,
         recipe_calibration_sample_ids,
         assignments,
@@ -3038,6 +3050,7 @@ fn validate_project_settings_map(
         }
     }
     if let Some(artifact) = artifact {
+        validate_source_support_intent(settings, &artifact.support)?;
         if definitions.len() != artifact.recipe_table.definitions.len()
             || definitions
                 .iter()
@@ -3087,6 +3100,64 @@ fn validate_project_settings_map(
         )?;
     }
     Ok(definitions)
+}
+
+fn validate_source_support_intent(
+    settings: &BTreeMap<String, Value>,
+    support: &SupportInformation,
+) -> Result<(), U1FullSpectrumError> {
+    let mut expected_keys = Vec::new();
+    let require = |key: &str, expected: String| {
+        if settings.get(key).and_then(Value::as_str) == Some(expected.as_str()) {
+            Ok(())
+        } else {
+            Err(U1FullSpectrumError::SemanticValidation(format!(
+                "project setting {key} does not preserve source support intent"
+            )))
+        }
+    };
+    if let Some(enabled) = support.enabled {
+        expected_keys.push("enable_support");
+        require("enable_support", if enabled { "1" } else { "0" }.into())?;
+    }
+    if let Some(support_type) = support.support_type {
+        expected_keys.push("support_type");
+        require("support_type", support_type.slicer_value().into())?;
+    }
+    if let Some(angle) = support.threshold_angle_degrees {
+        expected_keys.push("support_threshold_angle");
+        require("support_threshold_angle", angle.to_string())?;
+    }
+    if let Some(on_build_plate_only) = support.on_build_plate_only {
+        expected_keys.push("support_on_build_plate_only");
+        require(
+            "support_on_build_plate_only",
+            if on_build_plate_only { "1" } else { "0" }.into(),
+        )?;
+    }
+    if !expected_keys.is_empty() {
+        expected_keys.sort_unstable();
+        let groups = settings
+            .get("different_settings_to_system")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                U1FullSpectrumError::SemanticValidation(
+                    "project does not declare its source support overrides".into(),
+                )
+            })?;
+        if groups.len() != 6
+            || groups.first().and_then(Value::as_str) != Some(expected_keys.join(";").as_str())
+            || groups
+                .iter()
+                .skip(1)
+                .any(|value| value.as_str() != Some(""))
+        {
+            return Err(U1FullSpectrumError::SemanticValidation(
+                "source support override declaration is not canonical".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_full_spectrum_physical_profile_arrays(
@@ -4078,6 +4149,30 @@ pub fn convert_u1_full_spectrum_with_substrate_builder_cancellable<F, C>(
     input: &PlanningInput,
     result: &PlanningResult,
     destination_directory: &Path,
+    build_substrate: F,
+    should_cancel: C,
+) -> Result<U1FullSpectrumConversionResult, U1FullSpectrumError>
+where
+    F: FnMut(&U1FullSpectrumPreparedArtifact, &Path) -> Result<PathBuf, U1FullSpectrumError>,
+    C: FnMut(U1FullSpectrumCancellationCheckpoint) -> bool,
+{
+    convert_u1_full_spectrum_with_substrate_builder_and_support_cancellable(
+        application_path,
+        input,
+        result,
+        &SupportInformation::default(),
+        destination_directory,
+        build_substrate,
+        should_cancel,
+    )
+}
+
+pub fn convert_u1_full_spectrum_with_substrate_builder_and_support_cancellable<F, C>(
+    application_path: &Path,
+    input: &PlanningInput,
+    result: &PlanningResult,
+    support: &SupportInformation,
+    destination_directory: &Path,
     mut build_substrate: F,
     mut should_cancel: C,
 ) -> Result<U1FullSpectrumConversionResult, U1FullSpectrumError>
@@ -4107,7 +4202,7 @@ where
     let profiles_root = installation.resources_path.join("profiles/Snapmaker");
     let physical_profiles_root = crate::qualified_u1_physical_profiles_root(application_path)
         .map_err(|error| U1FullSpectrumError::Capability(error.to_string()))?;
-    let preparation = prepare_u1_full_spectrum_conversion(input, result)?;
+    let preparation = prepare_u1_full_spectrum_conversion_with_support(input, result, support)?;
     let scratch = tempfile::Builder::new()
         .prefix(".u1-full-spectrum-substrates-")
         .tempdir_in(destination_directory)
@@ -5020,6 +5115,7 @@ pub fn apply_u1_full_spectrum_project_patch(
         "spiral_mode_max_xy_smoothing".into(),
         Value::String("200%".into()),
     );
+    apply_source_support_intent(settings, &artifact.support, artifact.loadout.len());
     settings.insert("enable_prime_tower".into(), Value::String("1".into()));
     settings.insert(
         "prime_tower_width".into(),
@@ -5072,6 +5168,48 @@ pub fn apply_u1_full_spectrum_project_patch(
     );
     validate_project_settings_map(settings, Some(artifact))?;
     Ok(())
+}
+
+fn apply_source_support_intent(
+    settings: &mut BTreeMap<String, Value>,
+    support: &SupportInformation,
+    physical_filament_count: usize,
+) {
+    let mut override_keys = Vec::new();
+    if let Some(enabled) = support.enabled {
+        override_keys.push("enable_support");
+        settings.insert(
+            "enable_support".into(),
+            Value::String(if enabled { "1" } else { "0" }.into()),
+        );
+    }
+    if let Some(support_type) = support.support_type {
+        override_keys.push("support_type");
+        settings.insert(
+            "support_type".into(),
+            Value::String(support_type.slicer_value().into()),
+        );
+    }
+    if let Some(angle) = support.threshold_angle_degrees {
+        override_keys.push("support_threshold_angle");
+        settings.insert(
+            "support_threshold_angle".into(),
+            Value::String(angle.to_string()),
+        );
+    }
+    if let Some(on_build_plate_only) = support.on_build_plate_only {
+        override_keys.push("support_on_build_plate_only");
+        settings.insert(
+            "support_on_build_plate_only".into(),
+            Value::String(if on_build_plate_only { "1" } else { "0" }.into()),
+        );
+    }
+    if !override_keys.is_empty() {
+        override_keys.sort_unstable();
+        let mut groups = vec![Value::String(String::new()); physical_filament_count + 2];
+        groups[0] = Value::String(override_keys.join(";"));
+        settings.insert("different_settings_to_system".into(), Value::Array(groups));
+    }
 }
 
 fn full_spectrum_slot_profile_contract_is_valid(

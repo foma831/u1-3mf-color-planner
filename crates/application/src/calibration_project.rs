@@ -55,6 +55,26 @@ const MAX_MODEL_BYTES: u64 = 16 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum CmyxCalibrationGeometryPreset {
     FlatNumberedSwatchV1,
+    CompactNumberedSwatchV2,
+}
+
+/// User-facing calibration density. Both modes keep color stacks short enough
+/// to remain useful for Full Spectrum layer blending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CmyxCalibrationChartMode {
+    Quick,
+    Full,
+}
+
+impl CmyxCalibrationChartMode {
+    #[must_use]
+    pub const fn swatch_count(self) -> usize {
+        match self {
+            Self::Quick => 10,
+            Self::Full => 26,
+        }
+    }
 }
 
 /// One unmeasured target on a physical calibration chart.
@@ -192,25 +212,26 @@ pub enum CmyxCalibrationProjectError {
     ManifestJson(#[from] serde_json::Error),
 }
 
-/// Recommended compact chart: four solids, six 50/50 pairs, two additional
-/// T4 ratios per CMY primary, an equal CMY ratio, and one four-way cycle.
+/// Builds the selected short-stack palette. Quick contains four solids and all
+/// six 50/50 pairs. Full adds both 2:1 directions for every pair and all four
+/// equal three-color combinations.
 #[must_use]
-pub fn recommended_cmyx_calibration_swatches() -> Vec<CmyxCalibrationSwatchSpec> {
+pub fn cmyx_calibration_swatches(mode: CmyxCalibrationChartMode) -> Vec<CmyxCalibrationSwatchSpec> {
     let mut recipes = (1..=4).map(MixRecipe::solid).collect::<Vec<_>>();
-    for (left, right) in [(1, 2), (1, 3), (2, 3), (1, 4), (2, 4), (3, 4)] {
+    let pairs = [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)];
+    for (left, right) in pairs {
         recipes.push(ratio(&[(left, 1), (right, 1)]));
     }
-    for primary in 1..=3 {
-        recipes.push(ratio(&[(primary, 3), (4, 1)]));
-        recipes.push(ratio(&[(primary, 1), (4, 3)]));
+    if mode == CmyxCalibrationChartMode::Full {
+        for (left, right) in pairs {
+            recipes.push(ratio(&[(left, 2), (right, 1)]));
+            recipes.push(ratio(&[(left, 1), (right, 2)]));
+        }
+        for slots in [[1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]] {
+            recipes.push(ratio(&slots.map(|slot| (slot, 1))));
+        }
     }
-    recipes.push(ratio(&[(1, 1), (2, 1), (3, 1)]));
-    recipes.push(MixRecipe {
-        mode: RecipeMode::Cycle,
-        components: (1..=4)
-            .map(|slot| RecipeComponent { slot, weight: 1 })
-            .collect(),
-    });
+    debug_assert_eq!(recipes.len(), mode.swatch_count());
     recipes
         .into_iter()
         .enumerate()
@@ -221,6 +242,28 @@ pub fn recommended_cmyx_calibration_swatches() -> Vec<CmyxCalibrationSwatchSpec>
         .collect()
 }
 
+/// The full 26-swatch palette is the recommended default for callers that do
+/// not expose an explicit chart-density choice.
+#[must_use]
+pub fn recommended_cmyx_calibration_swatches() -> Vec<CmyxCalibrationSwatchSpec> {
+    cmyx_calibration_swatches(CmyxCalibrationChartMode::Full)
+}
+
+#[must_use]
+pub fn cmyx_calibration_project_spec(
+    project_id: impl Into<String>,
+    loadout: [U1FullSpectrumPhysicalSlot; 4],
+    mode: CmyxCalibrationChartMode,
+) -> CmyxCalibrationProjectSpec {
+    CmyxCalibrationProjectSpec {
+        schema_version: CMYX_CALIBRATION_PROJECT_SCHEMA_VERSION,
+        project_id: project_id.into(),
+        geometry_preset: CmyxCalibrationGeometryPreset::CompactNumberedSwatchV2,
+        loadout,
+        swatches: cmyx_calibration_swatches(mode),
+    }
+}
+
 /// Builds the versioned recommended chart around a caller-confirmed physical
 /// loadout. No inventory, profile, or color value is inferred here.
 #[must_use]
@@ -228,13 +271,7 @@ pub fn recommended_cmyx_calibration_project_spec(
     project_id: impl Into<String>,
     loadout: [U1FullSpectrumPhysicalSlot; 4],
 ) -> CmyxCalibrationProjectSpec {
-    CmyxCalibrationProjectSpec {
-        schema_version: CMYX_CALIBRATION_PROJECT_SCHEMA_VERSION,
-        project_id: project_id.into(),
-        geometry_preset: CmyxCalibrationGeometryPreset::FlatNumberedSwatchV1,
-        loadout,
-        swatches: recommended_cmyx_calibration_swatches(),
-    }
+    cmyx_calibration_project_spec(project_id, loadout, CmyxCalibrationChartMode::Full)
 }
 
 fn ratio(components: &[(u8, u8)]) -> MixRecipe {
@@ -573,6 +610,7 @@ fn prepare_project(
         loadout: spec.loadout.clone(),
         calibration_fingerprint: full_spectrum_loadout_fingerprint.clone(),
         process: process.clone(),
+        support: u1_three_mf::SupportInformation::default(),
         recipe_table,
         recipe_calibration_sample_ids: Vec::new(),
         assignments,
@@ -708,6 +746,21 @@ fn geometry_contract(preset: CmyxCalibrationGeometryPreset) -> CmyxCalibrationGe
             columns: 4,
             prime_tower_x_microns: 205_900,
             prime_tower_y_microns: 198_900,
+        },
+        CmyxCalibrationGeometryPreset::CompactNumberedSwatchV2 => CmyxCalibrationGeometryContract {
+            preset,
+            orientation: SampleOrientation::Flat,
+            geometry_class: GeometryClass::CalibrationSwatch,
+            coupon_width_microns: 18_000,
+            coupon_depth_microns: 16_000,
+            base_height_microns: 640,
+            label_height_microns: 320,
+            gap_microns: 3_000,
+            origin_x_microns: 15_000,
+            origin_y_microns: 15_000,
+            columns: 4,
+            prime_tower_x_microns: 160_000,
+            prime_tower_y_microns: 90_000,
         },
     }
 }
@@ -1155,12 +1208,38 @@ mod tests {
     }
 
     fn spec() -> CmyxCalibrationProjectSpec {
+        recommended_cmyx_calibration_project_spec("black-t4-chart", loadout(rgb(0, 0, 0)))
+    }
+
+    fn legacy_18_swatch_spec() -> CmyxCalibrationProjectSpec {
+        let mut recipes = (1..=4).map(MixRecipe::solid).collect::<Vec<_>>();
+        for (left, right) in [(1, 2), (1, 3), (2, 3), (1, 4), (2, 4), (3, 4)] {
+            recipes.push(ratio(&[(left, 1), (right, 1)]));
+        }
+        for primary in 1..=3 {
+            recipes.push(ratio(&[(primary, 3), (4, 1)]));
+            recipes.push(ratio(&[(primary, 1), (4, 3)]));
+        }
+        recipes.push(ratio(&[(1, 1), (2, 1), (3, 1)]));
+        recipes.push(MixRecipe {
+            mode: RecipeMode::Cycle,
+            components: (1..=4)
+                .map(|slot| RecipeComponent { slot, weight: 1 })
+                .collect(),
+        });
         CmyxCalibrationProjectSpec {
             schema_version: CMYX_CALIBRATION_PROJECT_SCHEMA_VERSION,
-            project_id: "black-t4-chart".into(),
+            project_id: "legacy-18-chart".into(),
             geometry_preset: CmyxCalibrationGeometryPreset::FlatNumberedSwatchV1,
             loadout: loadout(rgb(0, 0, 0)),
-            swatches: recommended_cmyx_calibration_swatches(),
+            swatches: recipes
+                .into_iter()
+                .enumerate()
+                .map(|(index, recipe)| CmyxCalibrationSwatchSpec {
+                    id: format!("S{:02}", index + 1),
+                    recipe,
+                })
+                .collect(),
         }
     }
 
@@ -1176,23 +1255,86 @@ mod tests {
     }
 
     #[test]
-    fn recommended_chart_is_bounded_unique_and_includes_all_four_physical_solids() {
-        let swatches = recommended_cmyx_calibration_swatches();
-        assert_eq!(swatches.len(), 18);
+    fn chart_modes_are_bounded_unique_and_cover_the_short_stack_palette() {
+        for mode in [
+            CmyxCalibrationChartMode::Quick,
+            CmyxCalibrationChartMode::Full,
+        ] {
+            let swatches = cmyx_calibration_swatches(mode);
+            assert_eq!(swatches.len(), mode.swatch_count());
+            assert_eq!(
+                swatches
+                    .iter()
+                    .map(|swatch| swatch.id.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                swatches.len()
+            );
+            assert_eq!(
+                swatches[..4]
+                    .iter()
+                    .map(|swatch| swatch.recipe.clone())
+                    .collect::<Vec<_>>(),
+                (1..=4).map(MixRecipe::solid).collect::<Vec<_>>()
+            );
+            assert!(swatches.iter().all(|swatch| {
+                swatch
+                    .recipe
+                    .components
+                    .iter()
+                    .map(|part| part.weight)
+                    .sum::<u8>()
+                    <= 3
+            }));
+        }
+
+        let quick = cmyx_calibration_swatches(CmyxCalibrationChartMode::Quick);
+        assert!(quick[4..].iter().all(|swatch| {
+            swatch.recipe.components.len() == 2
+                && swatch.recipe.components.iter().all(|part| part.weight == 1)
+        }));
+
+        let full = recommended_cmyx_calibration_swatches();
+        assert_eq!(full.len(), 26);
         assert_eq!(
-            swatches
-                .iter()
-                .map(|swatch| swatch.id.as_str())
-                .collect::<BTreeSet<_>>()
-                .len(),
-            swatches.len()
+            full.iter()
+                .filter(|swatch| swatch.recipe.components.len() == 3)
+                .count(),
+            4
         );
+    }
+
+    #[test]
+    fn recommended_chart_uses_compact_geometry_without_redefining_v1() {
+        let recommended = geometry_contract(spec().geometry_preset);
         assert_eq!(
-            swatches[..4]
-                .iter()
-                .map(|swatch| swatch.recipe.clone())
-                .collect::<Vec<_>>(),
-            (1..=4).map(MixRecipe::solid).collect::<Vec<_>>()
+            recommended.preset,
+            CmyxCalibrationGeometryPreset::CompactNumberedSwatchV2
+        );
+        assert_eq!(recommended.coupon_width_microns, 18_000);
+        assert_eq!(recommended.coupon_depth_microns, 16_000);
+        assert_eq!(recommended.base_height_microns, 640);
+        assert_eq!(recommended.label_height_microns, 320);
+        assert_eq!(recommended.gap_microns, 3_000);
+        assert_eq!(recommended.prime_tower_x_microns, 160_000);
+        assert_eq!(recommended.prime_tower_y_microns, 90_000);
+
+        let legacy = geometry_contract(CmyxCalibrationGeometryPreset::FlatNumberedSwatchV1);
+        assert_eq!(legacy.coupon_width_microns, 22_000);
+        assert_eq!(legacy.coupon_depth_microns, 18_000);
+        assert_eq!(legacy.base_height_microns, 1_200);
+        assert_eq!(legacy.label_height_microns, 400);
+
+        let recommended_base_volume = u64::from(recommended.coupon_width_microns)
+            * u64::from(recommended.coupon_depth_microns)
+            * u64::from(recommended.base_height_microns);
+        let legacy_base_volume = u64::from(legacy.coupon_width_microns)
+            * u64::from(legacy.coupon_depth_microns)
+            * u64::from(legacy.base_height_microns);
+        assert!(recommended_base_volume * 100 <= legacy_base_volume * 39);
+        assert_eq!(
+            recommended.base_height_microns + recommended.label_height_microns,
+            960
         );
     }
 
@@ -1246,7 +1388,7 @@ mod tests {
             report.issues, report.full_spectrum.issues
         );
         assert_eq!(report.project_id.as_deref(), Some("black-t4-chart"));
-        assert_eq!(report.swatch_count, 18);
+        assert_eq!(report.swatch_count, 26);
     }
 
     #[test]
@@ -1274,6 +1416,29 @@ mod tests {
     }
 
     #[test]
+    fn validation_keeps_legacy_18_swatch_v1_candidates_readable() {
+        let directory = tempdir().unwrap();
+        let mut prepared = prepare_project(&legacy_18_swatch_spec()).unwrap();
+        let settings = test_project_settings(&prepared.artifact);
+        prepared.manifest.entry_checksums = core_entry_checksums(&prepared.model, &settings);
+        let manifest = canonical_json(&prepared.manifest).unwrap();
+        let path = directory.path().join("legacy-chart.3mf");
+        write_calibration_substrate(
+            &path,
+            &prepared.model,
+            &prepared.model_settings,
+            &settings,
+            &manifest,
+        )
+        .unwrap();
+
+        let report = validate_cmyx_calibration_project_candidate(&path).unwrap();
+
+        assert!(report.valid, "{:?}", report.issues);
+        assert_eq!(report.swatch_count, 18);
+    }
+
+    #[test]
     fn chart_rejects_duplicate_spool_identity_and_too_many_swatches() {
         let mut duplicate = spec();
         duplicate.loadout[3].spool_id = duplicate.loadout[0].spool_id.clone();
@@ -1296,6 +1461,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let first_path = directory.path().join("first.3mf");
         let second_path = directory.path().join("second.3mf");
+        let quick_path = directory.path().join("quick.3mf");
 
         let first = write_cmyx_calibration_project_candidate(application, &spec(), &first_path)
             .expect("the exact local installation should build a qualification candidate");
@@ -1310,5 +1476,18 @@ mod tests {
         );
         let validation = validate_cmyx_calibration_project_candidate(&first_path).unwrap();
         assert!(validation.valid, "{:?}", validation.issues);
+        assert_eq!(validation.swatch_count, 26);
+
+        let quick_spec = cmyx_calibration_project_spec(
+            "quick-chart",
+            loadout(rgb(0, 0, 0)),
+            CmyxCalibrationChartMode::Quick,
+        );
+        let quick = write_cmyx_calibration_project_candidate(application, &quick_spec, &quick_path)
+            .expect("the exact local installation should build the quick candidate");
+        assert_eq!(quick.swatch_count, 10);
+        let quick_validation = validate_cmyx_calibration_project_candidate(&quick_path).unwrap();
+        assert!(quick_validation.valid, "{:?}", quick_validation.issues);
+        assert_eq!(quick_validation.swatch_count, 10);
     }
 }

@@ -1406,6 +1406,49 @@ mod tests {
     }
 
     #[test]
+    fn slices_one_u1_target_plate_across_source_plate_boundaries() {
+        let (mut input, mut result) = fixture();
+        let second_ref = ScopedUnitRef {
+            scope_id: "scope-direct-2".into(),
+            unit_id: "direct-unit-2".into(),
+        };
+        let mut second_scope = input.scopes[0].clone();
+        second_scope.id = second_ref.scope_id.clone();
+        second_scope.display_name = "Second direct source plate".into();
+        second_scope.units[0].id = second_ref.unit_id.clone();
+        second_scope.units[0].source_unit_id = "source-direct-2".into();
+        second_scope.units[0].source_object_id = 2;
+        second_scope.units[0].source_plate_id = Some("plate-2".into());
+        input.scopes.push(second_scope);
+
+        result.jobs[0].scope_ids.push(second_ref.scope_id.clone());
+        result.jobs[0].units.push(second_ref.clone());
+        result.plates[0].units.push(second_ref.clone());
+        result.plates[0].placements.push(PlannedPlacement {
+            unit: second_ref,
+            target_min_x_mm: 25.0,
+            target_min_y_mm: 5.0,
+        });
+
+        let sliced = slice_conversion_plan(&input, &result, ConversionTarget::U1Direct)
+            .expect("cross-source target plate remains an exact Direct slice");
+
+        assert_eq!(sliced.result.plates.len(), 1);
+        assert_eq!(sliced.result.plates[0].units.len(), 2);
+        assert_eq!(sliced.source_unit_ids, ["source-direct", "source-direct-2"]);
+        assert_eq!(
+            sliced
+                .input
+                .scopes
+                .iter()
+                .flat_map(|scope| scope.units.iter())
+                .map(|unit| unit.source_plate_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("plate-1"), Some("plate-2")]
+        );
+    }
+
+    #[test]
     fn rejects_a_selected_unit_that_is_not_placed_exactly_once() {
         let (input, mut result) = fixture();
         result.plates[0].units.clear();

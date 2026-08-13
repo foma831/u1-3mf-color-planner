@@ -132,6 +132,7 @@ export const demoSpools: PhysicalSpool[] = [
 const headMappings: DirectColorMapping[] = [
   {
     id: "head-cyan",
+    scopeId: "plate-1",
     inheritanceKey: "PLA|#08ABFB|declared:demo-head-cyan",
     physicalIdentityId: "head-physical-01",
     sourceSlot: "F2",
@@ -148,6 +149,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-purple",
+    scopeId: "plate-1",
     inheritanceKey: "PLA|#8951B8|declared:demo-head-purple",
     physicalIdentityId: "head-physical-02",
     sourceSlot: "F5",
@@ -164,6 +166,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-sand",
+    scopeId: "plate-1",
     inheritanceKey: "PLA|#D6BA87|declared:demo-head-sand",
     physicalIdentityId: "head-physical-03",
     sourceSlot: "F7",
@@ -180,6 +183,7 @@ const headMappings: DirectColorMapping[] = [
   },
   {
     id: "head-grey",
+    scopeId: "plate-1",
     inheritanceKey: "PLA|#595E63|declared:demo-head-grey",
     physicalIdentityId: "head-physical-04",
     sourceSlot: "F9",
@@ -199,9 +203,11 @@ const headMappings: DirectColorMapping[] = [
 function plate(
   overrides: Partial<PlatePlan> & Pick<PlatePlan, "id" | "order" | "title">,
 ): PlatePlan {
+  const scopeId = overrides.scopeId ?? `plate-${overrides.order}`;
   return {
     planningStatus: "printable",
-    scopeId: `plate-${overrides.order}`,
+    scopeId,
+    scopeIds: [scopeId],
     sourceUnitIds: [`source-unit-${overrides.order}`],
     printer: "U1",
     source: "Source Plate 01",
@@ -219,7 +225,7 @@ function plate(
     warnings: [],
     isFastMono: false,
     directEligible: true,
-    mappings: headMappings.map((mapping) => ({ ...mapping })),
+    mappings: headMappings.map((mapping) => ({ ...mapping, scopeId })),
     ...overrides,
   };
 }
@@ -354,6 +360,7 @@ export function createDemoPlan(fileName = "Withered_Foxy.3mf"): ProjectPlan {
     plannedFinalA1SpoolId: "black-petg",
     restoreCmyByDefault: true,
     customDirectPalettesEnabled: false,
+    u1CrossSourceRepackingEnabled: false,
     partialConversion: {
       available: false,
       exclusions: [],

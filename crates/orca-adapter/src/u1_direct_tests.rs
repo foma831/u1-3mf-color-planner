@@ -734,6 +734,16 @@ fn project_settings_keep_t1_through_t4_profile_and_color_order() {
                 "wipe_tower_extra_spacing": "120%",
                 "wipe_tower_wall_type": "rib",
                 "layer_height": "0.2",
+                "wall_generator": "classic",
+                "outer_wall_speed": "200",
+                "inner_wall_speed": "300",
+                "top_surface_speed": "200",
+                "outer_wall_acceleration": "5000",
+                "wall_loops": "2",
+                "top_shell_layers": "5",
+                "bottom_shell_layers": "3",
+                "support_top_z_distance": "0.2",
+                "support_bottom_z_distance": "0.2",
                 "brim_type": "auto_brim",
                 "brim_width": "5",
                 "brim_object_gap": "0.1"
@@ -764,7 +774,7 @@ fn project_settings_keep_t1_through_t4_profile_and_color_order() {
 
     let plates = (1..=3)
         .map(|id| ArtifactPlate {
-            source_plate_id: id,
+            source_plate_ids: vec![id],
             target_plate_id: id,
             name: format!("Plate {id}"),
             units: Vec::new(),
@@ -773,7 +783,33 @@ fn project_settings_keep_t1_through_t4_profile_and_color_order() {
             wipe_tower_y: 200.0,
         })
         .collect::<Vec<_>>();
-    let bytes = build_project_settings(&context(temporary.path()), &profiles, &plates).unwrap();
+    let source_process = u1_three_mf::ProcessInformation {
+        layer_height_mm: Some(0.12),
+        quality: u1_three_mf::QualityInformation {
+            wall_generator: Some(u1_three_mf::WallGenerator::Arachne),
+            outer_wall_speed_mm_s: Some(60.0),
+            inner_wall_speed_mm_s: Some(150.0),
+            top_surface_speed_mm_s: Some(150.0),
+            outer_wall_acceleration_mm_s2: Some(2000.0),
+            wall_loops: Some(2),
+            top_shell_layers: Some(5),
+            bottom_shell_layers: Some(5),
+        },
+        support: u1_three_mf::SupportInformation {
+            enabled: Some(true),
+            support_type: Some(u1_three_mf::SupportType::TreeAuto),
+            threshold_angle_degrees: Some(20),
+            on_build_plate_only: Some(true),
+        },
+        ..Default::default()
+    };
+    let bytes = build_project_settings(
+        &context(temporary.path()),
+        &profiles,
+        &plates,
+        &source_process,
+    )
+    .unwrap();
     let settings: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         settings["filament_settings_id"],
@@ -812,11 +848,53 @@ fn project_settings_keep_t1_through_t4_profile_and_color_order() {
     assert_eq!(settings["timelapse_type"], json!("0"));
     assert_eq!(settings["wipe_tower_rotation_angle"], json!("0"));
     assert_eq!(settings["brim_object_gap"], json!("0.1"));
+    assert_eq!(settings["layer_height"], json!("0.12"));
+    assert_eq!(settings["wall_generator"], json!("arachne"));
+    assert_eq!(settings["outer_wall_speed"], json!("60"));
+    assert_eq!(settings["inner_wall_speed"], json!("150"));
+    assert_eq!(settings["top_surface_speed"], json!("150"));
+    assert_eq!(settings["outer_wall_acceleration"], json!("2000"));
+    assert_eq!(settings["wall_loops"], json!("2"));
+    assert_eq!(settings["top_shell_layers"], json!("5"));
+    assert_eq!(settings["bottom_shell_layers"], json!("5"));
+    assert_eq!(settings["enable_support"], json!("1"));
+    assert_eq!(settings["support_type"], json!("tree(auto)"));
+    assert_eq!(settings["support_threshold_angle"], json!("20"));
+    assert_eq!(settings["support_on_build_plate_only"], json!("1"));
+    assert_eq!(settings["support_top_z_distance"], json!("0.12"));
+    assert_eq!(settings["support_bottom_z_distance"], json!("0.12"));
+    assert_eq!(
+        settings["different_settings_to_system"],
+        json!([
+            "bottom_shell_layers;enable_support;inner_wall_speed;layer_height;outer_wall_acceleration;outer_wall_speed;support_bottom_z_distance;support_on_build_plate_only;support_threshold_angle;support_top_z_distance;support_type;top_shell_layers;top_surface_speed;wall_generator;wall_loops",
+            "",
+            "",
+            "",
+            "",
+            ""
+        ])
+    );
 
     let mut invalid_gap = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes).unwrap();
     invalid_gap.insert("brim_object_gap".into(), json!("1.01"));
     let error = validate_prime_tower_profile_contract(&invalid_gap).unwrap_err();
     assert!(matches!(error, U1DirectError::Capability(_)));
+}
+
+#[test]
+fn quality_transfer_fails_closed_below_the_qualified_u1_layer_height() {
+    let mut settings = BTreeMap::from([("layer_height".into(), json!("0.2"))]);
+    let process = u1_three_mf::ProcessInformation {
+        layer_height_mm: Some(0.04),
+        ..Default::default()
+    };
+    let error = apply_source_quality_intent(&mut settings, &process, &mut BTreeSet::new())
+        .expect_err("unsupported fine source layers must not be silently coarsened");
+    assert!(
+        error
+            .to_string()
+            .contains("finer than the qualified U1 minimum")
+    );
 }
 
 #[test]
@@ -1011,6 +1089,21 @@ fn object_footprint_overrides_cannot_escape_the_prime_tower_clearance() {
     assert_eq!(target_filament_maps(4), "1 1 1 1");
 }
 
+#[test]
+fn canonical_target_provenance_accepts_multiple_source_plates() {
+    let first = unit(&[]);
+    let mut second = first.clone();
+    second.id = "unit-2".into();
+    second.source_unit_id = "source-unit-2".into();
+    second.source_object_id = 43;
+    second.source_plate_id = Some("plate-2".into());
+
+    assert_eq!(
+        canonical_source_plate_ids(&[first, second]).unwrap(),
+        [1, 2]
+    );
+}
+
 fn artifact_plan_fixture(
     target_plate_ids: &[u32],
     selected_object_ids: &[u32],
@@ -1027,7 +1120,7 @@ fn artifact_plan_fixture(
         .iter()
         .copied()
         .map(|id| ArtifactPlate {
-            source_plate_id: id,
+            source_plate_ids: vec![id],
             target_plate_id: id,
             name: format!("Plate {id}"),
             units: Vec::new(),
@@ -1264,6 +1357,196 @@ fn model_settings_rewrite_enforces_object_and_part_brim_metadata() {
         "1",
     )
     .unwrap();
+}
+
+#[test]
+fn model_settings_author_fresh_target_metadata_for_cross_source_plate() {
+    let temporary = TempDir::new().unwrap();
+    let mut plan = artifact_plan_fixture(&[1], &[42, 43]);
+    let first = unit(&[]);
+    let mut second = first.clone();
+    second.id = "unit-2".into();
+    second.source_unit_id = "source-unit-2".into();
+    second.source_object_id = 43;
+    second.source_plate_id = Some("plate-2".into());
+    plan.plates[0].source_plate_ids = vec![1, 2];
+    plan.plates[0].name = "Packed U1 plate 01 — target-plate-1".into();
+    plan.plates[0].units = vec![first, second];
+    plan.plates[0].source_identify_ids = BTreeMap::from([((42, 0), 101), ((43, 0), 202)]);
+
+    let source_path = temporary.path().join("cross-source-settings.3mf");
+    write_model_settings_fixture(
+        &source_path,
+        r#"<config><object id="42"/><object id="43"/><plate><metadata key="plater_id" value="9"/><metadata key="plater_name" value="Source plate name"/><metadata key="locked" value="true"/></plate></config>"#,
+    );
+
+    let rewritten =
+        String::from_utf8(rewrite_model_settings(&source_path, &plan).unwrap()).unwrap();
+    assert_eq!(rewritten.matches("<plate>").count(), 1);
+    assert!(rewritten.contains(r#"<metadata key="plater_id" value="1"/>"#));
+    assert!(
+        rewritten.contains(
+            r#"<metadata key="plater_name" value="Packed U1 plate 01 — target-plate-1"/>"#
+        )
+    );
+    assert!(rewritten.contains(r#"<metadata key="object_id" value="42"/>"#));
+    assert!(rewritten.contains(r#"<metadata key="object_id" value="43"/>"#));
+    assert!(rewritten.contains(r#"<metadata key="identify_id" value="101"/>"#));
+    assert!(rewritten.contains(r#"<metadata key="identify_id" value="202"/>"#));
+    assert!(!rewritten.contains("Source plate name"));
+    assert!(!rewritten.contains(r#"key="locked" value="true""#));
+}
+
+fn write_cross_source_project_fixture(path: &Path) {
+    const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Override PartName="/Metadata/project_settings.config" ContentType="application/json"/>
+  <Override PartName="/Metadata/model_settings.config" ContentType="application/xml"/>
+</Types>"#;
+    const ROOT_RELATIONSHIPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+    const MODEL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" unit="millimeter">
+  <metadata name="Application">Snapmaker Orca 2.3.5</metadata>
+  <resources>
+    <object id="42" type="model"><mesh><vertices>
+      <vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>
+      <vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="1"/>
+    </vertices><triangles>
+      <triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="1" v3="3"/>
+      <triangle v1="0" v2="2" v3="3"/><triangle v1="1" v2="2" v3="3"/>
+    </triangles></mesh></object>
+    <object id="43" type="model"><mesh><vertices>
+      <vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>
+      <vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="1"/>
+    </vertices><triangles>
+      <triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="1" v3="3"/>
+      <triangle v1="0" v2="2" v3="3"/><triangle v1="1" v2="2" v3="3"/>
+    </triangles></mesh></object>
+  </resources>
+  <build><item objectid="42" printable="1"/><item objectid="43" printable="1"/></build>
+</model>"#;
+    const MODEL_SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="42"><metadata key="extruder" value="1"/></object>
+  <object id="43"><metadata key="extruder" value="1"/></object>
+  <plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="42"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="101"/></model_instance></plate>
+  <plate><metadata key="plater_id" value="2"/><model_instance><metadata key="object_id" value="43"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="202"/></model_instance></plate>
+</config>"#;
+
+    let file = File::create(path).unwrap();
+    let mut archive = ZipWriter::new(file);
+    for (name, bytes) in [
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELATIONSHIPS.as_bytes()),
+        (MAIN_MODEL_PATH, MODEL.as_bytes()),
+        (PROJECT_SETTINGS_PATH, b"{}"),
+        (MODEL_SETTINGS_PATH, MODEL_SETTINGS.as_bytes()),
+    ] {
+        archive
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(bytes).unwrap();
+    }
+    archive.finish().unwrap();
+}
+
+#[test]
+fn full_spectrum_substrate_plan_accepts_one_target_from_two_source_plates() {
+    let temporary = TempDir::new().unwrap();
+    let source_path = temporary.path().join("cross-source.3mf");
+    write_cross_source_project_fixture(&source_path);
+    let analysis = analyze_project(&source_path).unwrap();
+    assert_eq!(analysis.plates.len(), 2);
+
+    let mut input = planning_input();
+    let mut first = unit(&[]);
+    first.id = "unit-1".into();
+    first.source_unit_id = "source-unit-1".into();
+    first.source_object_id = 42;
+    first.source_plate_id = Some("plate-1".into());
+    first.bounds = BoundsMm::from_size(10.0, 10.0, 1.0);
+    let mut second = first.clone();
+    second.id = "unit-2".into();
+    second.source_unit_id = "source-unit-2".into();
+    second.source_object_id = 43;
+    second.source_plate_id = Some("plate-2".into());
+    input.scopes[0].units = vec![first, second];
+
+    let loadout = std::array::from_fn(|index| crate::U1FullSpectrumPhysicalSlot {
+        toolhead: Toolhead::ALL[index],
+        spool_id: format!("spool-{}", index + 1),
+        spool_name: format!("Spool {}", index + 1),
+        material: Material::Pla,
+        color: color(index as u8, index as u8, index as u8),
+        profile: format!("Profile {}", index + 1),
+        setting_id: format!("setting-{}", index + 1),
+        filament_id: format!("filament-{}", index + 1),
+        wildcard_resolved: false,
+    });
+    let prepared_unit =
+        |unit_id: &str,
+         source_unit_id: &str,
+         source_object_id: u32,
+         source_plate_id: &str,
+         target_min_x_mm: f64| crate::U1FullSpectrumPreparedUnit {
+            unit: u1_planner::ScopedUnitRef {
+                scope_id: "scope-1".into(),
+                unit_id: unit_id.into(),
+            },
+            source_unit_id: source_unit_id.into(),
+            source_object_id,
+            source_instance_id: 0,
+            source_model_path: None,
+            source_plate_id: Some(source_plate_id.into()),
+            target_min_x_mm,
+            target_min_y_mm: 10.0,
+            source_to_target_slots: BTreeMap::from([(1, 1)]),
+        };
+    let artifact = crate::U1FullSpectrumPreparedArtifact {
+        batch_id: "batch-1".into(),
+        file_name: "cross-source.3mf".into(),
+        loadout,
+        calibration_fingerprint: "fixture".into(),
+        process: crate::u1_full_spectrum_process_contract(),
+        support: u1_three_mf::SupportInformation::default(),
+        recipe_table: crate::U1FullSpectrumRecipeTable {
+            schema_version: crate::U1_FULL_SPECTRUM_SCHEMA_VERSION,
+            physical_filament_count: 4,
+            definitions: Vec::new(),
+            serialized_definitions: String::new(),
+            targets: Vec::new(),
+        },
+        recipe_calibration_sample_ids: Vec::new(),
+        assignments: Vec::new(),
+        plates: vec![crate::U1FullSpectrumPreparedPlate {
+            plan_plate_id: "target-plate-1".into(),
+            target_plate_id: 1,
+            job_id: "job-1".into(),
+            prime_tower: None,
+            units: vec![
+                prepared_unit("unit-1", "source-unit-1", 42, "plate-1", 10.0),
+                prepared_unit("unit-2", "source-unit-2", 43, "plate-2", 40.0),
+            ],
+        }],
+    };
+
+    let plan = build_full_spectrum_substrate_plan(&analysis, &input, &artifact, Vec::new())
+        .expect("one Full Spectrum target may combine validated units from two source plates");
+
+    assert_eq!(plan.plates.len(), 1);
+    assert_eq!(plan.plates[0].source_plate_ids, [1, 2]);
+    assert_eq!(plan.plates[0].units.len(), 2);
+    assert_eq!(plan.selected_instances.len(), 2);
+    assert_eq!(plan.prepared.source_plate_ids, [1, 2]);
+    assert_eq!(
+        plan.plates[0].name,
+        "Packed Full Spectrum plate 01 — target-plate-1"
+    );
 }
 
 fn plate_with_bounds(bounds: AxisAlignedBounds) -> PlateAnalysis {

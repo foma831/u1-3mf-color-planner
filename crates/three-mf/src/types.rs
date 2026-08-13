@@ -138,6 +138,70 @@ pub struct ProcessInformation {
     pub layer_height_mm: Option<f64>,
     pub initial_layer_height_mm: Option<f64>,
     pub prime_tower_enabled: Option<bool>,
+    #[serde(default)]
+    pub quality: QualityInformation,
+    #[serde(default)]
+    pub support: SupportInformation,
+}
+
+/// Target-independent quality ceilings recovered from the source process.
+/// Writers may make a target profile slower or more detailed to honor these
+/// values, but must not use them to exceed a qualified target limit.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QualityInformation {
+    pub wall_generator: Option<WallGenerator>,
+    pub outer_wall_speed_mm_s: Option<f64>,
+    pub inner_wall_speed_mm_s: Option<f64>,
+    pub top_surface_speed_mm_s: Option<f64>,
+    pub outer_wall_acceleration_mm_s2: Option<f64>,
+    pub wall_loops: Option<u16>,
+    pub top_shell_layers: Option<u16>,
+    pub bottom_shell_layers: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallGenerator {
+    Classic,
+    Arachne,
+}
+
+impl WallGenerator {
+    #[must_use]
+    pub const fn slicer_value(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Arachne => "arachne",
+        }
+    }
+}
+
+/// Safe, target-independent support-generation intent recovered from the
+/// source project. Target writers translate this intent onto their qualified
+/// process profiles instead of copying an arbitrary slicer profile wholesale.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupportInformation {
+    pub enabled: Option<bool>,
+    pub support_type: Option<SupportType>,
+    pub threshold_angle_degrees: Option<u8>,
+    pub on_build_plate_only: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportType {
+    NormalAuto,
+    TreeAuto,
+}
+
+impl SupportType {
+    #[must_use]
+    pub const fn slicer_value(self) -> &'static str {
+        match self {
+            Self::NormalAuto => "normal(auto)",
+            Self::TreeAuto => "tree(auto)",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

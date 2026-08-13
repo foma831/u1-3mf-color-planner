@@ -26,24 +26,25 @@ const artifactHash = "a".repeat(64);
 const manifestHash = "b".repeat(64);
 const generatedProject = {
   projectId: "grey-calibration-chart",
+  chartMode: "full" as const,
   path: "/tmp/grey-calibration-chart.3mf",
   fileName: "grey-calibration-chart.3mf",
   byteSize: 12345,
   artifactSha256: artifactHash,
   manifestPath: "Metadata/u1_calibration_manifest.json",
   manifestSha256: manifestHash,
-  swatchCount: 18,
+  swatchCount: 26,
   productionQualified: false,
   validation: {
     valid: true,
     projectId: "grey-calibration-chart",
     manifestSha256: manifestHash,
-    swatchCount: 18,
+    swatchCount: 26,
     fullSpectrum: {
       adapterId: "snapmaker-orca/2.3.5/u1-0.4-full-spectrum",
       valid: true,
       physicalFilamentCount: 4,
-      virtualFilamentCount: 18,
+      virtualFilamentCount: 26,
       usedFilamentIds: [1, 2, 3, 4],
       issues: [],
     },
@@ -345,6 +346,7 @@ describe("CMY+X calibration persistence", () => {
     await expect(
       createRecommendedCmyxCalibrationProject({
         projectId: "grey-calibration-chart",
+        chartMode: "full",
         spoolIds: ["cyan", "magenta", "yellow", "grey"],
       }),
     ).rejects.toThrow("only in the native desktop app");
@@ -367,6 +369,7 @@ describe("CMY+X calibration persistence", () => {
     await expect(
       createRecommendedCmyxCalibrationProject({
         projectId: " grey-calibration-chart ",
+        chartMode: "full",
         spoolIds,
       }),
     ).resolves.toEqual(generatedProject);
@@ -378,6 +381,7 @@ describe("CMY+X calibration persistence", () => {
     expect(invoke).toHaveBeenCalledWith("build_cmyx_calibration_project", {
       request: {
         projectId: "grey-calibration-chart",
+        chartMode: "full",
         spoolIds,
         destinationPath: "/tmp/grey-calibration-chart.3mf",
       },
@@ -390,6 +394,7 @@ describe("CMY+X calibration persistence", () => {
     vi.mocked(save).mockResolvedValue(null);
     const input = {
       projectId: "grey-calibration-chart",
+      chartMode: "quick" as const,
       spoolIds: ["cyan", "magenta", "yellow", "grey"] as [
         string,
         string,
@@ -407,6 +412,11 @@ describe("CMY+X calibration persistence", () => {
     });
     await expect(createRecommendedCmyxCalibrationProject(input)).rejects.toThrow(
       "invalid artifact data",
+    );
+
+    vi.mocked(invoke).mockResolvedValue(generatedProject);
+    await expect(createRecommendedCmyxCalibrationProject(input)).rejects.toThrow(
+      "does not match the requested chart mode",
     );
   });
 

@@ -4,6 +4,7 @@ import { CheckCircle2, ChevronRight, TriangleAlert } from "lucide-react";
 import type { PhysicalSpool, PlatePlan, PrintStrategy } from "../types";
 import {
   isDirectStrategyAvailable,
+  plateScopeIds,
   plateDisplayDelta,
   plateLoadoutColors,
   strategyLabel,
@@ -19,6 +20,7 @@ interface PlateTableProps {
   a1MiniEnabled: boolean;
   a1MiniConfigured?: boolean;
   hasPendingPlanChanges: boolean;
+  u1CrossSourceRepackingEnabled?: boolean;
   onBulkStrategyChange: (
     scopeIds: string[],
     strategy: Extract<PrintStrategy, "cmyx" | "direct">,
@@ -94,7 +96,7 @@ interface PrinterPlateTableProps {
   emptyMessage: string;
   toolbar?: ReactNode;
   selectedScopeIds?: ReadonlySet<string>;
-  onToggleScope?: (scopeId: string) => void;
+  onToggleScopes?: (scopeIds: string[]) => void;
   showDetailedColumns: boolean;
   boundaryNotice?: string;
 }
@@ -109,11 +111,11 @@ function PrinterPlateTable({
   emptyMessage,
   toolbar,
   selectedScopeIds,
-  onToggleScope,
+  onToggleScopes,
   showDetailedColumns,
   boundaryNotice,
 }: PrinterPlateTableProps) {
-  const bulkSelectionEnabled = Boolean(selectedScopeIds && onToggleScope);
+  const bulkSelectionEnabled = Boolean(selectedScopeIds && onToggleScopes);
   const printableCount = plates.filter(
     (plate) => plate.planningStatus === "printable",
   ).length;
@@ -182,10 +184,10 @@ function PrinterPlateTable({
                         <input
                           type="checkbox"
                           aria-label={`Select ${plate.title} for bulk strategy change`}
-                          checked={
-                            selectedScopeIds?.has(plate.scopeId) ?? false
-                          }
-                          onChange={() => onToggleScope?.(plate.scopeId)}
+                          checked={plateScopeIds(plate).every(
+                            (scopeId) => selectedScopeIds?.has(scopeId) ?? false,
+                          )}
+                          onChange={() => onToggleScopes?.(plateScopeIds(plate))}
                         />
                       </td>
                     ) : null}
@@ -288,6 +290,7 @@ export function PlateTable({
   a1MiniEnabled,
   a1MiniConfigured = true,
   hasPendingPlanChanges,
+  u1CrossSourceRepackingEnabled = false,
   onBulkStrategyChange,
 }: PlateTableProps) {
   const u1Plates = plates.filter((plate) => plate.printer === "U1");
@@ -297,7 +300,7 @@ export function PlateTable({
   ).length;
   const blockedPlateCount = plates.length - printablePlateCount;
   const u1ScopeIds = u1Plates
-    .map((plate) => plate.scopeId)
+    .flatMap(plateScopeIds)
     .filter((scopeId, index, values) => values.indexOf(scopeId) === index);
   const u1ScopeSignature = u1ScopeIds.join("\u0000");
   const [selectedU1ScopeIds, setSelectedU1ScopeIds] = useState<string[]>([]);
@@ -314,13 +317,13 @@ export function PlateTable({
 
   const selectedScopeSet = new Set(selectedU1ScopeIds);
   const selectedPlateCount = u1Plates.filter((plate) =>
-    selectedScopeSet.has(plate.scopeId),
+    plateScopeIds(plate).some((scopeId) => selectedScopeSet.has(scopeId)),
   ).length;
   const allU1Selected =
     u1ScopeIds.length > 0 && selectedU1ScopeIds.length === u1ScopeIds.length;
   const directEligibleScopeIds = u1ScopeIds.filter((scopeId) =>
     u1Plates
-      .filter((plate) => plate.scopeId === scopeId)
+      .filter((plate) => plateScopeIds(plate).includes(scopeId))
       .every(isDirectStrategyAvailable),
   );
   const directBlockedScopeIds = selectedU1ScopeIds.filter(
@@ -333,12 +336,15 @@ export function PlateTable({
       selectedU1ScopeIds.length > 0 && !allU1Selected;
   }, [allU1Selected, selectedU1ScopeIds.length]);
 
-  const toggleScope = (scopeId: string) => {
-    setSelectedU1ScopeIds((current) =>
-      current.includes(scopeId)
-        ? current.filter((candidate) => candidate !== scopeId)
-        : [...current, scopeId],
-    );
+  const toggleScopes = (scopeIds: string[]) => {
+    setSelectedU1ScopeIds((current) => {
+      const currentSet = new Set(current);
+      const shouldSelect = scopeIds.some((scopeId) => !currentSet.has(scopeId));
+      scopeIds.forEach((scopeId) =>
+        shouldSelect ? currentSet.add(scopeId) : currentSet.delete(scopeId),
+      );
+      return [...currentSet];
+    });
   };
 
   const bulkStatus =
@@ -493,13 +499,17 @@ export function PlateTable({
           onSelectPlate={onSelectPlate}
           toolbar={bulkToolbarDisclosure}
           selectedScopeIds={showDetailedColumns ? selectedScopeSet : undefined}
-          onToggleScope={showDetailedColumns ? toggleScope : undefined}
+          onToggleScopes={showDetailedColumns ? toggleScopes : undefined}
           showDetailedColumns={showDetailedColumns}
           boundaryNotice={
-            u1Plates.filter(
-              (plate) => plate.planningStatus === "printable",
-            ).length > 1
-              ? "This plan preserves the source project's U1 plate boundaries. Objects from different source plates are not combined."
+            (u1CrossSourceRepackingEnabled
+              ? u1Plates.length > 0
+              : u1Plates.filter(
+                  (plate) => plate.planningStatus === "printable",
+                ).length > 1)
+              ? u1CrossSourceRepackingEnabled
+                ? "Compatible source scopes may share a U1 target plate in this plan. The source 3MF remains unchanged."
+                : "This plan preserves the source project's U1 plate boundaries. Objects from different source plates are not combined."
               : undefined
           }
           emptyMessage="No plates are assigned to the Snapmaker U1 in this plan."

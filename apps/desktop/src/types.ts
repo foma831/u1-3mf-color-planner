@@ -99,6 +99,8 @@ export interface PrinterLoadoutSnapshot {
 
 export interface DirectColorMapping {
   id: string;
+  /** Source scope that owns this requirement on a merged target plate. */
+  scopeId: string;
   /** Stable cross-scope source identity used for non-destructive inheritance. */
   inheritanceKey: string;
   /** Role-separated rows sharing this identity must use one spool/toolhead. */
@@ -129,6 +131,8 @@ export interface PlatePlan {
   /** Printable target rows are scheduled; blocked rows only expose omitted source units for resolution. */
   planningStatus: "printable" | "blocked";
   scopeId: string;
+  /** Every source scope represented by this target plate; merged U1 plates contain more than one. */
+  scopeIds: string[];
   /** Stable source units represented by this provisional target plate. */
   sourceUnitIds: string[];
   order: number;
@@ -200,6 +204,8 @@ export interface ProjectPlan {
   restoreCmyByDefault: boolean;
   /** Applied backend mode for lossy per-plate Direct palette reduction. */
   customDirectPalettesEnabled: boolean;
+  /** Authoritative backend result for the selected U1 target-plate layout mode. */
+  u1CrossSourceRepackingEnabled: boolean;
 }
 
 export interface ProjectDirectPaletteReference {
@@ -542,9 +548,12 @@ export interface CmyxCalibrationMeasurementInput {
 
 export interface CmyxCalibrationProjectInput {
   projectId: string;
+  chartMode: CmyxCalibrationChartMode;
   /** Exact physical spool identities in T1, T2, T3, T4 order. */
   spoolIds: [string, string, string, string];
 }
+
+export type CmyxCalibrationChartMode = "quick" | "full";
 
 export interface CmyxCalibrationProjectValidation {
   valid: boolean;
@@ -565,6 +574,7 @@ export interface CmyxCalibrationProjectValidation {
 
 export interface CmyxCalibrationProjectResult {
   projectId: string;
+  chartMode: CmyxCalibrationChartMode;
   path: string;
   fileName: string;
   byteSize: number;
@@ -645,6 +655,7 @@ export interface ReplanRequest {
   restoreCmyAfterDirect: boolean;
   allowDirectPaletteReduction: boolean;
   a1MiniEnabled: boolean;
+  allowU1CrossSourceRepacking: boolean;
   includedAlternativePlateIds: number[];
 }
 

@@ -78,6 +78,51 @@ describe("plan helpers", () => {
     );
   });
 
+  it("routes merged-plate Direct assignments back to their owning source scopes", () => {
+    const plan = createDemoPlan();
+    const firstMapping = structuredClone(plan.plates[0].mappings![0]);
+    const secondMapping = {
+      ...structuredClone(plan.plates[3].mappings![0]),
+      id: "plate-4-source-cyan",
+      scopeId: "plate-4",
+    };
+    plan.plates = [
+      {
+        ...plan.plates[0],
+        scopeIds: ["plate-1", "plate-4"],
+        strategy: "direct",
+        mappings: [firstMapping, secondMapping],
+      },
+    ];
+
+    const request = buildReplanRequest(
+      plan,
+      false,
+      false,
+      false,
+      "direct",
+      true,
+    );
+
+    expect(request.allowU1CrossSourceRepacking).toBe(true);
+    expect(
+      request.scopeOverrides.find((scope) => scope.scopeId === "plate-1")
+        ?.assignments,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requirementId: firstMapping.id }),
+      ]),
+    );
+    expect(
+      request.scopeOverrides.find((scope) => scope.scopeId === "plate-4")
+        ?.assignments,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requirementId: secondMapping.id }),
+      ]),
+    );
+  });
+
   it("uses the planner Direct Spool ΔE00 quality boundaries", () => {
     expect(qualityForDelta(0)).toBe("Exact");
     expect(qualityForDelta(0.001)).toBe("Close");

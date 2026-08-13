@@ -111,6 +111,7 @@ import {
   directQuality,
   invalidateColorApprovals,
   isDirectStrategyAvailable,
+  plateScopeIds,
   toolheads,
 } from "./utils/plan";
 import {
@@ -160,7 +161,7 @@ function updateSelectedMappings(
   return {
     ...plan,
     plates: plan.plates.map((plate) =>
-      plate.scopeId === selectedScopeId && plate.mappings
+      plateScopeIds(plate).includes(selectedScopeId) && plate.mappings
         ? { ...plate, mappings: update(plate.mappings) }
         : plate,
     ),
@@ -623,7 +624,7 @@ export default function App() {
       const result = await createRecommendedCmyxCalibrationProject(input);
       if (result) {
         setLiveMessage(
-          `${result.fileName} generated and validated as an 18-swatch qualification candidate.`,
+          `${result.fileName} generated and validated as a ${result.swatchCount}-swatch qualification candidate.`,
         );
       }
       return result;
@@ -955,10 +956,12 @@ export default function App() {
       return;
     }
 
+    const selectedScopeIds = new Set(plateScopeIds(selectedPlate));
     setPlan((current) => ({
       ...current,
       plates: current.plates.map((plate) =>
-        plate.scopeId === selectedPlate.scopeId && plate.printer === "U1"
+        plate.printer === "U1" &&
+        plateScopeIds(plate).some((scopeId) => selectedScopeIds.has(scopeId))
           ? { ...plate, strategy }
           : plate,
       ),
@@ -978,7 +981,9 @@ export default function App() {
     const selectedScopeIds = new Set(scopeIds);
     if (selectedScopeIds.size === 0) return;
     const selectedPlates = plan.plates.filter(
-      (plate) => plate.printer === "U1" && selectedScopeIds.has(plate.scopeId),
+      (plate) =>
+        plate.printer === "U1" &&
+        plateScopeIds(plate).some((scopeId) => selectedScopeIds.has(scopeId)),
     );
     if (selectedPlates.length === 0) return;
     if (
@@ -994,7 +999,8 @@ export default function App() {
     setPlan((current) => ({
       ...current,
       plates: current.plates.map((plate) =>
-        plate.printer === "U1" && selectedScopeIds.has(plate.scopeId)
+        plate.printer === "U1" &&
+        plateScopeIds(plate).some((scopeId) => selectedScopeIds.has(scopeId))
           ? { ...plate, strategy }
           : plate,
       ),
@@ -1009,8 +1015,12 @@ export default function App() {
 
   const changeToolhead = (mappingId: string, nextToolhead: ToolheadId) => {
     if (!selectedPlate) return;
+    const selectedActive = (selectedPlate.mappings ?? []).find(
+      (mapping) => mapping.id === mappingId,
+    );
+    if (!selectedActive) return;
     setPlan((current) =>
-      updateSelectedMappings(current, selectedPlate.scopeId, (mappings) => {
+      updateSelectedMappings(current, selectedActive.scopeId, (mappings) => {
         const active = mappings.find((mapping) => mapping.id === mappingId);
         if (!active) return mappings;
         const activeGroupIds = sharedToolheadMappingIds(mappings, active);
@@ -1072,7 +1082,7 @@ export default function App() {
     }
     explicitDirectMappingOverridesRef.current.add(
       directMappingOverrideKey(
-        selectedPlate.scopeId,
+        selectedActive.scopeId,
         selectedActive.inheritanceKey,
       ),
     );
@@ -1088,7 +1098,7 @@ export default function App() {
       ) {
         continue;
       }
-      const sameScope = plate.scopeId === selectedPlate.scopeId;
+      const sameScope = plateScopeIds(plate).includes(selectedActive.scopeId);
       if (!sameScope && !customDirectPalettesEnabled) continue;
       const inherited = plate.mappings.find(
         (mapping) => mapping.inheritanceKey === selectedActive.inheritanceKey,
@@ -1097,7 +1107,10 @@ export default function App() {
         !inherited ||
         (!sameScope &&
           explicitDirectMappingOverridesRef.current.has(
-            directMappingOverrideKey(plate.scopeId, inherited.inheritanceKey),
+            directMappingOverrideKey(
+              inherited.scopeId,
+              inherited.inheritanceKey,
+            ),
           ))
       ) {
         continue;
@@ -1108,12 +1121,12 @@ export default function App() {
         nextSpoolId,
       );
       if (inheritedUpdate.error) {
-        skippedScopes.add(plate.scopeId);
+        skippedScopes.add(inherited.scopeId);
         continue;
       }
       updatesByPlate.set(plate.id, inheritedUpdate.mappings);
       if (!sameScope && inheritedUpdate.changed) {
-        propagatedScopes.add(plate.scopeId);
+        propagatedScopes.add(inherited.scopeId);
       }
     }
     const mergedPhysicalIdentityCount = nextSpoolId
@@ -1162,10 +1175,10 @@ export default function App() {
     );
     if (!active) return;
     explicitDirectMappingOverridesRef.current.add(
-      directMappingOverrideKey(selectedPlate.scopeId, active.inheritanceKey),
+      directMappingOverrideKey(active.scopeId, active.inheritanceKey),
     );
     setPlan((current) =>
-      updateSelectedMappings(current, selectedPlate.scopeId, (mappings) =>
+      updateSelectedMappings(current, active.scopeId, (mappings) =>
         mappings.map((mapping) =>
           mapping.id === mappingId
             ? { ...mapping, materialSubstitutionAcknowledged: acknowledged }
@@ -1685,6 +1698,7 @@ export default function App() {
         requestedA1MiniEnabled,
         requestedCustomDirectPalettesEnabled,
         requestedPlanningIntent.defaultStrategy,
+        requestedPlanningIntent.allowU1CrossSourceRepacking,
       );
       request.currentLoadout = requestedPrinterLoadout.currentLoadout.map(
         (entry) => ({ ...entry }),
@@ -1703,14 +1717,16 @@ export default function App() {
           );
           for (const plate of plan.plates) {
             if (plate.printer !== "U1") continue;
-            if (!overridesByScope.has(plate.scopeId)) {
-              overridesByScope.set(plate.scopeId, {
-                scopeId: plate.scopeId,
-                strategy: requestedStrategy,
-                assignments: [],
-                approvedColorFallbacks: [],
-                materialSubstitutions: [],
-              });
+            for (const scopeId of plateScopeIds(plate)) {
+              if (!overridesByScope.has(scopeId)) {
+                overridesByScope.set(scopeId, {
+                  scopeId,
+                  strategy: requestedStrategy,
+                  assignments: [],
+                  approvedColorFallbacks: [],
+                  materialSubstitutions: [],
+                });
+              }
             }
           }
           request.scopeOverrides = [...overridesByScope.values()];
@@ -1750,7 +1766,11 @@ export default function App() {
               selectedSourceUnitIds.has(sourceUnitId),
             ),
           )?.id ??
-          replanned.plates.find((plate) => plate.scopeId === selectedScopeId)
+          replanned.plates.find((plate) =>
+            selectedScopeId
+              ? plateScopeIds(plate).includes(selectedScopeId)
+              : false,
+          )
             ?.id ??
           replanned.plates[0]?.id ??
           "";
@@ -1767,6 +1787,11 @@ export default function App() {
               Boolean(plate.mappings?.length),
           );
           if (preparedPlate) {
+            // Palette preparation is an intermediate recovery step: the
+            // generated assignments still need one explicit authoritative
+            // replan before conversion, even when every suggested spool is
+            // already the user's intended choice and no select emits change.
+            setIsPlanDirty(true);
             const mappingRows = palettePlates.flatMap(
               (plate) => plate.mappings ?? [],
             );
@@ -2306,8 +2331,14 @@ export default function App() {
     () => ({
       defaultStrategy: planningIntent.defaultStrategy,
       a1MiniEnabled,
+      allowU1CrossSourceRepacking:
+        planningIntent.allowU1CrossSourceRepacking,
     }),
-    [a1MiniEnabled, planningIntent.defaultStrategy],
+    [
+      a1MiniEnabled,
+      planningIntent.allowU1CrossSourceRepacking,
+      planningIntent.defaultStrategy,
+    ],
   );
   const unresolvedDecisionCount = plan.colorResolutions.length;
   const planNeedsAttention =
@@ -2819,6 +2850,9 @@ export default function App() {
                         a1MiniConfigured || analysisSource === "browser-demo"
                       }
                       hasPendingPlanChanges={hasPendingPlanChanges}
+                      u1CrossSourceRepackingEnabled={
+                        plan.u1CrossSourceRepackingEnabled
+                      }
                       onBulkStrategyChange={changeBulkStrategies}
                     />
                     <details className="advanced-planning">
@@ -2949,8 +2983,8 @@ export default function App() {
               isCheckingConversion={isCheckingConversion}
               conversionLabel={
                 partialConversionPlanAvailable
-                  ? "Review valid jobs…"
-                  : "Review conversion…"
+                  ? "Review valid jobs"
+                  : "Review conversion"
               }
               conversionBlockReason={conversionBlockReason}
               onApprove={approveAndPrepareConversion}

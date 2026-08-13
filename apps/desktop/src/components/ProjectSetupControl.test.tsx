@@ -22,6 +22,7 @@ function defaultProps(
     intent: {
       defaultStrategy: "auto",
       a1MiniEnabled: true,
+      allowU1CrossSourceRepacking: false,
     },
     loadout: {
       schemaVersion: 1,
@@ -56,6 +57,9 @@ describe("ProjectSetupControl", () => {
     expect(
       screen.getByRole("group", { name: "Filament loaded now" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("group", { name: "U1 plate layout" }),
+    ).toBeInTheDocument();
     for (const toolhead of ["T1", "T2", "T3", "T4"]) {
       expect(screen.getByLabelText(`U1 ${toolhead}`)).toBeVisible();
     }
@@ -64,6 +68,10 @@ describe("ProjectSetupControl", () => {
     expect(
       screen.getByRole("radio", { name: /U1 \+ Bambu Lab A1 mini/i }),
     ).toBeChecked();
+    expect(
+      screen.getByRole("radio", { name: /Preserve source plates/i }),
+    ).toBeChecked();
+    expect(screen.getByText(/source 3MF is never modified/i)).toBeVisible();
     expect(screen.queryByText("Plan setup")).not.toBeInTheDocument();
   });
 
@@ -86,6 +94,7 @@ describe("ProjectSetupControl", () => {
       {
         defaultStrategy: "direct",
         a1MiniEnabled: true,
+        allowU1CrossSourceRepacking: false,
       },
       {
         schemaVersion: 1,
@@ -95,6 +104,28 @@ describe("ProjectSetupControl", () => {
       },
     );
     expect(screen.getByLabelText("U1 T1")).toBeVisible();
+  });
+
+  it("submits explicit compatible cross-source repacking", () => {
+    const onConfirm = vi.fn();
+    render(<ProjectSetupControl {...defaultProps({ onConfirm })} />);
+
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: /Combine compatible source plates/i,
+      }),
+    );
+    expect(
+      screen.getByText(/strategy, physical loadout, material, and process/i),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm project setup" }),
+    );
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ allowU1CrossSourceRepacking: true }),
+      expect.any(Object),
+    );
   });
 
   it("keeps A1 routing unavailable for a saved U1-only equipment profile", () => {

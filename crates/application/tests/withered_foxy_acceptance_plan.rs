@@ -8,6 +8,7 @@ use std::{
 };
 use u1_application::{PreliminaryPlanOptions, analyze_and_plan_with_options};
 use u1_planner::PrinterLoadout;
+use u1_three_mf::{SupportType, WallGenerator};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +84,33 @@ fn versioned_withered_foxy_acceptance_plan_is_reproducible() {
     let options: PreliminaryPlanOptions =
         serde_json::from_reader(File::open(&options_path).unwrap()).unwrap();
     let report = analyze_and_plan_with_options(&source_path, &options).unwrap();
+    assert_eq!(report.analysis.process.layer_height_mm, Some(0.12));
+    assert_eq!(
+        report.analysis.process.quality.wall_generator,
+        Some(WallGenerator::Arachne)
+    );
+    assert_eq!(
+        report.analysis.process.quality.outer_wall_speed_mm_s,
+        Some(60.0)
+    );
+    assert_eq!(
+        report.analysis.process.quality.inner_wall_speed_mm_s,
+        Some(150.0)
+    );
+    assert_eq!(
+        report
+            .analysis
+            .process
+            .quality
+            .outer_wall_acceleration_mm_s2,
+        Some(2000.0)
+    );
+    assert_eq!(report.analysis.process.quality.bottom_shell_layers, Some(5));
+    assert_eq!(report.analysis.process.support.enabled, Some(true));
+    assert_eq!(
+        report.analysis.process.support.support_type,
+        Some(SupportType::TreeAuto)
+    );
     if let Some(expected_size) = acceptance.source.byte_size {
         assert_eq!(report.analysis.input.byte_size, expected_size);
     }
@@ -135,4 +163,20 @@ fn versioned_withered_foxy_acceptance_plan_is_reproducible() {
         };
         assert_eq!(actual_t4, expected.t4);
     }
+
+    let mut repacking_options = options.clone();
+    repacking_options.allow_u1_cross_source_repacking = true;
+    let repacked = analyze_and_plan_with_options(&source_path, &repacking_options).unwrap();
+    assert!(repacked.plan.errors.is_empty());
+    assert_eq!(repacked.plan.jobs.len(), 3);
+    assert_eq!(repacked.plan.plates.len(), 3);
+    let mut source_scope_counts = repacked
+        .plan
+        .jobs
+        .iter()
+        .map(|job| job.scope_ids.len())
+        .collect::<Vec<_>>();
+    source_scope_counts.sort_unstable();
+    assert_eq!(source_scope_counts, vec![1, 1, 6]);
+    assert_eq!(sha256(&source_path), acceptance.source.sha256);
 }

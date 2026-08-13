@@ -423,6 +423,17 @@ Nominal HEX не считается измеренным результатом 
 - ориентации образца;
 - дате измерения.
 
+Генератор предлагает два chart mode. `Quick` содержит 10 swatches: четыре
+solid и все шесть пар 1:1. Рекомендуемый по умолчанию `Full` содержит 26
+swatches: тот же базовый набор, обе направленные пропорции 2:1 для каждой пары
+и четыре равные трёхцветные смеси. Ни один recipe stack не превышает трёх
+слоёв. Оба режима используют версионированную геометрию
+`CompactNumberedSwatchV2`: плашка 18×16 мм, основание 0,64 мм и рельефная
+маркировка 0,32 мм. При процессе 0,08 мм это 12 слоёв вместо 20 у
+`FlatNumberedSwatchV1`; объём прямоугольного основания одной плашки меньше на
+61%. Старые 18-swatch manifests и preset V1 остаются доступными для валидации
+ранее созданных 3MF и не переопределяются новыми контрактами.
+
 Persisted `CMY+X Calibration Library` использует schema v2. Каждая новая
 запись содержит единый provenance-блок, который хранится рядом с exact
 loadout, process context, recipe и geometry:
@@ -717,6 +728,24 @@ Color approximation внутри того же material и material substitution
 
 По умолчанию одна target plate содержит printable materials с совместимым общим bed/process environment. Совместное размещение PLA и PETG блокируется, даже если разные головы технически могут иметь разные температуры сопла. Expert override допустим только при совместимых bed temperature, adhesion/process constraints и solid-only использовании разных полимеров; cross-polymer mixed recipe остаётся запрещённым политикой MVP. Неиспользуемые загруженные CMY-катушки не считаются материалом печати платы.
 
+По умолчанию граница `Source plate` является обязательной границей группировки
+для U1: один source scope может быть разделён на несколько target plates, но
+объекты из разных исходных плат не смешиваются на одной target plate. Только
+явный project-level opt-in `allowU1CrossSourceRepacking=true` снимает эту
+границу. После opt-in разные source scopes разрешено группировать лишь при
+совпадении target printer, стратегии, printable material environment и process
+contract. Для `CMY+X Full Spectrum` требуется точный physical loadout. Для
+`Direct Spools` разрешены совместимые частичные T1–T4 loadout: в каждой позиции
+стоит одна и та же катушка либо одна сторона не использует позицию. Перед
+packing такие варианты повышаются до общего супернабора не более чем из четырёх
+катушек; неиспользуемая конкретной деталью катушка остаётся загруженной, но не
+участвует в её toolpath. Конфликт двух разных катушек в одном toolhead сохраняет
+отдельные packing groups. Fast mono jobs в такое повышение не входят.
+
+Cross-source grouping не изменяет и не перезаписывает source 3MF. Каждый
+printable unit сохраняет стабильную source identity, а target plate, manifest и
+writer metadata хранят полный список исходных плат, из которых она собрана.
+
 ### FR-019. Упаковка на платформе
 
 Алгоритм packing работает с target machine profile и учитывает:
@@ -739,7 +768,7 @@ Color approximation внутри того же material и material substitution
 - поворот вокруг Z на 90° разрешать как отдельную настройку;
 - не класть объект на другую грань автоматически.
 
-Сначала программа пытается сохранить исходную раскладку, если она помещается и удовлетворяет loadout. Repack выполняется только при необходимости либо по команде пользователя.
+Сначала программа пытается сохранить исходную раскладку, если она помещается и удовлетворяет loadout. Repack выполняется только при необходимости либо по команде пользователя. При включённом cross-source repacking единая совместимая packing group всё равно может быть разделена на несколько target plates из-за bed capacity, clearance, brim/skirt, prime/wipe tower или других геометрических ограничений; opt-in не гарантирует одну итоговую плату.
 
 ### FR-020. Целевая система координат и transforms
 
@@ -836,8 +865,9 @@ secondary disclosure или post-analysis recommendation. Пользовател
 
 - `Snapmaker U1 only` либо `Snapmaker U1 + Bambu Lab A1 mini`;
 - `Automatic`, `Direct Spools only` либо `CMY+X Full Spectrum only`;
-- опциональный currently loaded T4 spool;
-- при включённом A1 mini — опциональный currently loaded A1 spool.
+- `Preserve source plates` либо явный opt-in `Combine compatible source plates`;
+- фактические currently loaded spools в T1–T4;
+- при включённом A1 mini — фактический currently loaded A1 spool.
 
 Hardware capability и project routing не являются одним boolean. Сохранённый
 A1 mini разрешает показать project-level вариант U1+A1; выбранный для проекта
@@ -853,15 +883,27 @@ immutable 3MF. До результата запрещено строить ск�
 PlanningIntent {
   defaultStrategy: Auto | Cmyx | Direct,
   a1MiniEnabled: bool,
-  currentT4SpoolId: SpoolId?,
+  allowU1CrossSourceRepacking: bool
+}
+
+PrinterLoadoutProfile {
+  currentLoadout: LoadedToolhead[],
   currentA1SpoolId: SpoolId?
 }
 ```
 
-DTO не содержит inventory или calibration records: backend добавляет их только
-из собственных persisted библиотек. Неизвестные поля отклоняются. Тот же
+Frontend объединяет project intent и подтверждённый physical loadout только в
+payload первого `analyze_project`; это остаются две независимо сохраняемые
+модели. DTO не содержит inventory или calibration records: backend добавляет их
+только из собственных persisted библиотек. Неизвестные поля отклоняются. Тот же
 `defaultStrategy` сохраняется в последующих replan requests, чтобы новые scopes
 не возвращались молча к `Auto`.
+
+`allowU1CrossSourceRepacking` имеет безопасное значение по умолчанию `false` и
+передаётся как в первый `analyze_project`, так и во все последующие
+`replan_project`. Миграция сохранённого project intent, где поля ещё нет, обязана
+выбирать `false`. UI объясняет, что opt-in меняет только создаваемую U1-раскладку,
+не source archive, и не обещает конкретного сокращения числа плат.
 
 `Direct Spools only` является строгим intent. Если scope нельзя напечатать
 реальными катушками либо он требует более четырёх effective physical loadout
@@ -907,7 +949,7 @@ requested · 0 eligible plates`. Редактирование создаёт `Ch
 | `Order` | порядок печати |
 | `Printer` | U1 или A1 mini |
 | `Target Plate` | ID и имя |
-| `Source` | исходная плата/объекты |
+| `Source` | одна или несколько исходных плат и их объекты |
 | `Strategy` | CMY+X Full Spectrum или Direct Spools |
 | `Objects` | количество и список |
 | `Loadout` | T1–T4 либо A1 spool |
@@ -928,6 +970,8 @@ requested · 0 eligible plates`. Редактирование создаёт `Ch
 
 - изменить подтверждённый project-level набор принтеров и global U1 strategy с
   явным пересчётом;
+- переключить U1 plate layout между сохранением source boundaries и
+  совместимым cross-source repacking с явным пересчётом;
 - включить/выключить A1 mini для последующего плана;
 - переключить допустимый scope между `CMY+X Full Spectrum` и `Direct Spools`;
 - выбрать все или произвольное подмножество U1 plates и массово применить
@@ -980,13 +1024,31 @@ Process profile создаётся на уровне target plate/group. Writer 
 
 Автоматически допустимый whitelist source process settings:
 
-- nominal layer height в пределах целевого профиля;
-- wall count;
-- top/bottom shell count;
+- nominal layer height в диапазоне 0,08–0,32 мм; Direct Spools writer выбирает
+  `min(source, U1 baseline)` и блокирует export, если исходный слой тоньше
+  квалифицированного минимума, вместо молчаливого ухудшения;
+- `classic`/`arachne` wall generator;
+- outer/inner/top wall speed и outer-wall acceleration как верхние пределы:
+  target может быть медленнее, но не быстрее source;
+- wall count и top/bottom shell count как минимумы: target может добавить
+  оболочки, но не удалить исходные;
 - infill density/pattern при поддержке;
 - support intent/type после target normalization;
 - brim intent;
 - object-specific process overrides, прошедшие валидацию.
+
+Глобальный support intent переносится только для квалифицированных target-эквивалентов:
+`normal(auto)` или `tree(auto)`, пороговый угол 0–90° и флаг
+`support_on_build_plate_only`. Writer обязан не только записать итоговые значения в
+`project_settings.config`, но и объявить их в `different_settings_to_system` как
+project-level process overrides. Без этого маркера Snapmaker Orca заменяет значения
+системным preset при открытии либо слайсе. Если несколько source plates объединены в
+одну target plate, объединение сохраняется: поддержка рассчитывается слайсером для всей
+целевой платы, поэтому для неё остаётся одна prime tower. Неизвестные support modes и
+непроверенные per-object support overrides по-прежнему блокируют export.
+При включённых supports writer нормализует верхний и нижний Z-gap к одному выбранному
+слою и также объявляет оба ключа override. Это не позволяет переходу 0,12→0,20 мм
+автоматически удвоить грубость контактной поверхности.
 
 Всегда заменяются target baseline-значениями:
 
@@ -1039,6 +1101,13 @@ exclusions и warnings. Недоверенные имена очищаются �
 переносов строк. Инструкция создаётся только из проверенного manifest, имеет
 лимит размера, включается в `checksums.sha256` и publication receipt.
 
+Если target U1 plate собрана из нескольких source plates, writer создаёт новую
+target plate и переносит в неё только выбранные printable units. Он обязан
+сохранить per-unit source provenance, сформировать корректный target membership
+и не изменять source archive. Поддержка действует для U1 Direct Spools и U1 Full
+Spectrum; результат каждого варианта проходит тот же structural/semantic
+validator, что и plate с одной source boundary.
+
 Дополнительно разрешён `Combined review project`, содержащий все U1 plates, но UI должен явно предупреждать, что `Slice All`/`Print All` нельзя выполнять через границу смены T4 без проверки.
 
 ### FR-029. Manifest
@@ -1055,6 +1124,8 @@ exclusions и warnings. Недоверенные имена очищаются �
 - inventory snapshot;
 - calibration references;
 - all source-to-target object mappings;
+- полный per-unit список source plate IDs для каждой target plate, включая
+  cross-source packing;
 - plate plan;
 - выбранную color strategy и таблицу source→actual spool mapping;
 - полный список toolhead setup/restore actions;
@@ -1205,13 +1276,21 @@ Validator проверяет, в частности:
 
 1. Выделить fast mono candidates.
 2. Сгруппировать их по printer + physical spool + material profile.
-3. Сгруппировать U1 multi-color candidates по loadout.
-4. Сгруппировать Direct Spool candidates только по полностью одинаковому T1–T4 mapping.
+3. Сгруппировать U1 multi-color candidates по совместимому loadout.
+4. Для Direct Spool объединить совместимые частичные T1–T4 mapping в общий
+   супернабор: пустая позиция принимает катушку другой группы, но две разные
+   катушки в одной позиции несовместимы.
 5. Не объединять Direct Spool и CMY+X plates в один batch.
 6. Не объединять на одной plate разные printable material families без разрешённой compatibility policy.
 7. Разнести fast mono и Full Spectrum jobs с разной layer-height policy.
 8. Сохранить source semantic groups как soft constraint.
 9. Не включать optional alternatives без выбора.
+
+При `allowU1CrossSourceRepacking=false` source plate ID дополнительно входит в
+ключ U1 packing group. При `true` он исключается из ключа, но все поля полного
+job contract из пунктов выше остаются обязательными. Совпадение только цветов
+либо material недостаточно; необходимы совместимые toolhead positions без
+spool-конфликтов.
 
 ### 8.5. Шаг E — bin packing
 
@@ -1222,6 +1301,8 @@ Validator проверяет, в частности:
 5. По настройке разрешить Z rotations.
 6. Если plate не помещается, создать дополнительную plate.
 7. После packing повторно проверить bounds и collisions.
+8. Для cross-source group детерминированно сохранить source identity каждого
+   unit и допустить столько target pages, сколько реально требует packing.
 
 ### 8.6. Шаг F — расписание
 
@@ -1621,6 +1702,23 @@ AC-001 проверяет чистый анализ без этого файла
 
 Каждая U1 plate ссылается только на один физический loadout. Для CMY+X это T1=C/T2=M/T3=Y/T4=X; количество virtual colors может превышать 4, но ни один recipe не ссылается на spool вне loadout. Для Direct Spool разрешены до четырёх произвольных физических катушек, а virtual recipes отсутствуют.
 
+### AC-005A. U1 cross-source repacking
+
+На fixture с несколькими исходными U1-платами проверяются оба режима:
+
+- при отсутствии поля либо `allowU1CrossSourceRepacking=false` ни одна target
+  plate не содержит printable units из разных source plates;
+- при явном `true` совместимые scopes объединяются и для `Direct Spools`, и для
+  `CMY+X Full Spectrum`;
+- конфликт разных физических катушек в одной позиции T1–T4, отличие material
+  environment, process contract или стратегии сохраняет отдельную packing group;
+- Direct Spool loadout-подмножество объединяется с совместимым супернабором, а
+  fast mono остаётся отдельной plate без prime tower;
+- нехватка площади либо место, зарезервированное под prime tower, создаёт
+  дополнительные target plates без потери и дублирования units;
+- output manifest и writer metadata сохраняют точное per-source происхождение,
+  а SHA-256 source 3MF до и после операции совпадает.
+
 ### AC-006. Direct Spool
 
 На fixture с четырьмя реально используемыми material-color pairs приложение:
@@ -1902,7 +2000,13 @@ A1 mini.
 Planner уже разделяет source plate по object palettes так, чтобы каждый
 получившийся scope требовал не более четырёх physical Direct identities для
 Direct Spools, отдельно группирует mono jobs по конкретной физической катушке и
-упорядочивает CMY+T4 batches по loadout. Source filament preset входит в
+упорядочивает CMY+T4 batches по loadout. Без явного выбора planner сохраняет
+source-plate boundaries U1. Опция `Combine compatible source plates` разрешает
+детерминированный cross-source repacking для Direct Spools и Full Spectrum,
+только если совпадает полный physical job contract; bed packing и prime tower
+по-прежнему могут создать несколько target plates. Writers создают новые target
+plates, сохраняют per-unit source provenance и не изменяют исходный archive.
+Source filament preset входит в
 идентичность effective pair и не теряется в итоговом mapping, но не запрещает
 пользователю назначить другой совместимый target profile. Обнаруженные joint
 plates показываются отдельными optional choices, исключены по умолчанию и

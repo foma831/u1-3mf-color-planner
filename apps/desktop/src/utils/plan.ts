@@ -16,6 +16,10 @@ import { deltaE00, qualityForDelta } from "./color";
 
 export const toolheads: ToolheadId[] = ["T1", "T2", "T3", "T4"];
 
+export function plateScopeIds(plate: PlatePlan) {
+  return plate.scopeIds.length > 1 ? plate.scopeIds : [plate.scopeId];
+}
+
 export const strategyLabel: Record<PrintStrategy, string> = {
   cmyx: "CMY+X Full Spectrum",
   "cmyx-solid": "CMY+X Solid",
@@ -82,6 +86,7 @@ export function buildReplanRequest(
   a1MiniEnabled = false,
   allowDirectPaletteReduction = false,
   defaultStrategy: "auto" | "cmyx" | "direct" = "auto",
+  allowU1CrossSourceRepacking = false,
 ): ReplanRequest {
   const availableSpoolIds = new Set(
     inStockSpools(plan.spools).map((spool) => spool.id),
@@ -152,7 +157,6 @@ export function buildReplanRequest(
         .map((substitution) => ({ ...substitution })),
     });
   }
-  const visibleOverrides = new Set<string>();
   for (const plate of plan.plates) {
     if (
       plate.strategy === "a1-mono" ||
@@ -162,9 +166,12 @@ export function buildReplanRequest(
     }
     const retainDirectAssignments =
       plate.strategy === "direct" || allowDirectPaletteReduction;
-    const assignments =
-      retainDirectAssignments
-        ? (plate.mappings ?? []).flatMap((mapping) =>
+    for (const scopeId of plateScopeIds(plate)) {
+      const scopedMappings = (plate.mappings ?? []).filter(
+        (mapping) => mapping.scopeId === scopeId,
+      );
+      const assignments = retainDirectAssignments
+        ? scopedMappings.flatMap((mapping) =>
             mapping.selectedSpoolId &&
             availableSpoolIds.has(mapping.selectedSpoolId)
               ? [
@@ -179,13 +186,12 @@ export function buildReplanRequest(
               : [],
           )
         : [];
-    const visibleRequirementIds = new Set(
-      retainDirectAssignments
-        ? (plate.mappings ?? []).map((mapping) => mapping.id)
-        : [],
-    );
-    const existing = overridesByScope.get(plate.scopeId);
-    if (!visibleOverrides.has(plate.scopeId)) {
+      const visibleRequirementIds = new Set(
+        retainDirectAssignments
+          ? scopedMappings.map((mapping) => mapping.id)
+          : [],
+      );
+      const existing = overridesByScope.get(scopeId);
       const assignmentsByRequirement = new Map(
         [
           ...(existing?.assignments ?? []).filter(
@@ -195,33 +201,14 @@ export function buildReplanRequest(
           ...assignments,
         ].map((assignment) => [assignment.requirementId, assignment]),
       );
-      overridesByScope.set(plate.scopeId, {
-        scopeId: plate.scopeId,
+      overridesByScope.set(scopeId, {
+        scopeId,
         strategy: plate.strategy === "direct" ? "direct" : "cmyx",
         assignments: [...assignmentsByRequirement.values()],
         approvedColorFallbacks: existing?.approvedColorFallbacks ?? [],
         materialSubstitutions: existing?.materialSubstitutions ?? [],
       });
-      visibleOverrides.add(plate.scopeId);
-      continue;
     }
-    if (!existing) continue;
-    const assignmentsByRequirement = new Map(
-      [
-        ...existing.assignments.filter(
-          (assignment) =>
-            !visibleRequirementIds.has(assignment.requirementId),
-        ),
-        ...assignments,
-      ].map((assignment) => [assignment.requirementId, assignment]),
-    );
-    overridesByScope.set(plate.scopeId, {
-      scopeId: plate.scopeId,
-      strategy: plate.strategy === "direct" ? "direct" : "cmyx",
-      assignments: [...assignmentsByRequirement.values()],
-      approvedColorFallbacks: existing.approvedColorFallbacks,
-      materialSubstitutions: existing.materialSubstitutions,
-    });
   }
 
   for (const resolution of plan.colorResolutions) {
@@ -303,6 +290,7 @@ export function buildReplanRequest(
     restoreCmyAfterDirect,
     a1MiniEnabled,
     allowDirectPaletteReduction,
+    allowU1CrossSourceRepacking,
     includedAlternativePlateIds: plan.alternativePlates
       .filter((plate) => plate.included)
       .map((plate) => plate.id),

@@ -137,29 +137,30 @@ describe("ColorCalibration", () => {
     ).toBeInTheDocument();
   });
 
-  it("generates an exact 18-swatch native candidate and exposes both hashes and qualification boundary", async () => {
+  it("generates the recommended 26-swatch native candidate and exposes both hashes and qualification boundary", async () => {
     const artifactSha256 = "a".repeat(64);
     const manifestSha256 = "b".repeat(64);
     const onGenerateProject = vi.fn().mockResolvedValue({
       projectId: "cmyx-calibration-chart",
+      chartMode: "full",
       path: "/tmp/cmyx-calibration-chart.3mf",
       fileName: "cmyx-calibration-chart.3mf",
       byteSize: 12000,
       artifactSha256,
       manifestPath: "Metadata/u1_calibration_manifest.json",
       manifestSha256,
-      swatchCount: 18,
+      swatchCount: 26,
       productionQualified: false,
       validation: {
         valid: true,
         projectId: "cmyx-calibration-chart",
         manifestSha256,
-        swatchCount: 18,
+        swatchCount: 26,
         fullSpectrum: {
           adapterId: "snapmaker-orca/2.3.5/u1-0.4-full-spectrum",
           valid: true,
           physicalFilamentCount: 4,
-          virtualFilamentCount: 18,
+          virtualFilamentCount: 26,
           usedFilamentIds: [1, 2, 3, 4],
           issues: [],
         },
@@ -180,6 +181,7 @@ describe("ColorCalibration", () => {
     await waitFor(() =>
       expect(onGenerateProject).toHaveBeenCalledWith({
         projectId: "cmyx-calibration-chart",
+        chartMode: "full",
         spoolIds: [
           "panchroma-cyan",
           "panchroma-magenta",
@@ -194,6 +196,27 @@ describe("ColorCalibration", () => {
     expect(screen.getByText(manifestSha256)).toBeInTheDocument();
     expect(screen.getByText("productionQualified=false")).toBeInTheDocument();
     expect(screen.getByText(/Open, slice, save, close, reopen/i)).toBeInTheDocument();
+  });
+
+  it("offers a Quick 10-swatch chart as an explicit accessible alternative", async () => {
+    const onGenerateProject = vi.fn().mockResolvedValue(null);
+    renderCalibration({ isNative: true, onGenerateProject });
+
+    expect(
+      screen.getByRole("radio", { name: /Full · 26 swatches/i }),
+    ).toBeChecked();
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Quick · 10 swatches/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Choose output and generate 3MF" }),
+    );
+
+    await waitFor(() =>
+      expect(onGenerateProject).toHaveBeenCalledWith(
+        expect.objectContaining({ chartMode: "quick" }),
+      ),
+    );
   });
 
   it("keeps native chart generation disabled until authoritative inventory loads", () => {

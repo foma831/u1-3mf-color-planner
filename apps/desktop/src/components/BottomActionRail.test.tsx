@@ -25,7 +25,7 @@ function defaultProps(
     conversionAvailable: false,
     conversionAdapters: [],
     isCheckingConversion: false,
-    conversionLabel: "Review conversion…",
+    conversionLabel: "Review conversion",
     onApprove: vi.fn(),
     ...overrides,
   };
@@ -51,7 +51,7 @@ describe("BottomActionRail", () => {
       screen.getByRole("button", { name: "Recalculate plan" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Review conversion…" }),
+      screen.queryByRole("button", { name: "Review conversion" }),
     ).not.toBeInTheDocument();
 
     rerender(
@@ -67,7 +67,7 @@ describe("BottomActionRail", () => {
       screen.queryByRole("button", { name: "Validate plan" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Review conversion…" }),
+      screen.getByRole("button", { name: "Review conversion" }),
     ).toBeInTheDocument();
   });
 
@@ -85,7 +85,7 @@ describe("BottomActionRail", () => {
       />,
     );
 
-    const action = screen.getByRole("button", { name: "Review conversion…" });
+    const action = screen.getByRole("button", { name: "Review conversion" });
     expect(action).not.toBeDisabled();
     expect(action).toHaveAttribute("aria-disabled", "true");
     expect(action).toHaveAccessibleDescription(
@@ -110,7 +110,7 @@ describe("BottomActionRail", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "Review conversion…" }),
+      screen.getByRole("button", { name: "Review conversion" }),
     ).toBeDisabled();
   });
 

@@ -256,6 +256,59 @@ describe("PlateTable bulk U1 strategy", () => {
     );
   });
 
+  it("selects every linked source scope represented by one merged target plate", () => {
+    const plan = createDemoPlan();
+    const merged = {
+      ...plan.plates[0],
+      id: "merged-plate",
+      scopeId: "source-scope-1",
+      scopeIds: ["source-scope-1", "source-scope-2"],
+      title: "Merged target plate",
+      printer: "U1" as const,
+      directEligible: true,
+      directPairCount: 4,
+    };
+    const second = {
+      ...plan.plates[3],
+      id: "second-target",
+      scopeId: "source-scope-3",
+      scopeIds: ["source-scope-3"],
+      title: "Second target plate",
+    };
+    const onBulkStrategyChange = vi.fn();
+
+    render(
+      <PlateTable
+        plates={[merged, second]}
+        spools={plan.spools}
+        selectedPlateId=""
+        onSelectPlate={vi.fn()}
+        a1MiniEnabled={false}
+        hasPendingPlanChanges={false}
+        u1CrossSourceRepackingEnabled={true}
+        onBulkStrategyChange={onBulkStrategyChange}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Compatible source scopes may share a U1 target plate/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Bulk strategy changes"));
+    fireEvent.click(
+      screen.getByLabelText(
+        "Select Merged target plate for bulk strategy change",
+      ),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Set selected to Direct Spools" }),
+    );
+
+    expect(onBulkStrategyChange).toHaveBeenCalledWith(
+      ["source-scope-1", "source-scope-2"],
+      "direct",
+    );
+  });
+
   it("blocks a bulk Direct action while a selected scope is unavailable", () => {
     const plan = createDemoPlan();
     const plate = {

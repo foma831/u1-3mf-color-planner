@@ -616,6 +616,22 @@ support, raft и XY compensation. Painted brim блокируется, пото�
 
 Каждый key находится в versioned allowlist. Неизвестный key не переносится молча и фиксируется в report.
 
+Для поддерживаемого глобального support intent writer также переносит threshold angle
+и build-plate-only, а затем добавляет эти ключи в первый элемент
+`different_settings_to_system`. Остальные элементы массива соответствуют target
+filament/process slots и остаются пустыми. Это обязательная часть семантики проекта:
+одних полей `enable_support` и `support_type` недостаточно, потому что Orca может
+восстановить системные значения preset. Объединение нескольких source plates не
+отменяется из-за включённых поддержек; slicer строит поддержки для общей target plate,
+оставляя одну prime tower.
+
+Direct Spools writer объединяет support keys с квалифицированными quality keys в одном
+каноническом первом элементе `different_settings_to_system`. Quality transfer выбирает
+слой не грубее source в диапазоне 0,08–0,32 мм, сохраняет `classic`/`arachne`, ограничивает
+скорости стенок и outer-wall acceleration сверху исходными значениями, не уменьшает
+wall/top/bottom shell counts и привязывает support Z-gaps к выбранной высоте слоя.
+Невозможность доказать эти ограничения является hard error экспорта.
+
 ### WR-009. System и embedded presets
 
 Официальный Snapmaker Orca 2.3.5 exporter записывает отдельный

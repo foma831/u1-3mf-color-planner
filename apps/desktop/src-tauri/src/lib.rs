@@ -33,11 +33,11 @@ use u1_a1mini_adapter::{
     validate_a1mini_output_against_plan, validate_a1mini_outputs_against_plan,
 };
 use u1_application::{
-    CmyxCalibrationLoadout, CmyxCalibrationProjectValidationReport, CmyxGeometryContext,
-    CmyxMeasurementMethod, CmyxMeasurementProvenance, ConversionPlanSlice, ConversionTarget,
-    ExcludedSourceUnit, PartialConversionApproval, UserCmyxCalibrationRecord,
-    canonical_partial_conversion_exclusions, full_spectrum_calibration_context,
-    recommended_cmyx_calibration_project_spec, slice_all_conversion_targets_with_partial_approval,
+    CmyxCalibrationChartMode, CmyxCalibrationLoadout, CmyxCalibrationProjectValidationReport,
+    CmyxGeometryContext, CmyxMeasurementMethod, CmyxMeasurementProvenance, ConversionPlanSlice,
+    ConversionTarget, ExcludedSourceUnit, PartialConversionApproval, UserCmyxCalibrationRecord,
+    canonical_partial_conversion_exclusions, cmyx_calibration_project_spec,
+    full_spectrum_calibration_context, slice_all_conversion_targets_with_partial_approval,
     source_dialect_approval_fingerprint,
     validate_cmyx_calibration_project_candidate as validate_cmyx_calibration_artifact,
     validate_source_dialect_for_conversion, write_cmyx_calibration_project_candidate,
@@ -49,10 +49,10 @@ use u1_orca_adapter::{
     U1FullSpectrumPreparation, U1NativeConversionStaging,
     build_u1_full_spectrum_project_settings_with_physical_profiles, canonical_plan_fingerprint,
     cleanup_abandoned_u1_direct_staging, convert_u1_direct_bundle_cancellable,
-    convert_u1_full_spectrum_with_substrate_builder_cancellable, discover_installation,
+    convert_u1_full_spectrum_with_substrate_builder_and_support_cancellable, discover_installation,
     finalize_u1_direct_staging, inspect_macos_application, inspect_u1_direct_macos_application,
     inspect_u1_full_spectrum_macos_application, prepare_u1_direct_conversion,
-    prepare_u1_direct_conversion_cancellable, prepare_u1_full_spectrum_conversion,
+    prepare_u1_direct_conversion_cancellable, prepare_u1_full_spectrum_conversion_with_support,
     qualified_u1_physical_profiles_root, resolve_u1_full_spectrum_physical_loadout,
     validate_u1_direct_output_against_plan, validate_u1_direct_outputs_against_plan,
     validate_u1_full_spectrum_output_against_substrate,
@@ -726,6 +726,7 @@ const CALIBRATION_FIXED_CMY_SPOOL_IDS: [&str; 3] = [
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CmyxCalibrationProjectRequest {
     project_id: String,
+    chart_mode: CmyxCalibrationChartMode,
     /// Exact physical spool identities in T1, T2, T3, T4 order.
     spool_ids: [String; 4],
     destination_path: String,
@@ -735,6 +736,7 @@ struct CmyxCalibrationProjectRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCmyxCalibrationProjectResult {
     project_id: String,
+    chart_mode: CmyxCalibrationChartMode,
     path: String,
     file_name: String,
     byte_size: u64,
@@ -811,6 +813,7 @@ fn new_calibration_destination(destination_path: &str) -> Result<PathBuf, String
 fn build_calibration_project_spec(
     project_id: String,
     spool_ids: [String; 4],
+    chart_mode: CmyxCalibrationChartMode,
     inventory: &[u1_planner::Spool],
 ) -> Result<u1_application::CmyxCalibrationProjectSpec, String> {
     for (index, expected) in CALIBRATION_FIXED_CMY_SPOOL_IDS.iter().enumerate() {
@@ -824,10 +827,10 @@ fn build_calibration_project_spec(
     }
     let loadout = resolve_u1_full_spectrum_physical_loadout(&spool_ids, inventory, false)
         .map_err(|error| error.to_string())?;
-    let spec = recommended_cmyx_calibration_project_spec(project_id, loadout);
-    if spec.swatches.len() != 18 {
+    let spec = cmyx_calibration_project_spec(project_id, loadout, chart_mode);
+    if spec.swatches.len() != chart_mode.swatch_count() {
         return Err(
-            "The recommended calibration chart contract no longer contains exactly 18 swatches."
+            "The selected calibration chart contract returned an unexpected swatch count."
                 .to_owned(),
         );
     }
@@ -842,7 +845,10 @@ async fn build_cmyx_calibration_project(
     let project_id = validate_calibration_project_id(&request.project_id)?;
     let destination = new_calibration_destination(&request.destination_path)?;
     let inventory = load_for_app(&app)?.planning_spools()?;
-    let spec = build_calibration_project_spec(project_id, request.spool_ids, &inventory)?;
+    let chart_mode = request.chart_mode;
+    let expected_swatch_count = chart_mode.swatch_count();
+    let spec =
+        build_calibration_project_spec(project_id, request.spool_ids, chart_mode, &inventory)?;
     let application_path = discover_installation().ok_or_else(|| {
         "Snapmaker Orca was not found in a supported macOS application location.".to_owned()
     })?;
@@ -866,7 +872,7 @@ async fn build_cmyx_calibration_project(
                 validation.issues.join("; ")
             ));
         }
-        if written.production_qualified || written.swatch_count != 18 {
+        if written.production_qualified || written.swatch_count != expected_swatch_count {
             return Err(
                 "Generated calibration candidate crossed its qualification boundary unexpectedly."
                     .to_owned(),
@@ -874,6 +880,7 @@ async fn build_cmyx_calibration_project(
         }
         Ok(NativeCmyxCalibrationProjectResult {
             project_id: written.project_id,
+            chart_mode,
             path: destination.to_string_lossy().into_owned(),
             file_name: destination
                 .file_name()
@@ -891,7 +898,9 @@ async fn build_cmyx_calibration_project(
             next_steps: vec![
                 "Open this candidate in the exact supported Snapmaker Orca application, then slice and save it without changing the T1-T4 loadout.".to_owned(),
                 "Close the project, reopen the saved project, and reslice it to complete the required GUI round-trip check.".to_owned(),
-                "Print the numbered S01-S18 chart with the confirmed physical loadout; this candidate is not a production-qualified model.".to_owned(),
+                format!(
+                    "Print the numbered S01-S{expected_swatch_count:02} chart with the confirmed physical loadout; this candidate is not a production-qualified model."
+                ),
                 "Measure each printed swatch as six-digit sRGB HEX and save the result with the matching manifest recipe and Flat calibration swatch geometry.".to_owned(),
             ],
         })
@@ -2052,8 +2061,12 @@ fn prepare_required_targets_with_adapters(
         if !capability.conversion_available {
             return Err(capability.issues.join(" "));
         }
-        let preparation = prepare_u1_full_spectrum_conversion(&slice.input, &slice.result)
-            .map_err(|error| error.to_string())?;
+        let preparation = prepare_u1_full_spectrum_conversion_with_support(
+            &slice.input,
+            &slice.result,
+            &analysis.process.support,
+        )
+        .map_err(|error| error.to_string())?;
         let installation = inspect_macos_application(&app).map_err(|error| error.to_string())?;
         let profiles_root = installation.resources_path.join("profiles/Snapmaker");
         let physical_profiles_root =
@@ -2264,7 +2277,11 @@ async fn inspect_conversion_capabilities(
                             report.issues.join(" ")
                         };
                         if available && !experimental_approval_required {
-                            match prepare_u1_full_spectrum_conversion(&slice.input, &slice.result) {
+                            match prepare_u1_full_spectrum_conversion_with_support(
+                                &slice.input,
+                                &slice.result,
+                                &analysis.process.support,
+                            ) {
                                 Ok(preparation) => {
                                     let settings_result = inspect_macos_application(&app)
                                         .map_err(|error| error.to_string())
@@ -4026,10 +4043,11 @@ fn perform_native_conversion(
             qualified_u1_physical_profiles_root(&app).map_err(|error| error.to_string())?;
         let output_directory = staging.path().join("u1-full-spectrum");
         create_private_directory(&output_directory)?;
-        let full_result = convert_u1_full_spectrum_with_substrate_builder_cancellable(
+        let full_result = convert_u1_full_spectrum_with_substrate_builder_and_support_cancellable(
             &app,
             &slice.input,
             &slice.result,
+            &analysis.process.support,
             &output_directory,
             |artifact, scratch| {
                 if control.state() == U1DirectConversionState::Cancelled {
@@ -7722,12 +7740,13 @@ mod tests {
         let spec = build_calibration_project_spec(
             validate_calibration_project_id("grey_chart_01").unwrap(),
             spool_ids.clone(),
+            CmyxCalibrationChartMode::Full,
             &inventory,
         )
         .unwrap();
 
         assert_eq!(spec.project_id, "grey_chart_01");
-        assert_eq!(spec.swatches.len(), 18);
+        assert_eq!(spec.swatches.len(), 26);
         assert_eq!(
             spec.loadout
                 .iter()
@@ -7754,9 +7773,14 @@ mod tests {
         let mut wrong_roles = valid_ids.clone();
         wrong_roles.swap(0, 1);
         assert!(
-            build_calibration_project_spec("wrong-roles".to_owned(), wrong_roles, &inventory)
-                .unwrap_err()
-                .contains("Calibration T1")
+            build_calibration_project_spec(
+                "wrong-roles".to_owned(),
+                wrong_roles,
+                CmyxCalibrationChartMode::Quick,
+                &inventory,
+            )
+            .unwrap_err()
+            .contains("Calibration T1")
         );
 
         inventory
@@ -7765,9 +7789,14 @@ mod tests {
             .expect("built-in T4")
             .available = false;
         assert!(
-            build_calibration_project_spec("out-of-stock".to_owned(), valid_ids, &inventory)
-                .unwrap_err()
-                .contains("out of stock")
+            build_calibration_project_spec(
+                "out-of-stock".to_owned(),
+                valid_ids,
+                CmyxCalibrationChartMode::Full,
+                &inventory,
+            )
+            .unwrap_err()
+            .contains("out of stock")
         );
     }
 

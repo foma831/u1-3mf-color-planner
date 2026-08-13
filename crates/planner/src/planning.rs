@@ -106,9 +106,23 @@ enum SourceBoundary {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct PackingGroupKey {
     job: JobKey,
-    /// U1 project metadata remains plate-scoped. A1 mono plates may combine
-    /// compatible units from different source plates after explicit packing.
+    /// By default U1 project metadata remains plate-scoped. A1 mono packing,
+    /// and explicitly opted-in U1 cross-source packing, omit this boundary.
     u1_source_boundary: Option<SourceBoundary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DirectPackingFamilyKey {
+    printable_materials: Vec<Material>,
+    mono_spool_id: Option<String>,
+    full_spectrum_process: Option<FullSpectrumProcessCompatibility>,
+    u1_source_boundary: Option<SourceBoundary>,
+}
+
+#[derive(Debug)]
+struct CompatibleDirectPackingGroup {
+    loadout: U1Loadout,
+    units: Vec<UnitPlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2297,12 +2311,14 @@ fn group_jobs_and_plates(
     warnings: &mut Vec<PlanWarning>,
     errors: &mut Vec<PlanError>,
 ) -> (Vec<PlannedJob>, Vec<PlannedPlate>) {
+    let unit_plans = promote_compatible_direct_loadouts(unit_plans, config);
     let mut groups: BTreeMap<PackingGroupKey, Vec<UnitPlan>> = BTreeMap::new();
     for plan in unit_plans {
         groups
             .entry(PackingGroupKey {
                 job: plan.key.clone(),
-                u1_source_boundary: (plan.key.printer == Printer::U1)
+                u1_source_boundary: (plan.key.printer == Printer::U1
+                    && !config.allow_u1_cross_source_repacking)
                     .then(|| plan.source_boundary.clone()),
             })
             .or_default()
@@ -2425,6 +2441,116 @@ fn group_jobs_and_plates(
         }
     }
     (jobs, plates)
+}
+
+fn promote_compatible_direct_loadouts(
+    unit_plans: Vec<UnitPlan>,
+    config: &PlannerConfig,
+) -> Vec<UnitPlan> {
+    let mut unchanged = Vec::new();
+    let mut families = BTreeMap::<DirectPackingFamilyKey, Vec<UnitPlan>>::new();
+
+    for plan in unit_plans {
+        let eligible = plan.key.printer == Printer::U1
+            && plan.key.strategy == ColorStrategy::DirectSpools
+            && !plan.key.fast_mono
+            && matches!(plan.key.loadout, PrinterLoadout::U1 { .. });
+        if !eligible {
+            unchanged.push(plan);
+            continue;
+        }
+        families
+            .entry(DirectPackingFamilyKey {
+                printable_materials: plan.key.printable_materials.clone(),
+                mono_spool_id: plan.key.mono_spool_id.clone(),
+                full_spectrum_process: plan.key.full_spectrum_process.clone(),
+                u1_source_boundary: (!config.allow_u1_cross_source_repacking)
+                    .then(|| plan.source_boundary.clone()),
+            })
+            .or_default()
+            .push(plan);
+    }
+
+    for (_, mut plans) in families {
+        plans.sort_by(|left, right| {
+            u1_loadout_specificity(&right.key.loadout)
+                .cmp(&u1_loadout_specificity(&left.key.loadout))
+                .then_with(|| left.key.loadout.cmp(&right.key.loadout))
+                .then_with(|| left.unit_ref.cmp(&right.unit_ref))
+        });
+        let mut compatible_groups = Vec::<CompatibleDirectPackingGroup>::new();
+
+        for plan in plans {
+            let PrinterLoadout::U1 {
+                loadout: plan_loadout,
+            } = &plan.key.loadout
+            else {
+                unreachable!("eligible Direct packing plans always use a U1 loadout");
+            };
+            let best = compatible_groups
+                .iter()
+                .enumerate()
+                .filter_map(|(index, group)| {
+                    merge_compatible_u1_loadouts(&group.loadout, plan_loadout).map(|merged| {
+                        let added_slots = merged
+                            .slots
+                            .iter()
+                            .zip(&group.loadout.slots)
+                            .filter(|(merged, current)| merged.is_some() && current.is_none())
+                            .count();
+                        (index, merged, added_slots)
+                    })
+                })
+                .min_by(|left, right| {
+                    left.2
+                        .cmp(&right.2)
+                        .then_with(|| left.1.slots.cmp(&right.1.slots))
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+
+            if let Some((index, merged, _)) = best {
+                compatible_groups[index].loadout = merged;
+                compatible_groups[index].units.push(plan);
+            } else {
+                compatible_groups.push(CompatibleDirectPackingGroup {
+                    loadout: plan_loadout.clone(),
+                    units: vec![plan],
+                });
+            }
+        }
+
+        for mut group in compatible_groups {
+            for unit in &mut group.units {
+                unit.key.loadout = PrinterLoadout::U1 {
+                    loadout: group.loadout.clone(),
+                };
+            }
+            unchanged.extend(group.units);
+        }
+    }
+
+    unchanged
+}
+
+fn u1_loadout_specificity(loadout: &PrinterLoadout) -> usize {
+    match loadout {
+        PrinterLoadout::U1 { loadout } => {
+            loadout.slots.iter().filter(|slot| slot.is_some()).count()
+        }
+        PrinterLoadout::A1Mini { .. } => 0,
+    }
+}
+
+fn merge_compatible_u1_loadouts(left: &U1Loadout, right: &U1Loadout) -> Option<U1Loadout> {
+    let mut slots = std::array::from_fn(|_| None);
+    for (index, slot) in slots.iter_mut().enumerate() {
+        *slot = match (&left.slots[index], &right.slots[index]) {
+            (Some(left), Some(right)) if left != right => return None,
+            (Some(spool), _) | (_, Some(spool)) => Some(spool.clone()),
+            (None, None) => None,
+        };
+    }
+    Some(U1Loadout { slots })
 }
 
 const PACKING_EPSILON_MM: f64 = 1.0e-6;

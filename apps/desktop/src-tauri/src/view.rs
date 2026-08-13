@@ -30,6 +30,8 @@ pub struct PlanningRequestView {
     restore_cmy_after_direct: Option<bool>,
     #[serde(default)]
     allow_direct_palette_reduction: bool,
+    #[serde(default)]
+    allow_u1_cross_source_repacking: bool,
     a1_mini_enabled: bool,
     included_alternative_plate_ids: Vec<u32>,
 }
@@ -46,6 +48,8 @@ pub struct InitialPlanningIntentView {
     /// Legacy T4-only input retained for saved v1 frontend state.
     current_t4_spool_id: Option<String>,
     current_a1_spool_id: Option<String>,
+    #[serde(default)]
+    allow_u1_cross_source_repacking: bool,
 }
 
 impl Default for InitialPlanningIntentView {
@@ -56,6 +60,7 @@ impl Default for InitialPlanningIntentView {
             current_loadout: None,
             current_t4_spool_id: None,
             current_a1_spool_id: None,
+            allow_u1_cross_source_repacking: false,
         }
     }
 }
@@ -190,6 +195,7 @@ pub struct ProjectPlanView {
     planned_final_a1_spool_id: Option<String>,
     restore_cmy_by_default: bool,
     custom_direct_palettes_enabled: bool,
+    u1_cross_source_repacking_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,6 +397,7 @@ struct PlatePlanView {
     id: String,
     planning_status: &'static str,
     scope_id: String,
+    scope_ids: Vec<String>,
     source_unit_ids: Vec<String>,
     order: usize,
     printer: &'static str,
@@ -438,6 +445,7 @@ enum ToolChangeView {
 #[serde(rename_all = "camelCase")]
 struct DirectColorMappingView {
     id: String,
+    scope_id: String,
     physical_identity_id: String,
     inheritance_key: String,
     source_slot: String,
@@ -487,6 +495,7 @@ impl PlanningRequestView {
             current_a1_spool_id,
             restore_cmy_after_direct,
             allow_direct_palette_reduction,
+            allow_u1_cross_source_repacking,
             a1_mini_enabled,
             included_alternative_plate_ids,
         } = self;
@@ -528,6 +537,7 @@ impl PlanningRequestView {
             restore_cmy_after_direct: restore_cmy_after_direct
                 .unwrap_or(defaults.restore_cmy_after_direct),
             allow_direct_palette_reduction,
+            allow_u1_cross_source_repacking,
             confirmed_spools,
             scope_overrides,
             unit_printer_overrides,
@@ -556,6 +566,7 @@ impl InitialPlanningIntentView {
             current_loadout,
             current_t4_spool_id,
             current_a1_spool_id,
+            allow_u1_cross_source_repacking,
         } = self;
         let defaults = PreliminaryPlanOptions::default();
         let current_toolheads = match current_loadout {
@@ -577,6 +588,7 @@ impl InitialPlanningIntentView {
         Ok(PreliminaryPlanOptions {
             current_toolheads,
             scope_strategy: default_strategy.into_scope_strategy(),
+            allow_u1_cross_source_repacking,
             confirmed_spools: library_spools,
             a1_mini: A1MiniConfig {
                 enabled: a1_mini_enabled,
@@ -1087,6 +1099,7 @@ fn project_plan_view(
                 id: plate.id.clone(),
                 planning_status: "printable",
                 scope_id: job.scope_ids.first().cloned().unwrap_or_default(),
+                scope_ids: job.scope_ids.clone(),
                 source_unit_ids: plate
                     .units
                     .iter()
@@ -1178,6 +1191,7 @@ fn project_plan_view(
             id: format!("blocked-{}", scope.id),
             planning_status: "blocked",
             scope_id: scope.id.clone(),
+            scope_ids: vec![scope.id.clone()],
             source_unit_ids,
             order,
             printer: "U1",
@@ -1367,6 +1381,7 @@ fn project_plan_view(
         planned_final_a1_spool_id: planned_final_a1,
         restore_cmy_by_default: input.config.restore_cmy_after_direct,
         custom_direct_palettes_enabled: input.config.allow_direct_palette_reduction,
+        u1_cross_source_repacking_enabled: input.config.allow_u1_cross_source_repacking,
     }
 }
 
@@ -2012,6 +2027,7 @@ fn color_mappings(
                     .first()
                     .cloned()
                     .unwrap_or_else(|| mapping.scope_id.clone()),
+                scope_id: mapping.scope_id.clone(),
                 physical_identity_id,
                 inheritance_key: source_requirement.map_or_else(
                     || format!("scope:{}:mapping:{}", mapping.scope_id, index + 1),
@@ -2075,6 +2091,7 @@ fn unresolved_mappings(
                 .find(|request| request.requirement_id == requirement.id);
             Some(DirectColorMappingView {
                 id: requirement.id.clone(),
+                scope_id: scope.id.clone(),
                 physical_identity_id: physical_identity_id.clone(),
                 inheritance_key: direct_mapping_inheritance_key(requirement),
                 source_slot: requirement.source_slots.join(", "),
@@ -2822,6 +2839,7 @@ mod tests {
             planned_final_a1_spool_id: Some("user-white".to_owned()),
             restore_cmy_by_default: true,
             custom_direct_palettes_enabled: false,
+            u1_cross_source_repacking_enabled: false,
         };
         let json = serde_json::to_value(view).expect("view must serialize");
 
@@ -2867,6 +2885,7 @@ mod tests {
         assert_eq!(json["plannedFinalA1SpoolId"], "user-white");
         assert_eq!(json["restoreCmyByDefault"], true);
         assert_eq!(json["customDirectPalettesEnabled"], false);
+        assert_eq!(json["u1CrossSourceRepackingEnabled"], false);
     }
 
     #[test]
@@ -2881,7 +2900,8 @@ mod tests {
                 { "toolhead": "T4", "spoolId": "user-black" }
             ],
             "currentT4SpoolId": "legacy-grey-is-ignored",
-            "currentA1SpoolId": "  user-white  "
+            "currentA1SpoolId": "  user-white  ",
+            "allowU1CrossSourceRepacking": true
         }))
         .expect("camelCase initial planning intent must deserialize");
         let options = intent
@@ -2890,6 +2910,7 @@ mod tests {
 
         assert_eq!(options.scope_strategy, ScopeStrategy::DirectSpools);
         assert!(options.a1_mini.enabled);
+        assert!(options.allow_u1_cross_source_repacking);
         assert_eq!(
             options.a1_mini.current_spool_id,
             Some("user-white".to_owned())
@@ -2921,6 +2942,7 @@ mod tests {
 
         assert_eq!(options.scope_strategy, ScopeStrategy::CmyxFullSpectrum);
         assert!(!options.a1_mini.enabled);
+        assert!(!options.allow_u1_cross_source_repacking);
         assert_eq!(options.a1_mini.current_spool_id, None);
         assert_eq!(options.current_toolheads, defaults.current_toolheads);
     }
@@ -3141,6 +3163,7 @@ mod tests {
             "currentA1SpoolId": "user-orange",
             "restoreCmyAfterDirect": false,
             "allowDirectPaletteReduction": true,
+            "allowU1CrossSourceRepacking": true,
             "a1MiniEnabled": true
         }))
         .expect("camelCase request must deserialize");
@@ -3192,6 +3215,7 @@ mod tests {
         );
         assert!(!options.restore_cmy_after_direct);
         assert!(options.allow_direct_palette_reduction);
+        assert!(options.allow_u1_cross_source_repacking);
         assert!(options.a1_mini.enabled);
         assert_eq!(options.included_alternative_plate_ids, vec![7]);
     }

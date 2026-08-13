@@ -103,6 +103,18 @@ const PROJECT_SETTINGS: &str = r##"{
   "layer_height": "0.12",
   "initial_layer_print_height": "0.2",
   "enable_prime_tower": "1",
+  "enable_support": "1",
+  "support_type": "tree(auto)",
+  "support_threshold_angle": "20",
+  "support_on_build_plate_only": "1",
+  "wall_generator": "arachne",
+  "outer_wall_speed": ["80", "60", "70"],
+  "inner_wall_speed": ["150", "150", "150"],
+  "top_surface_speed": ["120", "120", "120"],
+  "outer_wall_acceleration": ["2000", "2000", "2000"],
+  "wall_loops": "3",
+  "top_shell_layers": "5",
+  "bottom_shell_layers": "4",
   "filament_colour": ["#AA0000", "#00AA00", "#0000AA"],
   "filament_type": ["PLA", "PLA", "PETG"],
   "filament_settings_id": ["Red PLA", "Green PLA", "Blue PETG"]
@@ -233,6 +245,27 @@ fn analyzes_bambu_metadata_instances_volume_types_and_paint() {
     assert_eq!(analysis.source.title.as_deref(), Some("Synthetic project"));
     assert_eq!(analysis.printer.model.as_deref(), Some("Bambu Lab P1S"));
     assert_eq!(analysis.process.layer_height_mm, Some(0.12));
+    assert_eq!(
+        analysis.process.quality.wall_generator,
+        Some(u1_three_mf::WallGenerator::Arachne)
+    );
+    assert_eq!(analysis.process.quality.outer_wall_speed_mm_s, Some(60.0));
+    assert_eq!(analysis.process.quality.inner_wall_speed_mm_s, Some(150.0));
+    assert_eq!(analysis.process.quality.top_surface_speed_mm_s, Some(120.0));
+    assert_eq!(
+        analysis.process.quality.outer_wall_acceleration_mm_s2,
+        Some(2000.0)
+    );
+    assert_eq!(analysis.process.quality.wall_loops, Some(3));
+    assert_eq!(analysis.process.quality.top_shell_layers, Some(5));
+    assert_eq!(analysis.process.quality.bottom_shell_layers, Some(4));
+    assert_eq!(analysis.process.support.enabled, Some(true));
+    assert_eq!(
+        analysis.process.support.support_type,
+        Some(u1_three_mf::SupportType::TreeAuto)
+    );
+    assert_eq!(analysis.process.support.threshold_angle_degrees, Some(20));
+    assert_eq!(analysis.process.support.on_build_plate_only, Some(true));
     assert_eq!(analysis.summary.object_count, 2);
     assert_eq!(analysis.summary.instance_count, 3);
     assert_eq!(analysis.summary.plate_count, 2);

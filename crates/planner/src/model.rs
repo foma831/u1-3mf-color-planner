@@ -462,6 +462,12 @@ pub struct PlannerConfig {
     /// most four physical spools and U1 toolheads.
     #[serde(default)]
     pub allow_direct_palette_reduction: bool,
+    /// Explicit opt-in for deterministic U1 packing across source-plate
+    /// boundaries. Units still share a target plate only when their complete
+    /// physical job contract (strategy, loadout, materials and process) is
+    /// identical and their cleared geometry fits the qualified bed envelope.
+    #[serde(default)]
+    pub allow_u1_cross_source_repacking: bool,
     pub restore_cmy_after_direct: bool,
 }
 
@@ -479,6 +485,7 @@ impl PlannerConfig {
             a1_mini: A1MiniConfig::default(),
             allow_mixed_materials_on_plate: false,
             allow_direct_palette_reduction: false,
+            allow_u1_cross_source_repacking: false,
             restore_cmy_after_direct: true,
         }
     }

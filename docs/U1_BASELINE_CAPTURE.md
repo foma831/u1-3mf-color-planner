@@ -54,9 +54,9 @@ repair, missing-profile, custom-profile, or incompatible-profile warnings.
 
 ## Stage B target contract to inspect
 
-### Project globals
+### Project globals and qualified quality overrides
 
-The candidate must use the exact U1 0.20 Standard target decisions:
+The candidate starts from the exact U1 0.20 Standard target decisions:
 
 - `curr_bed_type=Textured PEI Plate`;
 - `print_sequence=by layer`;
@@ -70,6 +70,15 @@ per-plate values are normalized and reported. A duplicate, missing value,
 conflicting value, or non-empty nested process override is a preparation error;
 it must never be silently discarded. This includes `timelapse_type`: only `0`
 is equivalent to the Stage-B traditional-timelapse target.
+
+Direct Spools output may then apply qualified project-level quality overrides.
+The selected layer height must remain in the 0.08–0.32 mm U1 range and may not
+be coarser than the source. Wall speeds and outer-wall acceleration may only be
+reduced from the target baseline, shell counts may only increase, and the
+source `classic`/`arachne` wall generator is retained. Enabled support top and
+bottom Z gaps track the selected layer height. Every applied key must be listed
+in the first `different_settings_to_system` group so Orca cannot silently
+restore a more aggressive system-preset value.
 
 ### Instance identity
 

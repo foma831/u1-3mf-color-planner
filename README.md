@@ -145,9 +145,13 @@ exercised the Polymaker General PLA leaf profile; Generic PLA and Generic PETG
 are still hash-pinned and writer-validated, but were not separate GUI matrices
 in this qualification record.
 
-Stage B always targets the exact U1 0.20 Standard globals: Textured PEI Plate,
-by-layer sequencing, non-spiral mode, and traditional timelapse. Equivalent
-source per-plate overrides are normalized to those globals and reported;
+Stage B starts from the qualified U1 0.20 Standard profile and retains its
+target-owned globals: Textured PEI Plate, by-layer sequencing, non-spiral mode,
+and traditional timelapse. It then applies qualified source quality intent as
+fail-closed project overrides: a finer supported layer height, the source wall
+generator, wall-speed and acceleration ceilings, shell minimums, and support
+gaps tied to the selected layer height. Equivalent source per-plate overrides
+are normalized to target-owned globals and reported;
 conflicting or ambiguous overrides are rejected instead of being silently
 discarded, including a plate-level timelapse override. Each selected instance
 also retains its source Orca `identify_id`.
@@ -162,11 +166,18 @@ The merged target process and every retained object-level `brim_width` and
 19 mm object envelope because the explicitly pinned `auto_brim` can grow to
 18 mm, plus the qualified 1 mm gap. Larger, missing target defaults, or
 malformed values fail closed. Object/part metadata is retained only through an
-explicit Stage B allowlist; unknown process overrides (including support, raft,
-or XY-expansion values outside their target-equivalent disabled/zero state)
+explicit Stage B allowlist; unknown per-object process overrides (including support,
+raft, or XY-expansion values outside their target-equivalent disabled/zero state)
 block conversion instead of weakening the tower-collision proof. Painted brims
 are rejected because Stage B does not transfer their point sidecar; bounded
 automatic `brim_ears` remain supported.
+
+Qualified global source support intent is different: `normal(auto)` and
+`tree(auto)`, the threshold angle, and build-plate-only intent are transferred to
+the target project and declared together with quality overrides in
+`different_settings_to_system`. This keeps
+merged target plates merged while letting the target slicer generate supports
+for the combined geometry and only one prime tower.
 
 The desktop mixed-bundle contract is:
 
@@ -335,6 +346,13 @@ cargo run -p u1-converter-cli -- plan Sample/Withered_Foxy.3mf \
 
 The sample override is documentation only: its example requirement must be
 changed to a material/color pair that the selected spool actually preserves.
+Set `allow_u1_cross_source_repacking` to `true` only when compatible U1 units
+from different source plates may share generated target plates. The default is
+`false`; exact strategy, material, and process compatibility still apply, and
+the source 3MF is never modified. Direct Spool partial loadouts may share a
+target when every occupied T1-T4 position agrees. The planner promotes them to
+their common four-slot superset before packing, while fast-mono work stays
+separate and conflicting spools in the same toolhead never merge.
 
 ## Writer qualification record
 

@@ -126,6 +126,9 @@ export function ProjectSetupControl({
   const printerLabel = summaryIntent.a1MiniEnabled
     ? "U1 + A1 mini"
     : "Snapmaker U1";
+  const plateLayoutLabel = summaryIntent.allowU1CrossSourceRepacking
+    ? "Combine compatible U1 plates"
+    : "Preserve source plates";
   const fixedPreviewOverridesA1 =
     isFixedPreview && !intent.a1MiniEnabled && a1PlateCount > 0;
   const resultLabel = fixedPreviewOverridesA1
@@ -146,7 +149,7 @@ export function ProjectSetupControl({
         <span className="project-setup__summary-copy">
           <strong id="project-setup-heading">Project setup</strong>
           <small>
-            {strategyLabel} · {printerLabel}
+            {strategyLabel} · {printerLabel} · {plateLayoutLabel}
           </small>
         </span>
         <span
@@ -342,6 +345,62 @@ export function ProjectSetupControl({
                   </span>
                 </label>
               ))}
+            </fieldset>
+
+            <fieldset className="project-setup__group project-setup__group--plate-layout">
+              <legend>U1 plate layout</legend>
+              <p>
+                Choose whether compatible source plates may share a target U1
+                plate. The source 3MF is never modified.
+              </p>
+              <div className="project-setup__layout-choices">
+                <label className="project-setup__choice">
+                  <input
+                    type="radio"
+                    name="u1-plate-layout"
+                    value="preserve"
+                    checked={!draft.allowU1CrossSourceRepacking}
+                    disabled={isBusy}
+                    onChange={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        allowU1CrossSourceRepacking: false,
+                      }))
+                    }
+                  />
+                  <span>
+                    <strong>
+                      Preserve source plates
+                      <em>Safest</em>
+                    </strong>
+                    <small>
+                      Keep each source plate on a separate U1 target plate.
+                    </small>
+                  </span>
+                </label>
+                <label className="project-setup__choice">
+                  <input
+                    type="radio"
+                    name="u1-plate-layout"
+                    value="combine-compatible"
+                    checked={draft.allowU1CrossSourceRepacking}
+                    disabled={isBusy}
+                    onChange={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        allowU1CrossSourceRepacking: true,
+                      }))
+                    }
+                  />
+                  <span>
+                    <strong>Combine compatible source plates</strong>
+                    <small>
+                      Use fewer target plates when printer, strategy, physical
+                      loadout, material, and process are compatible.
+                    </small>
+                  </span>
+                </label>
+              </div>
             </fieldset>
           </div>
 

@@ -125,6 +125,12 @@ fn prepared_artifact_with_calibration_sample(
         loadout,
         calibration_fingerprint,
         process: u1_full_spectrum_process_contract(),
+        support: u1_three_mf::SupportInformation {
+            enabled: Some(true),
+            support_type: Some(u1_three_mf::SupportType::TreeAuto),
+            threshold_angle_degrees: Some(20),
+            on_build_plate_only: Some(true),
+        },
         recipe_table,
         recipe_calibration_sample_ids: calibration_sample_id.iter().cloned().collect(),
         assignments: vec![U1FullSpectrumPreparedAssignment {
@@ -175,6 +181,27 @@ fn full_spectrum_contract_accepts_a_qualified_solid_polymaker_t4_profile() {
     let (settings, _) = project_settings_bytes(&artifact);
 
     validate_project_settings_map(&settings, Some(&artifact)).unwrap();
+    assert_eq!(settings["enable_support"], Value::String("1".into()));
+    assert_eq!(settings["support_type"], Value::String("tree(auto)".into()));
+    assert_eq!(
+        settings["support_threshold_angle"],
+        Value::String("20".into())
+    );
+    assert_eq!(
+        settings["support_on_build_plate_only"],
+        Value::String("1".into())
+    );
+    assert_eq!(
+        settings["different_settings_to_system"],
+        serde_json::json!([
+            "enable_support;support_on_build_plate_only;support_threshold_angle;support_type",
+            "",
+            "",
+            "",
+            "",
+            ""
+        ])
+    );
     assert_eq!(
         setting_string_array(&settings, "filament_settings_id").unwrap()[3],
         POLYMAKER_PLA_PROFILE_NAME

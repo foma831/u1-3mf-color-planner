@@ -55,6 +55,12 @@ function stringArray(value: unknown): value is string[] {
   );
 }
 
+function calibrationChartSwatchCount(value: unknown) {
+  if (value === "quick") return 10;
+  if (value === "full") return 26;
+  return null;
+}
+
 function normalizeCalibrationProjectValidation(
   value: unknown,
 ): CmyxCalibrationProjectValidation {
@@ -80,8 +86,12 @@ function normalizeCalibrationProjectValidation(
 function normalizeCalibrationProjectResult(
   value: unknown,
 ): CmyxCalibrationProjectResult {
+  const expectedSwatchCount = isRecord(value)
+    ? calibrationChartSwatchCount(value.chartMode)
+    : null;
   if (
     !isRecord(value) ||
+    expectedSwatchCount === null ||
     !nonEmptyText(value.projectId) ||
     !nonEmptyText(value.path) ||
     !nonEmptyText(value.fileName) ||
@@ -90,7 +100,7 @@ function normalizeCalibrationProjectResult(
     !isSha256(value.artifactSha256) ||
     !nonEmptyText(value.manifestPath) ||
     !isSha256(value.manifestSha256) ||
-    value.swatchCount !== 18 ||
+    value.swatchCount !== expectedSwatchCount ||
     value.productionQualified !== false ||
     !Array.isArray(value.warnings) ||
     !value.warnings.every((warning) => typeof warning === "string") ||
@@ -103,7 +113,7 @@ function normalizeCalibrationProjectResult(
   const validation = normalizeCalibrationProjectValidation(value.validation);
   if (
     !validation.valid ||
-    validation.swatchCount !== 18 ||
+    validation.swatchCount !== expectedSwatchCount ||
     validation.projectId !== value.projectId ||
     validation.manifestSha256 !== value.manifestSha256
   ) {
@@ -754,6 +764,7 @@ function normalizeCalibrationProjectInput(
   const projectId = nonEmptyText(input.projectId);
   if (
     !projectId ||
+    calibrationChartSwatchCount(input.chartMode) === null ||
     projectId.length > 64 ||
     !/^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,63})$/.test(projectId) ||
     input.spoolIds.length !== 4 ||
@@ -766,6 +777,7 @@ function normalizeCalibrationProjectInput(
   }
   return {
     projectId,
+    chartMode: input.chartMode,
     spoolIds: input.spoolIds.map((spoolId) => spoolId.trim()) as [
       string,
       string,
@@ -791,7 +803,7 @@ export async function createRecommendedCmyxCalibrationProject(
   });
   if (typeof destinationPath !== "string") return null;
 
-  return normalizeCalibrationProjectResult(
+  const result = normalizeCalibrationProjectResult(
     await invoke("build_cmyx_calibration_project", {
       request: {
         ...normalized,
@@ -799,6 +811,12 @@ export async function createRecommendedCmyxCalibrationProject(
       },
     }),
   );
+  if (result.chartMode !== normalized.chartMode) {
+    throw new Error(
+      "The native calibration project mode does not match the requested chart mode.",
+    );
+  }
+  return result;
 }
 
 export async function validateCmyxCalibrationProject(path: string) {

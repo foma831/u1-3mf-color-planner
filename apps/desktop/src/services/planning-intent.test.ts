@@ -6,6 +6,7 @@ import type { PrintingSetup } from "./printing-setup";
 import {
   constrainPlanningIntentToEquipment,
   createDefaultPlanningIntent,
+  LEGACY_PLANNING_INTENT_V2_STORAGE_KEY,
   LEGACY_PLANNING_INTENT_STORAGE_KEY,
   loadLegacyPlanningIntent,
   loadPlanningIntent,
@@ -24,6 +25,7 @@ const twoPrinterSetup: PrintingSetup = {
 const intent: PlanningIntent = {
   defaultStrategy: "direct",
   a1MiniEnabled: true,
+  allowU1CrossSourceRepacking: true,
 };
 
 const legacyIntent = {
@@ -41,10 +43,12 @@ describe("planning intent persistence", () => {
     expect(createDefaultPlanningIntent(twoPrinterSetup)).toEqual({
       defaultStrategy: "auto",
       a1MiniEnabled: true,
+      allowU1CrossSourceRepacking: false,
     });
     expect(createDefaultPlanningIntent(null)).toEqual({
       defaultStrategy: "auto",
       a1MiniEnabled: false,
+      allowU1CrossSourceRepacking: false,
     });
   });
 
@@ -70,14 +74,14 @@ describe("planning intent persistence", () => {
     ).toBe(false);
   });
 
-  it("round-trips a strict version-two intent", () => {
+  it("round-trips a strict version-three intent", () => {
     expect(savePlanningIntent(window.localStorage, intent)).toBe(true);
     expect(loadPlanningIntent(window.localStorage)).toEqual(intent);
     expect(
       JSON.parse(
         window.localStorage.getItem(PLANNING_INTENT_STORAGE_KEY) ?? "null",
       ),
-    ).toEqual({ schemaVersion: 2, ...intent });
+    ).toEqual({ schemaVersion: 3, ...intent });
   });
 
   it("refuses to save runtime records with legacy or unknown fields", () => {
@@ -99,9 +103,27 @@ describe("planning intent persistence", () => {
     expect(loadPlanningIntent(window.localStorage)).toEqual({
       defaultStrategy: "cmyx",
       a1MiniEnabled: true,
+      allowU1CrossSourceRepacking: false,
     });
     expect(loadLegacyPlanningIntent(window.localStorage)).toEqual(legacyIntent);
     expect(window.localStorage.getItem(PLANNING_INTENT_STORAGE_KEY)).toBeNull();
+  });
+
+  it("migrates a version-two intent with conservative source boundaries", () => {
+    window.localStorage.setItem(
+      LEGACY_PLANNING_INTENT_V2_STORAGE_KEY,
+      JSON.stringify({
+        schemaVersion: 2,
+        defaultStrategy: "direct",
+        a1MiniEnabled: true,
+      }),
+    );
+
+    expect(loadPlanningIntent(window.localStorage)).toEqual({
+      defaultStrategy: "direct",
+      a1MiniEnabled: true,
+      allowU1CrossSourceRepacking: false,
+    });
   });
 
   it("normalizes padded legacy spool identifiers for the loadout migration", () => {
@@ -133,14 +155,18 @@ describe("planning intent persistence", () => {
   it("rejects corrupt, unknown, and incomplete current records", () => {
     for (const value of [
       "not-json",
-      JSON.stringify({ schemaVersion: 1, ...intent }),
-      JSON.stringify({ schemaVersion: 2, ...intent, extra: true }),
+      JSON.stringify({ schemaVersion: 2, ...intent }),
+      JSON.stringify({ schemaVersion: 3, ...intent, extra: true }),
       JSON.stringify({
-        schemaVersion: 2,
+        schemaVersion: 3,
         ...intent,
         defaultStrategy: "sometimes",
       }),
-      JSON.stringify({ schemaVersion: 2, defaultStrategy: "auto" }),
+      JSON.stringify({
+        schemaVersion: 3,
+        defaultStrategy: "auto",
+        a1MiniEnabled: true,
+      }),
     ]) {
       window.localStorage.setItem(PLANNING_INTENT_STORAGE_KEY, value);
       expect(loadPlanningIntent(window.localStorage)).toBeNull();
@@ -184,6 +210,12 @@ describe("planning intent persistence", () => {
     ).toBe(false);
     expect(
       planningIntentEquals(intent, { ...intent, a1MiniEnabled: false }),
+    ).toBe(false);
+    expect(
+      planningIntentEquals(intent, {
+        ...intent,
+        allowU1CrossSourceRepacking: false,
+      }),
     ).toBe(false);
     expect(planningIntentEquals(intent, null)).toBe(false);
     expect(planningIntentEquals(null, null)).toBe(true);

@@ -155,9 +155,11 @@ async function analyzeBrowserDemo(fileName = "Withered_Foxy.3mf") {
 async function confirmProjectSetup({
   strategy = "auto",
   a1MiniEnabled,
+  allowU1CrossSourceRepacking,
 }: {
   strategy?: DefaultPlanningStrategy;
   a1MiniEnabled?: boolean;
+  allowU1CrossSourceRepacking?: boolean;
 } = {}) {
   const confirmButton = await screen.findByRole("button", {
     name: "Confirm project setup",
@@ -179,6 +181,15 @@ async function confirmProjectSetup({
           strategy === "direct"
             ? /Direct Spools only/i
             : /CMY\+X Full Spectrum only/i,
+      }),
+    );
+  }
+  if (allowU1CrossSourceRepacking !== undefined) {
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: allowU1CrossSourceRepacking
+          ? /Combine compatible source plates/i
+          : /Preserve source plates/i,
       }),
     );
   }
@@ -517,6 +528,7 @@ function createCustomFourSpoolNativePlan() {
     colors.map((sourceHex, index) => ({
       ...structuredClone(templates[index % templates.length]),
       id: `${scopeId}-source-${index + 1}`,
+      scopeId,
       inheritanceKey: `PLA|${sourceHex}|declared:custom-profile-${index + 1}`,
       physicalIdentityId: `${scopeId}-physical-${index + 1}`,
       sourceSlot: `F${index + 1}`,
@@ -568,6 +580,7 @@ function createCustomFourSpoolRecoveryPlans() {
   };
   replanned.omittedUnitCount = 0;
   replanned.planReady = true;
+  replanned.restoreCmyByDefault = false;
   replanned.batches = deriveBatches(replanned.plates);
 
   const initialPlan = structuredClone(replanned);
@@ -875,7 +888,10 @@ describe("Print Plan workflow", () => {
     fireEvent.change(screen.getByLabelText("A1 mini external spool"), {
       target: { value: "burnt-orange" },
     });
-    await confirmProjectSetup({ strategy: "direct" });
+    await confirmProjectSetup({
+      strategy: "direct",
+      allowU1CrossSourceRepacking: true,
+    });
     fireEvent.click(screen.getByRole("button", { name: "Open 3MF" }));
     await screen.findByRole("heading", { name: "Withered_Foxy.3mf" });
     fireEvent.click(screen.getByRole("button", { name: "Analyze Project" }));
@@ -890,6 +906,7 @@ describe("Print Plan workflow", () => {
         planningIntent: {
           defaultStrategy: "direct",
           a1MiniEnabled: true,
+          allowU1CrossSourceRepacking: true,
           currentLoadout: [
             { toolhead: "T1", spoolId: "panchroma-cyan" },
             { toolhead: "T2", spoolId: "panchroma-magenta" },
@@ -1999,9 +2016,12 @@ describe("Print Plan workflow", () => {
     ).toBeInTheDocument();
   });
 
-  it("enables a seven-color scope as a custom four-spool Direct palette", async () => {
+  it("keeps Recalculate visible after reducing seven source colors to four spools", async () => {
     const { initialPlan, replanned } = createCustomFourSpoolRecoveryPlans();
-    await renderAnalyzedNativeApp(initialPlan, [structuredClone(replanned)]);
+    await renderAnalyzedNativeApp(initialPlan, [
+      structuredClone(replanned),
+      structuredClone(replanned),
+    ]);
 
     const blockedDirect = screen.getByRole("radio", {
       name: /Custom 4-Spool Direct/i,
@@ -2058,6 +2078,35 @@ describe("Print Plan workflow", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       /Four-spool palette created.*7 source Direct identities.*4 physical spools/i,
     );
+    const recalculate = screen.getByRole("button", {
+      name: "Recalculate plan",
+    });
+    expect(recalculate).toBeEnabled();
+
+    fireEvent.click(recalculate);
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(2),
+    );
+    const finalRequest = (
+      nativeCommandCalls("replan_project")[1][1] as {
+        request: {
+          restoreCmyAfterDirect: boolean;
+          scopeOverrides: Array<{
+            scopeId: string;
+            assignments: Array<{ spoolId: string }>;
+          }>;
+        };
+      }
+    ).request;
+    expect(finalRequest.restoreCmyAfterDirect).toBe(false);
+    const assignments = finalRequest.scopeOverrides.find(
+      (override) => override.scopeId === "plate-1",
+    )?.assignments;
+    expect(assignments).toHaveLength(7);
+    expect(
+      new Set(assignments?.map((assignment) => assignment.spoolId)).size,
+    ).toBe(4);
   });
 
   it("keeps a visible recovery path when four-spool palette creation fails", async () => {
@@ -2656,7 +2705,7 @@ describe("Print Plan workflow", () => {
       name: /I understand this source dialect is Experimental/i,
     });
     const approveButton = screen
-      .getByText("Review conversion…")
+      .getByText("Review conversion")
       .closest("button")!;
     expect(approveButton).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(experimentalApproval);
@@ -2906,7 +2955,7 @@ describe("Print Plan workflow", () => {
     });
     expect(screen.getByText("model-42")).toBeInTheDocument();
     const convertValidJobs = screen.getByRole("button", {
-      name: "Review valid jobs…",
+      name: "Review valid jobs",
     });
     expect(convertValidJobs).toHaveAttribute("aria-disabled", "true");
 
@@ -2924,12 +2973,12 @@ describe("Print Plan workflow", () => {
     expect(currentApproval).toBeChecked();
     await waitFor(
       () => {
-        const button = screen.getByText("Review valid jobs…").closest("button");
+        const button = screen.getByText("Review valid jobs").closest("button");
         expect(button).not.toHaveAttribute("aria-disabled");
       },
       { timeout: 2_000 },
     );
-    fireEvent.click(screen.getByText("Review valid jobs…").closest("button")!);
+    fireEvent.click(screen.getByText("Review valid jobs").closest("button")!);
 
     const dialog = await screen.findByRole("dialog");
     expect(
@@ -3062,7 +3111,7 @@ describe("Print Plan workflow", () => {
     await waitFor(() =>
       expect(
         screen.getByRole("button", {
-          name: "Review valid jobs…",
+          name: "Review valid jobs",
         }),
       ).toBeInTheDocument(),
     );
@@ -3090,7 +3139,7 @@ describe("Print Plan workflow", () => {
     ).not.toBeChecked();
     expect(
       screen.getByRole("button", {
-        name: "Review valid jobs…",
+        name: "Review valid jobs",
       }),
     ).toHaveAttribute("aria-disabled", "true");
   });
@@ -3149,6 +3198,51 @@ describe("Print Plan workflow", () => {
     );
     expect(
       screen.getByText("A1 mini requested · 2 eligible plates"),
+    ).toBeInTheDocument();
+  });
+
+  it("replans with an explicit compatible U1 cross-source layout choice", async () => {
+    const initial = createDemoPlan();
+    const replanned = createDemoPlan();
+    replanned.u1CrossSourceRepackingEnabled = true;
+    replanned.plates[0] = {
+      ...replanned.plates[0],
+      scopeIds: ["plate-1", "plate-4"],
+      sourceUnitIds: [
+        ...replanned.plates[0].sourceUnitIds,
+        ...replanned.plates[3].sourceUnitIds,
+      ],
+      mappings: [
+        ...(replanned.plates[0].mappings ?? []),
+        ...(replanned.plates[3].mappings ?? []),
+      ],
+    };
+    replanned.plates = replanned.plates.filter(
+      (plate) => plate.id !== "plate-04",
+    );
+    await renderAnalyzedNativeApp(initial, [replanned]);
+
+    openProjectSetupEditor();
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: /Combine compatible source plates/i,
+      }),
+    );
+    applyProjectSetupChanges();
+
+    await waitFor(() =>
+      expect(nativeCommandCalls("replan_project")).toHaveLength(1),
+    );
+    expect(nativeCommandCalls("replan_project")[0]).toEqual([
+      "replan_project",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          allowU1CrossSourceRepacking: true,
+        }),
+      }),
+    ]);
+    expect(
+      screen.getByText(/Compatible source scopes may share a U1 target plate/i),
     ).toBeInTheDocument();
   });
 

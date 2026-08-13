@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use u1_planner::{
     A1MiniConfig, BestEffortCmyxCandidate, BoundsMm, BuildVolumeMm, CmySetup, CmyxColorCandidate,
@@ -1102,6 +1102,324 @@ fn proven_units_from_split_scopes_share_a_deterministically_packed_u1_plate() {
         || left.target_min_y_mm + 45.0 <= right.target_min_y_mm - 5.0
         || right.target_min_y_mm + 45.0 <= left.target_min_y_mm - 5.0;
     assert!(separated, "packed clearance envelopes must not overlap");
+}
+
+#[test]
+fn u1_cross_source_repacking_is_off_by_default_and_preserves_source_plates() {
+    let mut input = direct_input(1);
+    input.scopes[0].id = "scope-a".into();
+    input.scopes[0].units[0].id = "unit-a".into();
+    input.scopes[0].units[0].source_unit_id = "stable-source-unit-a".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-a".into());
+
+    let mut second = input.scopes[0].clone();
+    second.id = "scope-b".into();
+    second.units[0].id = "unit-b".into();
+    second.units[0].source_unit_id = "stable-source-unit-b".into();
+    second.units[0].source_object_id = 2;
+    second.units[0].source_plate_id = Some("source-plate-b".into());
+    input.scopes.push(second);
+
+    assert!(!input.config.allow_u1_cross_source_repacking);
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 2);
+    assert_eq!(result.plates.len(), 2);
+    assert!(result.plates.iter().all(|plate| plate.units.len() == 1));
+}
+
+#[test]
+fn opted_in_u1_cross_source_repacking_combines_compatible_source_plates() {
+    let mut input = direct_input(1);
+    input.config.allow_u1_cross_source_repacking = true;
+    input.scopes[0].id = "scope-a".into();
+    input.scopes[0].units[0].id = "unit-a".into();
+    input.scopes[0].units[0].source_unit_id = "stable-source-unit-a".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-a".into());
+
+    let mut second = input.scopes[0].clone();
+    second.id = "scope-b".into();
+    second.units[0].id = "unit-b".into();
+    second.units[0].source_unit_id = "stable-source-unit-b".into();
+    second.units[0].source_object_id = 2;
+    second.units[0].source_plate_id = Some("source-plate-b".into());
+    input.scopes.push(second);
+
+    let source_unit_id_by_ref = input
+        .scopes
+        .iter()
+        .flat_map(|scope| {
+            scope.units.iter().map(|unit| {
+                (
+                    (scope.id.as_str(), unit.id.as_str()),
+                    unit.source_unit_id.as_str(),
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 1);
+    assert_eq!(result.plates.len(), 1);
+    assert_eq!(result.plates[0].packing_status, PackingStatus::PackedAabb);
+    assert_eq!(result.plates[0].placements.len(), 2);
+    assert_eq!(
+        result.jobs[0]
+            .units
+            .iter()
+            .map(|unit| (unit.scope_id.as_str(), unit.unit_id.as_str()))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([("scope-a", "unit-a"), ("scope-b", "unit-b")])
+    );
+    assert_eq!(
+        result.jobs[0]
+            .units
+            .iter()
+            .map(|unit| source_unit_id_by_ref[&(unit.scope_id.as_str(), unit.unit_id.as_str())])
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["stable-source-unit-a", "stable-source-unit-b"]),
+        "every packed reference must still resolve to its immutable source identity"
+    );
+}
+
+#[test]
+fn opted_in_u1_repacking_promotes_subset_loadouts_and_keeps_fast_mono_separate() {
+    let mut input = direct_input(4);
+    input.config.allow_u1_cross_source_repacking = true;
+    input.scopes[0].id = "full-palette".into();
+    input.scopes[0].units[0].id = "full-palette-unit".into();
+    input.scopes[0].units[0].source_unit_id = "stable-full-palette-unit".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-full".into());
+    input.scopes[0].direct_assignments = Toolhead::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, toolhead)| u1_planner::DirectAssignmentRequest {
+            requirement_id: format!("color-{index}"),
+            spool_id: format!("direct-{index}"),
+            toolhead: Some(toolhead),
+            allow_material_substitution: false,
+        })
+        .collect();
+
+    let mut subset = input.scopes[0].clone();
+    subset.id = "subset-palette".into();
+    subset.display_name = "Subset palette".into();
+    subset
+        .requirements
+        .retain(|requirement| requirement.id != "color-2");
+    subset
+        .direct_assignments
+        .retain(|assignment| assignment.requirement_id != "color-2");
+    subset.units[0].id = "subset-palette-unit".into();
+    subset.units[0].source_unit_id = "stable-subset-palette-unit".into();
+    subset.units[0].source_object_id = 2;
+    subset.units[0].source_plate_id = Some("source-plate-subset".into());
+    subset.units[0].requirement_ids = vec!["color-0".into(), "color-1".into(), "color-3".into()];
+
+    let mut mono = input.scopes[0].clone();
+    mono.id = "fast-mono".into();
+    mono.display_name = "Fast mono".into();
+    mono.requirements
+        .retain(|requirement| requirement.id == "color-3");
+    mono.direct_assignments
+        .retain(|assignment| assignment.requirement_id == "color-3");
+    mono.units[0].id = "fast-mono-unit".into();
+    mono.units[0].source_unit_id = "stable-fast-mono-unit".into();
+    mono.units[0].source_object_id = 3;
+    mono.units[0].source_plate_id = Some("source-plate-mono".into());
+    mono.units[0].requirement_ids = vec!["color-3".into()];
+
+    input.scopes.push(subset);
+    input.scopes.push(mono);
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 2);
+    assert_eq!(result.plates.len(), 2);
+
+    let multicolor = result
+        .jobs
+        .iter()
+        .find(|job| !job.fast_mono)
+        .expect("the compatible multicolor scopes share one job");
+    assert_eq!(multicolor.units.len(), 2);
+    let PrinterLoadout::U1 { loadout } = &multicolor.loadout else {
+        panic!("the shared palette remains a U1 loadout");
+    };
+    assert_eq!(
+        loadout.slots,
+        [
+            Some("direct-0".into()),
+            Some("direct-1".into()),
+            Some("direct-2".into()),
+            Some("direct-3".into()),
+        ]
+    );
+    let multicolor_plate = result
+        .plates
+        .iter()
+        .find(|plate| plate.job_id == multicolor.id)
+        .expect("the multicolor job has one packed plate");
+    assert_eq!(multicolor_plate.units.len(), 2);
+    assert!(multicolor_plate.prime_tower.is_some());
+
+    let fast_mono = result
+        .jobs
+        .iter()
+        .find(|job| job.fast_mono)
+        .expect("the single-spool unit remains a fast-mono job");
+    assert_eq!(fast_mono.units.len(), 1);
+    let fast_mono_plate = result
+        .plates
+        .iter()
+        .find(|plate| plate.job_id == fast_mono.id)
+        .expect("the fast-mono job has its own plate");
+    assert!(fast_mono_plate.prime_tower.is_none());
+}
+
+#[test]
+fn opted_in_u1_repacking_does_not_merge_conflicting_direct_toolheads() {
+    let mut input = direct_input(2);
+    input.config.allow_u1_cross_source_repacking = true;
+    input.scopes[0].id = "scope-a".into();
+    input.scopes[0].units[0].id = "unit-a".into();
+    input.scopes[0].units[0].source_unit_id = "stable-unit-a".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-a".into());
+    input.scopes[0].direct_assignments = vec![
+        u1_planner::DirectAssignmentRequest {
+            requirement_id: "color-0".into(),
+            spool_id: "direct-0".into(),
+            toolhead: Some(Toolhead::T1),
+            allow_material_substitution: false,
+        },
+        u1_planner::DirectAssignmentRequest {
+            requirement_id: "color-1".into(),
+            spool_id: "direct-1".into(),
+            toolhead: Some(Toolhead::T2),
+            allow_material_substitution: false,
+        },
+    ];
+
+    let mut second = input.scopes[0].clone();
+    second.id = "scope-b".into();
+    second.units[0].id = "unit-b".into();
+    second.units[0].source_unit_id = "stable-unit-b".into();
+    second.units[0].source_object_id = 2;
+    second.units[0].source_plate_id = Some("source-plate-b".into());
+    second.requirements[0].id = "color-b".into();
+    second.requirements[0].source_slots = vec!["source-slot-b".into()];
+    second.requirements[0].source_profile_ids = vec!["profile-direct-b".into()];
+    second.requirements[0].source_color = rgb(210, 40, 90);
+    second.requirements[0].direct_candidates = vec![DirectSpoolCandidate {
+        spool_id: "direct-b".into(),
+        delta_e00: Some(0.0),
+        confidence: ColorConfidence::Measured,
+    }];
+    second.units[0].requirement_ids[0] = "color-b".into();
+    second.direct_assignments[0] = u1_planner::DirectAssignmentRequest {
+        requirement_id: "color-b".into(),
+        spool_id: "direct-b".into(),
+        toolhead: Some(Toolhead::T1),
+        allow_material_substitution: false,
+    };
+    input
+        .inventory
+        .push(spool("direct-b", Material::Pla, rgb(210, 40, 90)));
+    input.scopes.push(second);
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 2);
+    assert_eq!(result.plates.len(), 2);
+    assert!(result.jobs.iter().all(|job| !job.fast_mono));
+}
+
+#[test]
+fn opted_in_u1_cross_source_repacking_keeps_incompatible_loadouts_separate() {
+    let mut input = direct_input(1);
+    input.config.allow_u1_cross_source_repacking = true;
+    input.scopes[0].id = "scope-a".into();
+    input.scopes[0].units[0].id = "unit-a".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-a".into());
+
+    let mut second = input.scopes[0].clone();
+    second.id = "scope-b".into();
+    second.units[0].id = "unit-b".into();
+    second.units[0].source_unit_id = "stable-source-unit-b".into();
+    second.units[0].source_object_id = 2;
+    second.units[0].source_plate_id = Some("source-plate-b".into());
+    second.requirements[0].id = "color-b".into();
+    second.requirements[0].source_slots = vec!["source-slot-b".into()];
+    second.requirements[0].source_profile_ids = vec!["profile-direct-b".into()];
+    second.requirements[0].source_color = rgb(210, 40, 90);
+    second.requirements[0].direct_candidates = vec![DirectSpoolCandidate {
+        spool_id: "direct-b".into(),
+        delta_e00: Some(0.0),
+        confidence: ColorConfidence::Measured,
+    }];
+    second.units[0].requirement_ids = vec!["color-b".into()];
+    input
+        .inventory
+        .push(spool("direct-b", Material::Pla, rgb(210, 40, 90)));
+    input.scopes.push(second);
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 2);
+    assert_eq!(result.plates.len(), 2);
+    assert_eq!(
+        result
+            .jobs
+            .iter()
+            .map(|job| job.loadout.clone())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        2,
+        "different physical spool loadouts must never share a packing group"
+    );
+}
+
+#[test]
+fn opted_in_u1_cross_source_repacking_still_splits_at_bed_capacity() {
+    let mut input = direct_input(1);
+    input.config.allow_u1_cross_source_repacking = true;
+    input.scopes[0].id = "scope-a".into();
+    input.scopes[0].units[0].id = "unit-a".into();
+    input.scopes[0].units[0].source_unit_id = "stable-source-unit-a".into();
+    input.scopes[0].units[0].source_plate_id = Some("source-plate-a".into());
+    input.scopes[0].units[0].bounds = BoundsMm::from_size(150.0, 150.0, 20.0);
+
+    let mut second = input.scopes[0].clone();
+    second.id = "scope-b".into();
+    second.units[0].id = "unit-b".into();
+    second.units[0].source_unit_id = "stable-source-unit-b".into();
+    second.units[0].source_object_id = 2;
+    second.units[0].source_plate_id = Some("source-plate-b".into());
+    input.scopes.push(second);
+
+    let result = plan(&input);
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(result.jobs.len(), 2);
+    assert_eq!(result.plates.len(), 2);
+    assert_eq!(
+        result.batches.len(),
+        1,
+        "the compatible loadout stays one batch"
+    );
+    assert!(result.plates.iter().all(|plate| {
+        plate.packing_status == PackingStatus::PackedAabb && plate.placements.len() == 1
+    }));
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.code == WarningCode::PackingSplitAcrossPlates)
+    );
 }
 
 #[test]

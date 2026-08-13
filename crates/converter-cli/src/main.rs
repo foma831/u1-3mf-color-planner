@@ -21,7 +21,7 @@ use u1_orca_adapter::{
     U1FullSpectrumNormalizedSubstrateReport,
     build_u1_full_spectrum_project_settings_with_physical_profiles, discover_installation,
     inspect_macos_application, inspect_u1_direct_macos_application,
-    inspect_u1_full_spectrum_macos_application, prepare_u1_full_spectrum_conversion,
+    inspect_u1_full_spectrum_macos_application, prepare_u1_full_spectrum_conversion_with_support,
     qualified_u1_physical_profiles_root, validate_u1_full_spectrum_candidate,
     validate_u1_full_spectrum_gui_round_trip, validate_u1_gui_round_trip,
     write_u1_full_spectrum_normalized_substrate, write_u1_full_spectrum_qualification_candidate,
@@ -586,13 +586,17 @@ fn build_full_spectrum_qualification(
             source_dialect_approval_fingerprint(&report.analysis)
         )
     })?;
-    let preparation = prepare_u1_full_spectrum_conversion(&report.planning_input, &report.plan)
-        .with_context(|| {
-            format!(
-                "failed to prepare Full Spectrum artifacts for {}",
-                source.display()
-            )
-        })?;
+    let preparation = prepare_u1_full_spectrum_conversion_with_support(
+        &report.planning_input,
+        &report.plan,
+        &report.analysis.process.support,
+    )
+    .with_context(|| {
+        format!(
+            "failed to prepare Full Spectrum artifacts for {}",
+            source.display()
+        )
+    })?;
     for artifact in &preparation.artifacts {
         let destination = output.join(&artifact.file_name);
         if destination.try_exists().with_context(|| {

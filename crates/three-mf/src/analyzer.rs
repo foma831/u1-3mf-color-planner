@@ -2158,8 +2158,102 @@ fn build_project_settings(
         layer_height_mm: numeric_setting(root, "layer_height", warnings),
         initial_layer_height_mm: numeric_setting(root, "initial_layer_print_height", warnings),
         prime_tower_enabled: bool_value(root.get("enable_prime_tower")),
+        quality: build_quality_information(root, warnings),
+        support: build_support_information(root, warnings),
     };
     (filaments, printer, process)
+}
+
+fn build_quality_information(
+    root: &Value,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> QualityInformation {
+    let wall_generator =
+        string_value(root.get("wall_generator")).and_then(|value| match value.as_str() {
+            "classic" => Some(WallGenerator::Classic),
+            "arachne" => Some(WallGenerator::Arachne),
+            _ => {
+                warnings.push(AnalysisWarning::new(
+                    WarningCode::InvalidSetting,
+                    format!("Ignoring unsupported wall_generator value {value:?}"),
+                ));
+                None
+            }
+        });
+    QualityInformation {
+        wall_generator,
+        outer_wall_speed_mm_s: minimum_numeric_setting(root, "outer_wall_speed", warnings),
+        inner_wall_speed_mm_s: minimum_numeric_setting(root, "inner_wall_speed", warnings),
+        top_surface_speed_mm_s: minimum_numeric_setting(root, "top_surface_speed", warnings),
+        outer_wall_acceleration_mm_s2: minimum_numeric_setting(
+            root,
+            "outer_wall_acceleration",
+            warnings,
+        ),
+        wall_loops: integer_setting(root, "wall_loops", warnings),
+        top_shell_layers: integer_setting(root, "top_shell_layers", warnings),
+        bottom_shell_layers: integer_setting(root, "bottom_shell_layers", warnings),
+    }
+}
+
+fn build_support_information(
+    root: &Value,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> SupportInformation {
+    let enabled = boolean_setting(root, "enable_support", warnings);
+    let on_build_plate_only = boolean_setting(root, "support_on_build_plate_only", warnings);
+    let support_type =
+        string_value(root.get("support_type")).and_then(|value| match value.as_str() {
+            "normal(auto)" => Some(SupportType::NormalAuto),
+            "tree(auto)" => Some(SupportType::TreeAuto),
+            _ => {
+                warnings.push(AnalysisWarning::new(
+                    WarningCode::InvalidSetting,
+                    format!("Ignoring unsupported support_type value {value:?}"),
+                ));
+                None
+            }
+        });
+    let threshold_angle_degrees =
+        string_value(root.get("support_threshold_angle")).and_then(|raw| {
+            let parsed = raw.parse::<f64>().ok();
+            match parsed {
+                Some(value)
+                    if value.is_finite()
+                        && (0.0..=90.0).contains(&value)
+                        && value.fract().abs() <= f64::EPSILON =>
+                {
+                    Some(value as u8)
+                }
+                _ => {
+                    warnings.push(AnalysisWarning::new(
+                        WarningCode::InvalidSetting,
+                        format!("Ignoring invalid support_threshold_angle value {raw:?}"),
+                    ));
+                    None
+                }
+            }
+        });
+    SupportInformation {
+        enabled,
+        support_type,
+        threshold_angle_degrees,
+        on_build_plate_only,
+    }
+}
+
+fn boolean_setting(root: &Value, key: &str, warnings: &mut Vec<AnalysisWarning>) -> Option<bool> {
+    let value = root.get(key)?;
+    match bool_value(Some(value)) {
+        Some(value) => Some(value),
+        None => {
+            warnings.push(AnalysisWarning::new(
+                WarningCode::InvalidSetting,
+                format!("Ignoring invalid {key} value {value}"),
+            ));
+            None
+        }
+    }
 }
 
 fn detect_dangling_references(
@@ -2237,6 +2331,43 @@ fn detect_dangling_references(
 fn numeric_setting(root: &Value, key: &str, warnings: &mut Vec<AnalysisWarning>) -> Option<f64> {
     let raw = string_value(root.get(key))?;
     match parse_positive_f64(&raw) {
+        Some(value) => Some(value),
+        None => {
+            warnings.push(AnalysisWarning::new(
+                WarningCode::InvalidSetting,
+                format!("Ignoring invalid {key} value {raw:?}"),
+            ));
+            None
+        }
+    }
+}
+
+fn minimum_numeric_setting(
+    root: &Value,
+    key: &str,
+    warnings: &mut Vec<AnalysisWarning>,
+) -> Option<f64> {
+    let raw_values = positional_string_array(root.get(key));
+    if raw_values.is_empty() {
+        return None;
+    }
+    let parsed = raw_values
+        .iter()
+        .map(|raw| raw.as_deref().and_then(parse_positive_f64))
+        .collect::<Option<Vec<_>>>();
+    let Some(parsed) = parsed else {
+        warnings.push(AnalysisWarning::new(
+            WarningCode::InvalidSetting,
+            format!("Ignoring invalid {key} value"),
+        ));
+        return None;
+    };
+    parsed.into_iter().reduce(f64::min)
+}
+
+fn integer_setting(root: &Value, key: &str, warnings: &mut Vec<AnalysisWarning>) -> Option<u16> {
+    let raw = string_value(root.get(key))?;
+    match raw.trim().parse::<u16>().ok().filter(|value| *value > 0) {
         Some(value) => Some(value),
         None => {
             warnings.push(AnalysisWarning::new(

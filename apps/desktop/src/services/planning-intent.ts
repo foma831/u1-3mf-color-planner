@@ -1,7 +1,9 @@
 import type { PrintingSetup } from "./printing-setup";
 
-export const PLANNING_INTENT_SCHEMA_VERSION = 2 as const;
+export const PLANNING_INTENT_SCHEMA_VERSION = 3 as const;
 export const PLANNING_INTENT_STORAGE_KEY =
+  "u1-planner.project-planning-intent.v3";
+export const LEGACY_PLANNING_INTENT_V2_STORAGE_KEY =
   "u1-planner.project-planning-intent.v2";
 export const LEGACY_PLANNING_INTENT_STORAGE_KEY =
   "u1-planner.project-planning-intent.v1";
@@ -11,12 +13,22 @@ export type DefaultPlanningStrategy = "auto" | "cmyx" | "direct";
 export interface PlanningIntent {
   defaultStrategy: DefaultPlanningStrategy;
   a1MiniEnabled: boolean;
+  allowU1CrossSourceRepacking: boolean;
 }
 
-export interface LegacyPlanningIntentV1 extends PlanningIntent {
+interface LegacyPlanningIntentValues {
+  defaultStrategy: DefaultPlanningStrategy;
+  a1MiniEnabled: boolean;
+}
+
+export interface LegacyPlanningIntentV1 extends LegacyPlanningIntentValues {
   schemaVersion: 1;
   currentT4SpoolId: string | null;
   currentA1SpoolId: string | null;
+}
+
+interface LegacyPlanningIntentV2 extends LegacyPlanningIntentValues {
+  schemaVersion: 2;
 }
 
 interface StoredPlanningIntent extends PlanningIntent {
@@ -29,6 +41,7 @@ export function createDefaultPlanningIntent(
   return {
     defaultStrategy: "auto",
     a1MiniEnabled: setup?.secondaryPrinter === "a1-mini",
+    allowU1CrossSourceRepacking: false,
   };
 }
 
@@ -77,10 +90,20 @@ export function loadPlanningIntent(
       return {
         defaultStrategy: parsed.defaultStrategy,
         a1MiniEnabled: parsed.a1MiniEnabled,
+        allowU1CrossSourceRepacking: parsed.allowU1CrossSourceRepacking,
       };
     }
   } catch {
     return null;
+  }
+
+  const legacyV2 = loadLegacyPlanningIntentV2(storage);
+  if (legacyV2 !== null) {
+    return {
+      defaultStrategy: legacyV2.defaultStrategy,
+      a1MiniEnabled: legacyV2.a1MiniEnabled,
+      allowU1CrossSourceRepacking: false,
+    };
   }
 
   const legacy = loadLegacyPlanningIntent(storage);
@@ -88,6 +111,7 @@ export function loadPlanningIntent(
     ? {
         defaultStrategy: legacy.defaultStrategy,
         a1MiniEnabled: legacy.a1MiniEnabled,
+        allowU1CrossSourceRepacking: false,
       }
     : null;
 }
@@ -115,8 +139,23 @@ export function planningIntentEquals(
 ) {
   return (
     left?.defaultStrategy === right?.defaultStrategy &&
-    left?.a1MiniEnabled === right?.a1MiniEnabled
+    left?.a1MiniEnabled === right?.a1MiniEnabled &&
+    left?.allowU1CrossSourceRepacking ===
+      right?.allowU1CrossSourceRepacking
   );
+}
+
+function loadLegacyPlanningIntentV2(
+  storage: Storage,
+): LegacyPlanningIntentV2 | null {
+  try {
+    const serialized = storage.getItem(LEGACY_PLANNING_INTENT_V2_STORAGE_KEY);
+    if (serialized === null) return null;
+    const parsed: unknown = JSON.parse(serialized);
+    return isLegacyPlanningIntentV2(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function isStoredPlanningIntent(value: unknown): value is StoredPlanningIntent {
@@ -133,10 +172,19 @@ function isLegacyPlanningIntent(
   if (!isRecord(value) || !hasExactKeys(value, legacyIntentKeys)) return false;
   return (
     value.schemaVersion === 1 &&
-    hasPlanningIntentValues(value) &&
+    hasLegacyPlanningIntentValues(value) &&
     isOptionalSpoolId(value.currentT4SpoolId) &&
     isOptionalSpoolId(value.currentA1SpoolId)
   );
+}
+
+function isLegacyPlanningIntentV2(
+  value: unknown,
+): value is LegacyPlanningIntentV2 {
+  if (!isRecord(value) || !hasExactKeys(value, legacyV2IntentKeys)) {
+    return false;
+  }
+  return value.schemaVersion === 2 && hasLegacyPlanningIntentValues(value);
 }
 
 function normalizeLegacyIntent(
@@ -160,6 +208,15 @@ function isPlanningIntent(value: unknown): value is PlanningIntent {
 function hasPlanningIntentValues(
   value: Record<string, unknown>,
 ): value is Record<string, unknown> & PlanningIntent {
+  return (
+    hasLegacyPlanningIntentValues(value) &&
+    typeof value.allowU1CrossSourceRepacking === "boolean"
+  );
+}
+
+function hasLegacyPlanningIntentValues(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & LegacyPlanningIntentValues {
   return (
     ["auto", "cmyx", "direct"].includes(String(value.defaultStrategy)) &&
     typeof value.a1MiniEnabled === "boolean"
@@ -193,9 +250,20 @@ const storedIntentKeys = [
   "schemaVersion",
   "defaultStrategy",
   "a1MiniEnabled",
+  "allowU1CrossSourceRepacking",
 ] as const;
 
-const planningIntentKeys = ["defaultStrategy", "a1MiniEnabled"] as const;
+const planningIntentKeys = [
+  "defaultStrategy",
+  "a1MiniEnabled",
+  "allowU1CrossSourceRepacking",
+] as const;
+
+const legacyV2IntentKeys = [
+  "schemaVersion",
+  "defaultStrategy",
+  "a1MiniEnabled",
+] as const;
 
 const legacyIntentKeys = [
   "schemaVersion",

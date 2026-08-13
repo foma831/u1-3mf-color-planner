@@ -1,9 +1,10 @@
 //! Clean-room Snapmaker U1 Direct Spools Project 3MF adapter.
 //!
 //! The adapter is intentionally narrower than the planner. It accepts only a
-//! complete, backend-owned U1/Direct plan, preserves complete source-plate
-//! layouts, rewrites color assignments to physical T1–T4 IDs, and publishes an
-//! unsliced bundle through the generic validated OPC writer.
+//! complete, backend-owned U1/Direct plan, preserves immutable source geometry
+//! and material identity, applies only validated target placements, rewrites
+//! color assignments to physical T1–T4 IDs, and publishes an unsliced bundle
+//! through the generic validated OPC writer.
 
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
@@ -27,8 +28,9 @@ use u1_planner::{
 use u1_three_mf::{
     ContentTypesBuilder, ExpectedSourceIdentity, InputIdentity, MAIN_MODEL_PATH,
     MAIN_MODEL_RELATIONSHIPS_PATH, MODEL_RELATIONSHIP_TYPE, OpcPackageWriter, OpcRelationship,
-    OpcWriteReport, ProjectAnalysis, ValidatedStagedPackage, analyze_project,
-    decode_paint_annotation, encode_paint_annotation, relationships_xml,
+    OpcWriteReport, ProcessInformation, ProjectAnalysis, SupportInformation,
+    ValidatedStagedPackage, analyze_project, decode_paint_annotation, encode_paint_annotation,
+    relationships_xml,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
@@ -72,7 +74,8 @@ const PRIME_TOWER_EXTRA_RIB_LENGTH_MM: f64 = 8.0;
 const PRIME_TOWER_EXTRA_SPACING_PERCENT: f64 = 120.0;
 const PRIME_TOWER_CONE_ANGLE_DEGREES: f64 = 15.0;
 const FULL_SPECTRUM_PRIME_TOWER_MAX_HALF_EXTENT_MM: f64 = 49.6;
-const TARGET_LAYER_HEIGHT_MM: f64 = 0.2;
+const MIN_QUALIFIED_LAYER_HEIGHT_MM: f64 = 0.08;
+const MAX_QUALIFIED_LAYER_HEIGHT_MM: f64 = 0.32;
 // Snapmaker Orca's inherited `auto_brim` may grow an outer brim to 18 mm.
 // Add the largest qualified object gap so the tower collision proof remains
 // valid without changing that source/target print intent.
@@ -753,7 +756,7 @@ struct ArtifactBuildPlan {
 
 #[derive(Clone, Debug)]
 struct ArtifactPlate {
-    source_plate_id: u32,
+    source_plate_ids: Vec<u32>,
     target_plate_id: u32,
     name: String,
     units: Vec<PrintableUnit>,
@@ -1394,15 +1397,19 @@ pub fn validate_u1_direct_outputs_against_plan(
                 plate
                     .units
                     .iter()
-                    .map(move |unit| U1DirectSourceTargetValidationEntry {
-                        source_unit_id: unit.source_unit_id.clone(),
-                        source_plate_id: plate.source_plate_id,
-                        output_file: plan.prepared.file_name.clone(),
-                        batch_id: plan.prepared.batch_id.clone(),
-                        target_plate_id: plate.target_plate_id,
+                    .map(move |unit| -> Result<_, U1DirectError> {
+                        Ok(U1DirectSourceTargetValidationEntry {
+                            source_unit_id: unit.source_unit_id.clone(),
+                            source_plate_id: parse_source_plate_id(
+                                unit.source_plate_id.as_deref(),
+                            )?,
+                            output_file: plan.prepared.file_name.clone(),
+                            batch_id: plan.prepared.batch_id.clone(),
+                            target_plate_id: plate.target_plate_id,
+                        })
                     })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         reports.push(U1DirectOutputValidationReport {
             adapter_capability: context.capability.clone(),
             source_to_target,
@@ -1495,9 +1502,9 @@ fn prepare_with_context_from_verified_source(
     let mut warnings = vec![
         "Output projects are unsliced. Open every file in Snapmaker Orca, verify T1–T4, then slice before printing."
             .to_owned(),
-        "Stage B preserves each complete source plate layout and only translates the plate on the target virtual grid."
+        "Stage B preserves source geometry and material identity. Validated packed plans may translate individual instances from multiple source plates into fresh target plates."
             .to_owned(),
-        "Stage B intentionally replaces source process settings with the exact U1 0.20 Standard target: Textured PEI Plate, by-layer sequencing, non-spiral mode, and traditional timelapse."
+        "Stage B keeps target-owned U1 safety settings while preserving qualified source quality intent: finer layer height, wall generator, wall-speed ceilings, shell minimums, and support gaps."
             .to_owned(),
     ];
     if normalized_plate_override_count > 0 {
@@ -1953,6 +1960,7 @@ fn build_artifact_plans(
         };
         let mut artifact_plates = Vec::with_capacity(target_plate_count);
         let mut selected_instances = BTreeMap::new();
+        let mut used_source_identify_ids = BTreeSet::new();
         let mut object_slot_maps = BTreeMap::new();
         let mut resource_slot_maps = BTreeMap::new();
         let mut selected_root_resource_ids = BTreeSet::new();
@@ -2034,8 +2042,15 @@ fn build_artifact_plans(
                         "source plate {source_plate_id} contains duplicate object/instance identities"
                     )));
                 }
+                for identify_id in source_identify_ids.values().copied() {
+                    if identify_id == 0 || !used_source_identify_ids.insert(identify_id) {
+                        return Err(U1DirectError::Plan(format!(
+                            "source identify_id {identify_id} is missing or duplicated across the target artifact"
+                        )));
+                    }
+                }
                 artifact_plates.push(ArtifactPlate {
-                    source_plate_id,
+                    source_plate_ids: vec![source_plate_id],
                     target_plate_id: (target_index + 1) as u32,
                     name: source_plate
                         .name
@@ -2212,14 +2227,13 @@ fn build_artifact_plans(
                     target_object_bounds.push(local_bounds);
                     units.push(unit.clone());
                 }
-                if source_plate_ids.len() != 1 {
-                    return Err(U1DirectError::Plan(format!(
-                        "packed U1 target plate {} crosses source-plate boundaries",
-                        planned_plate.id
-                    )));
+                for identify_id in source_identify_ids.values().copied() {
+                    if identify_id == 0 || !used_source_identify_ids.insert(identify_id) {
+                        return Err(U1DirectError::Plan(format!(
+                            "source identify_id {identify_id} is missing or duplicated across the target artifact"
+                        )));
+                    }
                 }
-                let source_plate_id = *source_plate_ids.first().expect("one source plate");
-                let (_, source_plate) = analysis_plates[&source_plate_id];
                 let tower_required = used_target_slots.len() > 1;
                 if tower_required != planned_plate.prime_tower.is_some() {
                     return Err(U1DirectError::Plan(format!(
@@ -2258,15 +2272,27 @@ fn build_artifact_plans(
                 } else {
                     (40.0, 200.0)
                 };
+                let canonical_source_plate_ids = canonical_source_plate_ids(&units)?;
+                if canonical_source_plate_ids
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    != source_plate_ids
+                {
+                    return Err(U1DirectError::Plan(format!(
+                        "target plate {} has inconsistent source provenance",
+                        planned_plate.id
+                    )));
+                }
                 artifact_plates.push(ArtifactPlate {
-                    source_plate_id,
+                    source_plate_ids: canonical_source_plate_ids,
                     target_plate_id: (target_index + 1) as u32,
+                    // Packed plates are freshly authored target metadata. A
+                    // source-derived name would be ambiguous once one target
+                    // contains units from more than one immutable source plate.
                     name: format!(
-                        "{} — {}",
-                        source_plate
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("Plate {source_plate_id:02}")),
+                        "Packed U1 plate {:02} — {}",
+                        target_index + 1,
                         planned_plate.id
                     ),
                     units,
@@ -2278,12 +2304,18 @@ fn build_artifact_plans(
         }
 
         let physical_slots = resolve_physical_slots_verified(verified_profiles, input, loadout)?;
-        let project_settings =
-            build_project_settings_verified(verified_profiles, &physical_slots, &artifact_plates)?;
+        let project_settings = build_project_settings_verified(
+            verified_profiles,
+            &physical_slots,
+            &artifact_plates,
+            &analysis.process,
+        )?;
         let prepared_slots = prepared_physical_slots(input, loadout, &physical_slots)?;
         let source_plate_ids = artifact_plates
             .iter()
-            .map(|plate| plate.source_plate_id)
+            .flat_map(|plate| plate.source_plate_ids.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         let source_unit_ids = artifact_plates
             .iter()
@@ -2400,6 +2432,19 @@ fn parse_source_plate_id(value: Option<&str>) -> Result<u32, U1DirectError> {
         .and_then(|value| value.strip_prefix("plate-"))
         .and_then(|value| value.parse::<u32>().ok())
         .ok_or_else(|| U1DirectError::Plan("a printable unit has no stable source plate ID".into()))
+}
+
+fn canonical_source_plate_ids(units: &[PrintableUnit]) -> Result<Vec<u32>, U1DirectError> {
+    if units.is_empty() {
+        return Err(U1DirectError::Plan(
+            "a target plate contains no printable units".into(),
+        ));
+    }
+    units
+        .iter()
+        .map(|unit| parse_source_plate_id(unit.source_plate_id.as_deref()))
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map(|ids| ids.into_iter().collect())
 }
 
 fn find_job_for_unit<'a>(
@@ -2668,7 +2713,8 @@ fn build_full_spectrum_substrate_plan(
     let mut external_paths = BTreeSet::new();
     let mut artifact_plates = Vec::with_capacity(artifact.plates.len());
     let mut all_source_unit_ids = BTreeSet::new();
-    let mut all_source_plate_ids = Vec::new();
+    let mut all_source_plate_ids = BTreeSet::new();
+    let mut used_source_identify_ids = BTreeSet::new();
 
     for (plate_index, prepared_plate) in artifact.plates.iter().enumerate() {
         let expected_target_id = u32::try_from(plate_index + 1)
@@ -2845,12 +2891,23 @@ fn build_full_spectrum_substrate_plan(
                     prepared_plate.plan_plate_id
                 )));
             }
+            if identify_id == 0 || !used_source_identify_ids.insert(identify_id) {
+                return Err(U1DirectError::Plan(format!(
+                    "source identify_id {identify_id} is missing or duplicated across the Full Spectrum target artifact"
+                )));
+            }
             cleared_footprints.push((unit.source_unit_id.clone(), cleared));
             plate_units.push(unit.clone());
         }
-        if source_plate_ids.len() != 1 {
+        let canonical_source_plate_ids = canonical_source_plate_ids(&plate_units)?;
+        if canonical_source_plate_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != source_plate_ids
+        {
             return Err(U1DirectError::Plan(format!(
-                "Full Spectrum target plate {} crosses source-plate boundaries",
+                "Full Spectrum target plate {} has inconsistent source provenance",
                 prepared_plate.plan_plate_id
             )));
         }
@@ -2861,23 +2918,17 @@ fn build_full_spectrum_substrate_plan(
                 .prime_tower
                 .map(|tower| (tower.x_mm, tower.y_mm)),
         )?;
-        let source_plate_id = *source_plate_ids.first().expect("one source plate");
-        all_source_plate_ids.push(source_plate_id);
-        let source_plate = analysis_plates[&source_plate_id];
+        all_source_plate_ids.extend(canonical_source_plate_ids.iter().copied());
         let (wipe_tower_x, wipe_tower_y) = prepared_plate
             .prime_tower
             .map(|tower| (tower.x_mm, tower.y_mm))
             .unwrap_or((0.0, 0.0));
         artifact_plates.push(ArtifactPlate {
-            source_plate_id,
+            source_plate_ids: canonical_source_plate_ids,
             target_plate_id: prepared_plate.target_plate_id,
             name: format!(
-                "{} — {}",
-                source_plate
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("Plate {source_plate_id:02}")),
-                prepared_plate.plan_plate_id
+                "Packed Full Spectrum plate {:02} — {}",
+                prepared_plate.target_plate_id, prepared_plate.plan_plate_id
             ),
             units: plate_units,
             source_identify_ids,
@@ -2917,7 +2968,7 @@ fn build_full_spectrum_substrate_plan(
                 .iter()
                 .map(|plate| plate.plan_plate_id.clone())
                 .collect(),
-            source_plate_ids: all_source_plate_ids,
+            source_plate_ids: all_source_plate_ids.into_iter().collect(),
             source_unit_ids: all_source_unit_ids.into_iter().collect(),
             loadout: prepared_loadout,
             setup_actions: Vec::new(),
@@ -3756,20 +3807,22 @@ fn build_project_settings(
     context: &AdapterContext,
     slots: &[PhysicalProfile; 4],
     plates: &[ArtifactPlate],
+    source_process: &ProcessInformation,
 ) -> Result<Vec<u8>, U1DirectError> {
     let machine = resolve_profile_chain(&context.profiles_root, MACHINE_PATH)?;
     let process = resolve_profile_chain(&context.profiles_root, DIRECT_PROCESS_PATH)?;
-    build_project_settings_from_profiles(machine, process, slots, plates)
+    build_project_settings_from_profiles(machine, process, slots, plates, source_process)
 }
 
 fn build_project_settings_verified(
     profiles: &VerifiedProfileStore,
     slots: &[PhysicalProfile; 4],
     plates: &[ArtifactPlate],
+    source_process: &ProcessInformation,
 ) -> Result<Vec<u8>, U1DirectError> {
     let machine = resolve_verified_profile_chain(profiles, MACHINE_PATH)?;
     let process = resolve_verified_profile_chain(profiles, DIRECT_PROCESS_PATH)?;
-    build_project_settings_from_profiles(machine, process, slots, plates)
+    build_project_settings_from_profiles(machine, process, slots, plates, source_process)
 }
 
 fn build_project_settings_from_profiles(
@@ -3777,9 +3830,17 @@ fn build_project_settings_from_profiles(
     process: BTreeMap<String, Value>,
     slots: &[PhysicalProfile; 4],
     plates: &[ArtifactPlate],
+    source_process: &ProcessInformation,
 ) -> Result<Vec<u8>, U1DirectError> {
     settings.extend(process);
     apply_target_project_defaults(&mut settings);
+    let mut override_keys = BTreeSet::new();
+    apply_source_quality_intent(&mut settings, source_process, &mut override_keys)?;
+    apply_source_support_intent(&mut settings, &source_process.support, &mut override_keys);
+    declare_process_overrides(&mut settings, &override_keys, slots.len());
+    validate_source_quality_intent(&settings, source_process)?;
+    validate_source_support_intent(&settings, &source_process.support)?;
+    validate_process_override_groups(&settings, &override_keys, slots.len() + 2)?;
     validate_prime_tower_profile_contract(&settings)?;
     validate_target_project_contract(&settings)?;
     let identity_keys = [
@@ -3959,6 +4020,278 @@ fn apply_target_project_defaults(settings: &mut BTreeMap<String, Value>) {
     );
 }
 
+fn apply_source_support_intent(
+    settings: &mut BTreeMap<String, Value>,
+    support: &SupportInformation,
+    override_keys: &mut BTreeSet<&'static str>,
+) {
+    if let Some(enabled) = support.enabled {
+        override_keys.insert("enable_support");
+        settings.insert(
+            "enable_support".into(),
+            Value::String(if enabled { "1" } else { "0" }.into()),
+        );
+    }
+    if let Some(support_type) = support.support_type {
+        override_keys.insert("support_type");
+        settings.insert(
+            "support_type".into(),
+            Value::String(support_type.slicer_value().into()),
+        );
+    }
+    if let Some(angle) = support.threshold_angle_degrees {
+        override_keys.insert("support_threshold_angle");
+        settings.insert(
+            "support_threshold_angle".into(),
+            Value::String(angle.to_string()),
+        );
+    }
+    if let Some(on_build_plate_only) = support.on_build_plate_only {
+        override_keys.insert("support_on_build_plate_only");
+        settings.insert(
+            "support_on_build_plate_only".into(),
+            Value::String(if on_build_plate_only { "1" } else { "0" }.into()),
+        );
+    }
+    if support.enabled == Some(true)
+        && let Some(layer_height) = config_scalar_f64(settings, "layer_height")
+    {
+        let distance = format_config_number(layer_height);
+        for key in ["support_top_z_distance", "support_bottom_z_distance"] {
+            settings.insert(key.into(), Value::String(distance.clone()));
+            override_keys.insert(key);
+        }
+    }
+}
+
+fn apply_source_quality_intent(
+    settings: &mut BTreeMap<String, Value>,
+    process: &ProcessInformation,
+    override_keys: &mut BTreeSet<&'static str>,
+) -> Result<(), U1DirectError> {
+    if let Some(source_layer_height) = process.layer_height_mm {
+        if source_layer_height < MIN_QUALIFIED_LAYER_HEIGHT_MM {
+            return Err(U1DirectError::Capability(format!(
+                "source layer height {source_layer_height:.3} mm is finer than the qualified U1 minimum {MIN_QUALIFIED_LAYER_HEIGHT_MM:.2} mm"
+            )));
+        }
+        let target_layer_height = config_scalar_f64(settings, "layer_height").ok_or_else(|| {
+            U1DirectError::Capability("qualified U1 process has no layer_height".into())
+        })?;
+        let selected = source_layer_height
+            .min(target_layer_height)
+            .min(MAX_QUALIFIED_LAYER_HEIGHT_MM);
+        settings.insert(
+            "layer_height".into(),
+            Value::String(format_config_number(selected)),
+        );
+        override_keys.insert("layer_height");
+    }
+    if let Some(wall_generator) = process.quality.wall_generator {
+        settings.insert(
+            "wall_generator".into(),
+            Value::String(wall_generator.slicer_value().into()),
+        );
+        override_keys.insert("wall_generator");
+    }
+    for (key, source_limit) in [
+        ("outer_wall_speed", process.quality.outer_wall_speed_mm_s),
+        ("inner_wall_speed", process.quality.inner_wall_speed_mm_s),
+        ("top_surface_speed", process.quality.top_surface_speed_mm_s),
+        (
+            "outer_wall_acceleration",
+            process.quality.outer_wall_acceleration_mm_s2,
+        ),
+    ] {
+        let Some(source_limit) = source_limit else {
+            continue;
+        };
+        let target_limit = config_scalar_f64(settings, key).ok_or_else(|| {
+            U1DirectError::Capability(format!("qualified U1 process has no numeric {key}"))
+        })?;
+        settings.insert(
+            key.into(),
+            Value::String(format_config_number(source_limit.min(target_limit))),
+        );
+        override_keys.insert(key);
+    }
+    for (key, source_minimum) in [
+        ("wall_loops", process.quality.wall_loops),
+        ("top_shell_layers", process.quality.top_shell_layers),
+        ("bottom_shell_layers", process.quality.bottom_shell_layers),
+    ] {
+        let Some(source_minimum) = source_minimum else {
+            continue;
+        };
+        let target = config_scalar_f64(settings, key).ok_or_else(|| {
+            U1DirectError::Capability(format!("qualified U1 process has no numeric {key}"))
+        })?;
+        let selected = u16::try_from(target.round() as i64)
+            .unwrap_or(source_minimum)
+            .max(source_minimum);
+        settings.insert(key.into(), Value::String(selected.to_string()));
+        override_keys.insert(key);
+    }
+    Ok(())
+}
+
+fn declare_process_overrides(
+    settings: &mut BTreeMap<String, Value>,
+    override_keys: &BTreeSet<&'static str>,
+    physical_filament_count: usize,
+) {
+    if override_keys.is_empty() {
+        return;
+    }
+    let mut groups = vec![Value::String(String::new()); physical_filament_count + 2];
+    groups[0] = Value::String(override_keys.iter().copied().collect::<Vec<_>>().join(";"));
+    settings.insert("different_settings_to_system".into(), Value::Array(groups));
+}
+
+fn validate_source_support_intent(
+    settings: &BTreeMap<String, Value>,
+    support: &SupportInformation,
+) -> Result<(), U1DirectError> {
+    let require = |key: &'static str, expected: String| {
+        if settings.get(key).and_then(Value::as_str) == Some(expected.as_str()) {
+            Ok(())
+        } else {
+            Err(U1DirectError::Capability(format!(
+                "generated U1 setting {key} does not preserve source support intent"
+            )))
+        }
+    };
+    if let Some(enabled) = support.enabled {
+        require("enable_support", if enabled { "1" } else { "0" }.into())?;
+    }
+    if let Some(support_type) = support.support_type {
+        require("support_type", support_type.slicer_value().into())?;
+    }
+    if let Some(angle) = support.threshold_angle_degrees {
+        require("support_threshold_angle", angle.to_string())?;
+    }
+    if let Some(on_build_plate_only) = support.on_build_plate_only {
+        require(
+            "support_on_build_plate_only",
+            if on_build_plate_only { "1" } else { "0" }.into(),
+        )?;
+    }
+    if support.enabled == Some(true) {
+        let layer_height = config_scalar_f64(settings, "layer_height");
+        if config_scalar_f64(settings, "support_top_z_distance") != layer_height
+            || config_scalar_f64(settings, "support_bottom_z_distance") != layer_height
+        {
+            return Err(U1DirectError::Capability(
+                "generated U1 support gaps do not track the selected layer height".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_quality_intent(
+    settings: &BTreeMap<String, Value>,
+    process: &ProcessInformation,
+) -> Result<(), U1DirectError> {
+    if let Some(source_layer_height) = process.layer_height_mm {
+        let selected = config_scalar_f64(settings, "layer_height").ok_or_else(|| {
+            U1DirectError::Capability("generated U1 process has no layer_height".into())
+        })?;
+        if selected > source_layer_height
+            || !(MIN_QUALIFIED_LAYER_HEIGHT_MM..=MAX_QUALIFIED_LAYER_HEIGHT_MM).contains(&selected)
+        {
+            return Err(U1DirectError::Capability(
+                "generated U1 layer height weakens source quality intent".into(),
+            ));
+        }
+    }
+    if let Some(wall_generator) = process.quality.wall_generator
+        && config_scalar_string(settings, "wall_generator") != Some(wall_generator.slicer_value())
+    {
+        return Err(U1DirectError::Capability(
+            "generated U1 wall generator does not preserve source quality intent".into(),
+        ));
+    }
+    for (key, source_limit) in [
+        ("outer_wall_speed", process.quality.outer_wall_speed_mm_s),
+        ("inner_wall_speed", process.quality.inner_wall_speed_mm_s),
+        ("top_surface_speed", process.quality.top_surface_speed_mm_s),
+        (
+            "outer_wall_acceleration",
+            process.quality.outer_wall_acceleration_mm_s2,
+        ),
+    ] {
+        if let Some(source_limit) = source_limit
+            && config_scalar_f64(settings, key).is_none_or(|value| value > source_limit)
+        {
+            return Err(U1DirectError::Capability(format!(
+                "generated U1 {key} exceeds the source quality ceiling"
+            )));
+        }
+    }
+    for (key, source_minimum) in [
+        ("wall_loops", process.quality.wall_loops),
+        ("top_shell_layers", process.quality.top_shell_layers),
+        ("bottom_shell_layers", process.quality.bottom_shell_layers),
+    ] {
+        if let Some(source_minimum) = source_minimum
+            && config_scalar_f64(settings, key)
+                .is_none_or(|value| value + f64::EPSILON < f64::from(source_minimum))
+        {
+            return Err(U1DirectError::Capability(format!(
+                "generated U1 {key} weakens the source shell intent"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_process_override_groups(
+    settings: &BTreeMap<String, Value>,
+    expected_keys: &BTreeSet<&'static str>,
+    expected_group_count: usize,
+) -> Result<(), U1DirectError> {
+    if expected_keys.is_empty() {
+        return Ok(());
+    }
+    let groups = settings
+        .get("different_settings_to_system")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            U1DirectError::Capability(
+                "generated U1 project does not declare its process overrides".into(),
+            )
+        })?;
+    if groups.len() != expected_group_count
+        || groups.first().and_then(Value::as_str)
+            != Some(
+                expected_keys
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(";")
+                    .as_str(),
+            )
+        || groups
+            .iter()
+            .skip(1)
+            .any(|value| value.as_str() != Some(""))
+    {
+        return Err(U1DirectError::Capability(
+            "generated U1 process override declaration is not canonical".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn format_config_number(value: f64) -> String {
+    let formatted = format!("{value:.6}");
+    formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
+}
+
 fn validate_prime_tower_profile_contract(
     settings: &BTreeMap<String, Value>,
 ) -> Result<(), U1DirectError> {
@@ -3996,7 +4329,9 @@ fn validate_prime_tower_profile_contract(
             .is_none_or(|value| (value - PRIME_TOWER_EXTRA_RIB_LENGTH_MM).abs() > f64::EPSILON)
         || extra_spacing
             .is_none_or(|value| (value - PRIME_TOWER_EXTRA_SPACING_PERCENT).abs() > f64::EPSILON)
-        || layer_height.is_none_or(|value| (value - TARGET_LAYER_HEIGHT_MM).abs() > f64::EPSILON)
+        || layer_height.is_none_or(|value| {
+            !(MIN_QUALIFIED_LAYER_HEIGHT_MM..=MAX_QUALIFIED_LAYER_HEIGHT_MM).contains(&value)
+        })
         || config_scalar_string(settings, "wipe_tower_wall_type") != Some("rib")
         || config_scalar_f64(settings, "wipe_tower_rotation_angle") != Some(0.0)
         || config_scalar_f64(settings, "timelapse_type") != Some(0.0)
@@ -4007,7 +4342,7 @@ fn validate_prime_tower_profile_contract(
         || object_brim_gap.is_none_or(|value| !(0.0..=MAX_OBJECT_BRIM_GAP_MM).contains(&value))
     {
         return Err(U1DirectError::Capability(format!(
-            "qualified U1 process must match the exact 0.20 Standard ribbed prime-tower contract ({PRIME_TOWER_WIDTH_MM:.0} mm width, {PRIME_TOWER_VOLUME_MM3:.0} mm³ prime volume, {PRIME_TOWER_BRIM_MM:.0} mm brim, {PRIME_TOWER_CONE_ANGLE_DEGREES:.0}° cone) and the {OBJECT_FOOTPRINT_CLEARANCE_MM:.0} mm object-clearance contract"
+            "qualified U1 process must match the ribbed prime-tower contract ({PRIME_TOWER_WIDTH_MM:.0} mm width, {PRIME_TOWER_VOLUME_MM3:.0} mm³ prime volume, {PRIME_TOWER_BRIM_MM:.0} mm brim, {PRIME_TOWER_CONE_ANGLE_DEGREES:.0}° cone), the {MIN_QUALIFIED_LAYER_HEIGHT_MM:.2}–{MAX_QUALIFIED_LAYER_HEIGHT_MM:.2} mm layer range, and the {OBJECT_FOOTPRINT_CLEARANCE_MM:.0} mm object-clearance contract"
         )));
     }
     Ok(())
@@ -5224,16 +5559,20 @@ fn convert_with_context(
                 plate
                     .units
                     .iter()
-                    .map(move |unit| SourceTargetManifestEntry {
-                        source_unit_id: unit.source_unit_id.as_str(),
-                        source_plate_id: plate.source_plate_id,
-                        output_file: artifact.file_name.as_str(),
-                        batch_id: artifact.batch_id.as_str(),
-                        target_plate_id: plate.target_plate_id,
+                    .map(move |unit| -> Result<_, U1DirectError> {
+                        Ok(SourceTargetManifestEntry {
+                            source_unit_id: unit.source_unit_id.as_str(),
+                            source_plate_id: parse_source_plate_id(
+                                unit.source_plate_id.as_deref(),
+                            )?,
+                            output_file: artifact.file_name.as_str(),
+                            batch_id: artifact.batch_id.as_str(),
+                            target_plate_id: plate.target_plate_id,
+                        })
                     })
             })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let manifest_artifacts = published
         .iter()
         .zip(build_plans.iter())
@@ -7452,16 +7791,22 @@ fn validate_exact_plate_membership_and_transforms(
     }
 
     for planned_plate in &plan.plates {
-        let source_plate = source
-            .plates
+        let declared_source_plate_ids = planned_plate
+            .source_plate_ids
             .iter()
-            .find(|plate| plate.id == planned_plate.source_plate_id)
-            .ok_or_else(|| {
-                U1DirectError::SemanticValidation(format!(
-                    "source plate {} is unavailable during exact membership validation",
-                    planned_plate.source_plate_id
-                ))
-            })?;
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let unit_source_plate_ids = canonical_source_plate_ids(&planned_plate.units)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if declared_source_plate_ids.len() != planned_plate.source_plate_ids.len()
+            || declared_source_plate_ids != unit_source_plate_ids
+        {
+            return Err(U1DirectError::SemanticValidation(format!(
+                "target plate {} source provenance does not exactly match its units",
+                planned_plate.target_plate_id
+            )));
+        }
         let output_plate = output
             .plates
             .iter()
@@ -7487,6 +7832,16 @@ fn validate_exact_plate_membership_and_transforms(
 
         let mut matched = vec![false; output_plate.instances.len()];
         for unit in &planned_plate.units {
+            let source_plate_id = parse_source_plate_id(unit.source_plate_id.as_deref())?;
+            let source_plate = source
+                .plates
+                .iter()
+                .find(|plate| plate.id == source_plate_id)
+                .ok_or_else(|| {
+                    U1DirectError::SemanticValidation(format!(
+                        "source plate {source_plate_id} is unavailable during exact membership validation"
+                    ))
+                })?;
             let source_instance = source_plate
                 .instances
                 .iter()

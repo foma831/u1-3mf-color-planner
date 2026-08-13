@@ -1,4 +1,5 @@
 {
+  "allow_u1_cross_source_repacking": false,
   "confirmed_spools": [
     {
       "id": "user-orange-pla",

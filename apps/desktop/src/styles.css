@@ -847,8 +847,11 @@ svg {
 
 .conversion-button-copy,
 .validation-button-copy {
+  min-inline-size: 0;
   display: grid;
   gap: 0.2rem;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
   text-align: start;
 }
 
@@ -1292,6 +1295,16 @@ svg {
   font-size: 0.75rem;
 }
 
+.project-setup__group--plate-layout {
+  grid-column: 1 / -1;
+}
+
+.project-setup__layout-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
 .project-setup__choice {
   min-height: 4rem;
   display: grid;
@@ -1541,6 +1554,10 @@ svg {
 
   .project-setup__group > p {
     min-height: 0;
+  }
+
+  .project-setup__layout-choices {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -5010,6 +5027,8 @@ tbody tr.is-selected > * {
 .bottom-action-rail {
   position: relative;
   z-index: 5;
+  min-inline-size: 0;
+  max-inline-size: 100%;
   min-height: 4.5rem;
   display: flex;
   justify-content: flex-end;
@@ -5190,9 +5209,19 @@ tbody tr.is-selected > * {
 }
 
 .bottom-actions {
+  min-inline-size: 0;
+  max-inline-size: 100%;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   justify-content: flex-end;
+  align-items: stretch;
+}
+
+.bottom-actions > .button,
+.more-actions,
+.more-actions > summary {
+  max-inline-size: 100%;
 }
 
 .more-actions__panel .adapter-capabilities {
@@ -5869,6 +5898,10 @@ tbody tr.is-selected > * {
 }
 
 .calibration-project-form > .calibration-form-actions {
+  grid-column: 1 / -1;
+}
+
+.calibration-chart-mode {
   grid-column: 1 / -1;
 }
 
@@ -7329,6 +7362,10 @@ tbody tr.is-selected > * {
 
   .more-actions > summary,
   .bottom-actions > .button {
+    width: 100%;
+  }
+
+  .more-actions {
     width: 100%;
   }
 

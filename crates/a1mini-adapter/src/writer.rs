@@ -814,7 +814,8 @@ fn build_artifact_plans(
             color: spool.actual_color(),
             material_substitution_approval_id: None,
         };
-        let project_settings = build_project_settings(resolved.clone(), &spool_spec)?;
+        let project_settings =
+            build_project_settings(resolved.clone(), &spool_spec, &analysis.process.support)?;
         let prepared_spool = A1MiniPreparedSpool {
             spool_id: spool.id.clone(),
             spool_name: spool.display_name.clone(),

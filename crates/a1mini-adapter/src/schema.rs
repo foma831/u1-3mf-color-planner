@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 use u1_planner::{Material, RgbColor};
+use u1_three_mf::SupportInformation;
 
 use crate::profiles::ResolvedTargetProfiles;
 use crate::{
@@ -99,6 +100,7 @@ impl Default for A1MiniTargetSchema {
 pub(crate) fn build_project_settings(
     profiles: ResolvedTargetProfiles,
     spool: &A1MiniSpoolSpec,
+    support: &SupportInformation,
 ) -> Result<Vec<u8>, A1MiniError> {
     if profiles.filament.name != spool.material.profile_name() {
         return Err(A1MiniError::Capability(format!(
@@ -245,6 +247,7 @@ pub(crate) fn build_project_settings(
         "different_settings_to_system".into(),
         Value::Array((0..3).map(|_| Value::String(String::new())).collect()),
     );
+    apply_source_support_intent(&mut settings, support);
     settings.insert(
         "curr_bed_type".into(),
         Value::String("Textured PEI Plate".into()),
@@ -286,6 +289,52 @@ pub(crate) fn build_project_settings(
     })?;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+fn apply_source_support_intent(
+    settings: &mut BTreeMap<String, Value>,
+    support: &SupportInformation,
+) {
+    let mut override_keys = Vec::new();
+    if let Some(enabled) = support.enabled {
+        override_keys.push("enable_support");
+        settings.insert(
+            "enable_support".into(),
+            Value::String(if enabled { "1" } else { "0" }.into()),
+        );
+    }
+    if let Some(support_type) = support.support_type {
+        override_keys.push("support_type");
+        settings.insert(
+            "support_type".into(),
+            Value::String(support_type.slicer_value().into()),
+        );
+    }
+    if let Some(angle) = support.threshold_angle_degrees {
+        override_keys.push("support_threshold_angle");
+        settings.insert(
+            "support_threshold_angle".into(),
+            Value::String(angle.to_string()),
+        );
+    }
+    if let Some(on_build_plate_only) = support.on_build_plate_only {
+        override_keys.push("support_on_build_plate_only");
+        settings.insert(
+            "support_on_build_plate_only".into(),
+            Value::String(if on_build_plate_only { "1" } else { "0" }.into()),
+        );
+    }
+    if !override_keys.is_empty() {
+        override_keys.sort_unstable();
+        settings.insert(
+            "different_settings_to_system".into(),
+            Value::Array(vec![
+                Value::String(override_keys.join(";")),
+                Value::String(String::new()),
+                Value::String(String::new()),
+            ]),
+        );
+    }
 }
 
 pub fn validate_a1mini_project_settings(
@@ -383,6 +432,29 @@ fn validate_project_settings_map(
             "generated project does not use the qualified 180 x 180 mm bed polygon".into(),
         ));
     }
+    let override_groups = array("different_settings_to_system");
+    if let Some(override_groups) = override_groups
+        && (override_groups.len() != 3
+            || override_groups
+                .iter()
+                .skip(1)
+                .any(|value| value.as_str() != Some("")))
+    {
+        return Err(A1MiniError::Capability(
+            "generated A1 mini system-override declaration is not canonical".into(),
+        ));
+    }
+    let support_enabled = scalar("enable_support") == Some("1");
+    let support_is_declared = override_groups
+        .and_then(|groups| groups.first())
+        .and_then(Value::as_str)
+        .is_some_and(|keys| keys.split(';').any(|key| key == "enable_support"));
+    if support_enabled && !support_is_declared {
+        return Err(A1MiniError::Capability(
+            "generated A1 mini project enables supports without declaring the process override"
+                .into(),
+        ));
+    }
     Ok(())
 }
 
@@ -415,5 +487,38 @@ mod tests {
         assert!(schema.single_plate_only);
         assert_eq!(schema.bed_width_mm, 180.0);
         assert_eq!(schema.nozzle_diameter_mm, 0.4);
+    }
+
+    #[test]
+    fn support_intent_is_declared_as_a_process_override() {
+        let support = SupportInformation {
+            enabled: Some(true),
+            support_type: Some(u1_three_mf::SupportType::TreeAuto),
+            threshold_angle_degrees: Some(20),
+            on_build_plate_only: Some(true),
+        };
+        let mut settings = BTreeMap::from([(
+            "different_settings_to_system".into(),
+            Value::Array(vec![Value::String(String::new()); 3]),
+        )]);
+        apply_source_support_intent(&mut settings, &support);
+        assert_eq!(settings["enable_support"], Value::String("1".into()));
+        assert_eq!(settings["support_type"], Value::String("tree(auto)".into()));
+        assert_eq!(
+            settings["support_threshold_angle"],
+            Value::String("20".into())
+        );
+        assert_eq!(
+            settings["support_on_build_plate_only"],
+            Value::String("1".into())
+        );
+        assert_eq!(
+            settings["different_settings_to_system"],
+            serde_json::json!([
+                "enable_support;support_on_build_plate_only;support_threshold_angle;support_type",
+                "",
+                ""
+            ])
+        );
     }
 }
