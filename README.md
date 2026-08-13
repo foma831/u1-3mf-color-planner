@@ -65,6 +65,22 @@ The repository currently provides:
     no-clobber atomic publication, and a relocatable checksummed mixed bundle;
 23. exact-partition validation that rejects an omitted or doubly-routed batch,
     job, plate, or source unit before any writer runs.
+24. an experimental bounded mesh-orientation optimizer that penalizes isolated
+    support contacts, writes a no-clobber oriented source copy, and includes a
+    reproducible comparison gate against Snapmaker Orca's native auto-orient.
+
+The orientation experiment is available from the CLI:
+
+```sh
+u1-converter optimize-orientation model.3mf --object-id 122
+u1-converter apply-optimized-orientation model.3mf oriented.3mf --object-id 122
+scripts/benchmark-orientation.sh Sample/Withered_Foxy.3mf 122
+```
+
+The apply command never overwrites its destination. It rewrites only the
+selected primary build-item transform, re-analyzes the staged and published
+copy, and leaves the source hash unchanged. The result must still be reviewed
+and repacked before production conversion.
 
 Both analysis and pre-publication validation cap ZIP expansion, XML depth, and
 the size of a single XML lexical token. Package manifests can only be built from

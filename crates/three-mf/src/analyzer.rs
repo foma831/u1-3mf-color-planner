@@ -4,9 +4,9 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
+use quick_xml::{Reader, Writer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -14,6 +14,7 @@ use zip::ZipArchive;
 use zip::result::ZipError;
 
 use crate::bounded_xml::XmlTokenLimitedReader;
+use crate::opc_writer::{ExpectedSourceIdentity, OpcPackageWriter, OpcWriteError};
 use crate::paint::{PaintCodecError, used_paint_states};
 use crate::stale_artifact_policy::{StaleArtifactKind, stale_artifact_kind};
 use crate::types::*;
@@ -97,6 +98,16 @@ pub enum AnalysisError {
     },
     #[error("invalid project structure: {0}")]
     InvalidStructure(String),
+}
+
+#[derive(Debug, Error)]
+pub enum OrientationWriteError {
+    #[error(transparent)]
+    Analysis(#[from] AnalysisError),
+    #[error(transparent)]
+    Package(#[from] OpcWriteError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Clone, Debug)]
@@ -3598,6 +3609,961 @@ fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
+#[derive(Clone, Copy, Debug)]
+struct OrientationTriangle {
+    points: [[f64; 3]; 3],
+    weight: f64,
+    part_index: usize,
+}
+
+#[derive(Default)]
+struct SelectedRawMesh {
+    vertices: Vec<[f64; 3]>,
+    triangles: Vec<[u32; 3]>,
+    triangle_count: u64,
+}
+
+/// Evaluate printable orientations for one immutable source instance.
+///
+/// The archive is first analyzed through the normal bounded pipeline. The
+/// exact same bytes are then snapshotted again and identity-checked before
+/// only the explicitly referenced model resources are streamed. No archive
+/// entry is extracted to disk.
+pub fn optimize_object_orientation(
+    path: impl AsRef<Path>,
+    object_id: u32,
+    instance_id: u32,
+    options: OrientationOptimizationOptions,
+) -> Result<OrientationOptimizationReport, AnalysisError> {
+    validate_orientation_options(&options)?;
+    let path = path.as_ref();
+    let analysis = analyze_project_with_limits(path, AnalysisLimits::default())?;
+    let snapshotted = snapshot_input(path, MAX_SOURCE_ARCHIVE_BYTES)?;
+    if snapshotted.identity != analysis.input {
+        return Err(AnalysisError::SourceChangedDuringAnalysis(path.to_owned()));
+    }
+    let archive_bytes = snapshotted.identity.byte_size;
+    let snapshot = snapshotted
+        .snapshot
+        .try_clone()
+        .map_err(AnalysisError::Io)?;
+    let archive = ZipArchive::new(snapshot).map_err(AnalysisError::Zip)?;
+    let mut package = ValidatedPackage::new(archive, archive_bytes, &AnalysisLimits::default())?;
+
+    let object = analysis
+        .objects
+        .iter()
+        .find(|object| object.id == object_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation object {object_id} is not present in the analyzed project"
+            ))
+        })?;
+    let instance = analysis
+        .plates
+        .iter()
+        .flat_map(|plate| &plate.instances)
+        .find(|instance| instance.object_id == object_id && instance.instance_id == instance_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation instance {object_id}/{instance_id} is not printable in the analyzed project"
+            ))
+        })?;
+
+    let mut resources = BTreeMap::<(String, u32), Vec<Transform3mf>>::new();
+    if object.parts.is_empty() {
+        let resource_path = object
+            .source_model_path
+            .clone()
+            .unwrap_or_else(|| MAIN_MODEL_PATH.to_owned());
+        resources
+            .entry((resource_path, object.source_object_id.unwrap_or(object.id)))
+            .or_default()
+            .push(Transform3mf::IDENTITY);
+    } else {
+        for part in object.parts.iter().filter(|part| part.printable) {
+            let resource_path = part.component_path.clone().ok_or_else(|| {
+                AnalysisError::InvalidStructure(format!(
+                    "printable orientation part {} has no model resource path",
+                    part.id
+                ))
+            })?;
+            resources
+                .entry((resource_path, part.id))
+                .or_default()
+                .push(part.component_transform.unwrap_or(Transform3mf::IDENTITY));
+        }
+    }
+    if resources.is_empty() {
+        return Err(AnalysisError::InvalidStructure(format!(
+            "orientation object {object_id} has no printable mesh resources"
+        )));
+    }
+
+    let mut instance_linear = instance.transform.unwrap_or(Transform3mf::IDENTITY);
+    instance_linear.values[9..12].fill(0.0);
+    let mut triangles = Vec::new();
+    let mut orientation_points = Vec::new();
+    let mut part_index = 0_usize;
+    let mut source_triangle_count = 0_u64;
+    let mut by_path = BTreeMap::<String, BTreeSet<u32>>::new();
+    for (path, resource_id) in resources.keys() {
+        by_path
+            .entry(path.clone())
+            .or_default()
+            .insert(*resource_id);
+    }
+    for (resource_path, selected_ids) in by_path {
+        let parsed =
+            parse_selected_mesh_entry(&mut package, &resource_path, &selected_ids, &options)?;
+        for resource_id in selected_ids {
+            let mesh = parsed.get(&resource_id).ok_or_else(|| {
+                AnalysisError::InvalidStructure(format!(
+                    "model resource {resource_path}#{resource_id} has no selected mesh"
+                ))
+            })?;
+            source_triangle_count = source_triangle_count.saturating_add(mesh.triangle_count);
+            let sample_weight = if mesh.triangles.is_empty() {
+                0.0
+            } else {
+                mesh.triangle_count as f64 / mesh.triangles.len() as f64
+            };
+            for component_transform in resources
+                .get(&(resource_path.clone(), resource_id))
+                .into_iter()
+                .flatten()
+            {
+                let current_part_index = part_index;
+                part_index = part_index.saturating_add(1);
+                if orientation_points.len().saturating_add(mesh.vertices.len())
+                    > options.max_total_transformed_vertices
+                {
+                    return Err(AnalysisError::InvalidStructure(format!(
+                        "orientation object {object_id} exceeds the configured {} transformed vertex limit",
+                        options.max_total_transformed_vertices
+                    )));
+                }
+                for vertex in &mesh.vertices {
+                    let object_point = component_transform.transform_point(*vertex).ok_or_else(|| {
+                        AnalysisError::InvalidStructure(format!(
+                            "component transform for {resource_path}#{resource_id} is not finite"
+                        ))
+                    })?;
+                    let current_point =
+                        instance_linear
+                            .transform_point(object_point)
+                            .ok_or_else(|| {
+                                AnalysisError::InvalidStructure(format!(
+                                    "instance transform for {object_id}/{instance_id} is not finite"
+                                ))
+                            })?;
+                    orientation_points.push(current_point);
+                }
+                for triangle in &mesh.triangles {
+                    let mut points = [[0.0; 3]; 3];
+                    for (target, vertex_index) in points.iter_mut().zip(triangle) {
+                        let vertex = mesh.vertices.get(*vertex_index as usize).ok_or_else(|| {
+                            AnalysisError::InvalidStructure(format!(
+                                "triangle in {resource_path}#{resource_id} references missing vertex {vertex_index}"
+                            ))
+                        })?;
+                        let object_point = component_transform.transform_point(*vertex).ok_or_else(|| {
+                            AnalysisError::InvalidStructure(format!(
+                                "component transform for {resource_path}#{resource_id} is not finite"
+                            ))
+                        })?;
+                        *target = instance_linear.transform_point(object_point).ok_or_else(
+                            || {
+                                AnalysisError::InvalidStructure(format!(
+                                    "instance transform for {object_id}/{instance_id} is not finite"
+                                ))
+                            },
+                        )?;
+                    }
+                    triangles.push(OrientationTriangle {
+                        points,
+                        weight: sample_weight,
+                        part_index: current_part_index,
+                    });
+                }
+            }
+        }
+    }
+    snapshotted.source_guard.ensure_unchanged()?;
+    if triangles.is_empty() {
+        return Err(AnalysisError::InvalidStructure(format!(
+            "orientation object {object_id} has no usable triangles"
+        )));
+    }
+
+    let directions = orientation_directions(&triangles, options.direction_samples);
+    let source_metrics = score_orientation(&triangles, [0.0, 0.0, 1.0], &options, true);
+    let source_center = instance
+        .printable_bounds
+        .map(|bounds| {
+            [
+                (bounds.min[0] + bounds.max[0]) * 0.5,
+                (bounds.min[1] + bounds.max[1]) * 0.5,
+            ]
+        })
+        .unwrap_or([0.0, 0.0]);
+    let source_orientation = orientation_candidate(
+        &orientation_points,
+        [0.0, 0.0, 1.0],
+        instance_linear,
+        source_center,
+        source_metrics,
+    );
+    let mut coarse: Vec<_> = directions
+        .iter()
+        .copied()
+        .map(|direction| {
+            let metrics = score_orientation(&triangles, direction, &options, false);
+            (direction, metrics.score)
+        })
+        .collect();
+    coarse.sort_by(|left, right| left.1.total_cmp(&right.1));
+    coarse.truncate(options.finalist_count.min(coarse.len()));
+    let mut finalists: Vec<_> = coarse
+        .into_iter()
+        .map(|(direction, _)| {
+            orientation_candidate(
+                &orientation_points,
+                direction,
+                instance_linear,
+                source_center,
+                score_orientation(&triangles, direction, &options, true),
+            )
+        })
+        .collect();
+    finalists.push(source_orientation.clone());
+    finalists.sort_by(|left, right| left.metrics.score.total_cmp(&right.metrics.score));
+    finalists.dedup_by(|left, right| vector_dot(left.build_up, right.build_up) > 0.999_999);
+    let recommendation = finalists
+        .first()
+        .cloned()
+        .expect("source orientation is always a finalist");
+    let alternatives = finalists
+        .iter()
+        .filter(|candidate| candidate.build_up != recommendation.build_up)
+        .take(options.alternatives)
+        .cloned()
+        .collect();
+    Ok(OrientationOptimizationReport {
+        source: analysis.input,
+        object_id,
+        instance_id,
+        object_name: object.name.clone(),
+        source_triangle_count,
+        sampled_triangle_count: triangles.len(),
+        evaluated_orientation_count: directions.len(),
+        overhang_threshold_degrees: options.overhang_threshold_degrees,
+        source_orientation,
+        recommendation,
+        alternatives,
+    })
+}
+
+/// Publish a no-clobber copy whose selected build item uses the optimizer's
+/// recommended rigid orientation. Mesh resources and all material identities
+/// are copied byte-for-byte; only the primary model build transform changes.
+pub fn write_optimized_object_orientation(
+    source_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    object_id: u32,
+    instance_id: u32,
+    options: OrientationOptimizationOptions,
+) -> Result<OrientationOptimizationReport, OrientationWriteError> {
+    let source_path = source_path.as_ref();
+    let destination = destination.as_ref();
+    let report = optimize_object_orientation(source_path, object_id, instance_id, options)?;
+    let analysis = analyze_project(source_path)?;
+    if analysis.input != report.source {
+        return Err(AnalysisError::SourceChangedDuringAnalysis(source_path.to_owned()).into());
+    }
+    let source_instance = analysis
+        .plates
+        .iter()
+        .flat_map(|plate| &plate.instances)
+        .find(|instance| instance.object_id == object_id && instance.instance_id == instance_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation instance {object_id}/{instance_id} disappeared before writing"
+            ))
+        })?;
+    let build_item_index = source_instance.source_build_item_index.ok_or_else(|| {
+        AnalysisError::InvalidStructure(format!(
+            "orientation instance {object_id}/{instance_id} has no stable source build-item index"
+        ))
+    })?;
+
+    let snapshotted = snapshot_input(source_path, MAX_SOURCE_ARCHIVE_BYTES)?;
+    if snapshotted.identity != report.source {
+        return Err(AnalysisError::SourceChangedDuringAnalysis(source_path.to_owned()).into());
+    }
+    let snapshot = snapshotted
+        .snapshot
+        .try_clone()
+        .map_err(AnalysisError::Io)?;
+    let archive = ZipArchive::new(snapshot).map_err(AnalysisError::Zip)?;
+    let mut package = ValidatedPackage::new(
+        archive,
+        snapshotted.identity.byte_size,
+        &AnalysisLimits::default(),
+    )?;
+    let main_bytes = package.read_bytes(
+        MAIN_MODEL_PATH,
+        AnalysisLimits::default().max_model_entry_uncompressed_bytes,
+    )?;
+    let rewritten_main = rewrite_build_item_transform(
+        &main_bytes,
+        build_item_index,
+        report.recommendation.target_transform,
+    )?;
+    snapshotted.source_guard.ensure_unchanged()?;
+
+    let expected =
+        ExpectedSourceIdentity::new(report.source.byte_size, report.source.sha256.clone())?;
+    let mut writer = OpcPackageWriter::new();
+    writer.verify_zip_source(source_path, expected.clone())?;
+    for entry_path in package.entries.keys() {
+        if entry_path == MAIN_MODEL_PATH {
+            writer.add_bytes(MAIN_MODEL_PATH, rewritten_main.clone())?;
+        } else if !entry_path.ends_with('/') {
+            writer.copy_zip_entry_raw(source_path, expected.clone(), entry_path)?;
+        }
+    }
+    // Arbitrary source projects may legally contain vendor previews and slice
+    // metadata that the strict generated-output gate rejects. Analyze the
+    // complete staged copy instead, verify the exact transform, then publish
+    // it atomically without overwriting an existing destination.
+    let staged = writer.stage_to(destination)?;
+    let staged_analysis = analyze_project(staged.path())?;
+    let staged_instance = staged_analysis
+        .plates
+        .iter()
+        .flat_map(|plate| &plate.instances)
+        .find(|instance| instance.object_id == object_id && instance.instance_id == instance_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "staged oriented output lost instance {object_id}/{instance_id}"
+            ))
+        })?;
+    if !staged_instance.transform.is_some_and(|transform| {
+        orientation_transforms_close(transform, report.recommendation.target_transform)
+    }) {
+        return Err(AnalysisError::InvalidStructure(
+            "staged oriented output transform does not match the approved recommendation".into(),
+        )
+        .into());
+    }
+    let destination_parent = destination.parent().ok_or_else(|| {
+        AnalysisError::InvalidStructure("orientation destination has no parent directory".into())
+    })?;
+    let mut publication = tempfile::NamedTempFile::new_in(destination_parent)?;
+    let mut staged_file = File::open(staged.path())?;
+    io::copy(&mut staged_file, publication.as_file_mut())?;
+    publication.as_file_mut().flush()?;
+    publication.as_file().sync_all()?;
+    publication
+        .persist_noclobber(destination)
+        .map_err(|error| {
+            if error.error.kind() == io::ErrorKind::AlreadyExists {
+                OpcWriteError::OutputExists(destination.to_owned())
+            } else {
+                OpcWriteError::Publish {
+                    path: destination.to_owned(),
+                    source: error.error,
+                }
+            }
+        })?;
+    let output_analysis = analyze_project(destination)?;
+    let output_instance = output_analysis
+        .plates
+        .iter()
+        .flat_map(|plate| &plate.instances)
+        .find(|instance| instance.object_id == object_id && instance.instance_id == instance_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "oriented output lost instance {object_id}/{instance_id}"
+            ))
+        })?;
+    if !output_instance.transform.is_some_and(|transform| {
+        orientation_transforms_close(transform, report.recommendation.target_transform)
+    }) {
+        return Err(AnalysisError::InvalidStructure(
+            "oriented output transform does not match the approved recommendation".into(),
+        )
+        .into());
+    }
+    Ok(report)
+}
+
+fn orientation_transforms_close(left: Transform3mf, right: Transform3mf) -> bool {
+    left.values
+        .into_iter()
+        .zip(right.values)
+        .all(|(left, right)| (left - right).abs() <= 1e-9)
+}
+
+fn rewrite_build_item_transform(
+    bytes: &[u8],
+    target_build_item_index: u32,
+    transform: Transform3mf,
+) -> Result<Vec<u8>, AnalysisError> {
+    let transform_value = transform
+        .values
+        .iter()
+        .map(|value| format!("{value:.12}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut reader = Reader::from_reader(BufReader::new(XmlTokenLimitedReader::new(
+        bytes,
+        AnalysisLimits::default().max_xml_token_bytes,
+    )));
+    reader.config_mut().trim_text(false);
+    let mut writer = Writer::new(Vec::with_capacity(bytes.len() + 256));
+    let mut buffer = Vec::new();
+    let mut inside_build = false;
+    let mut build_item_index = 0_u32;
+    let mut replaced = false;
+    loop {
+        let event = read_xml_event(&mut reader, &mut buffer, MAIN_MODEL_PATH)?;
+        match event {
+            Event::Start(event) if local_eq(event.name().as_ref(), b"build") => {
+                inside_build = true;
+                writer
+                    .write_event(Event::Start(event.into_owned()))
+                    .map_err(|error| AnalysisError::InvalidXml {
+                        entry: MAIN_MODEL_PATH.into(),
+                        message: error.to_string(),
+                    })?;
+            }
+            Event::End(event) if local_eq(event.name().as_ref(), b"build") => {
+                inside_build = false;
+                writer
+                    .write_event(Event::End(event.into_owned()))
+                    .map_err(|error| AnalysisError::InvalidXml {
+                        entry: MAIN_MODEL_PATH.into(),
+                        message: error.to_string(),
+                    })?;
+            }
+            Event::Empty(mut event) if inside_build && local_eq(event.name().as_ref(), b"item") => {
+                if build_item_index == target_build_item_index {
+                    let mut attributes = Vec::<(Vec<u8>, Vec<u8>)>::new();
+                    for attribute in event.attributes().with_checks(false) {
+                        let attribute = attribute.map_err(|error| AnalysisError::InvalidXml {
+                            entry: MAIN_MODEL_PATH.into(),
+                            message: error.to_string(),
+                        })?;
+                        if !local_eq(attribute.key.as_ref(), b"transform") {
+                            attributes
+                                .push((attribute.key.as_ref().to_vec(), attribute.value.to_vec()));
+                        }
+                    }
+                    attributes.push((b"transform".to_vec(), transform_value.as_bytes().to_vec()));
+                    event.clear_attributes();
+                    for (key, value) in &attributes {
+                        event.push_attribute((key.as_slice(), value.as_slice()));
+                    }
+                    replaced = true;
+                }
+                build_item_index = build_item_index.saturating_add(1);
+                writer
+                    .write_event(Event::Empty(event.into_owned()))
+                    .map_err(|error| AnalysisError::InvalidXml {
+                        entry: MAIN_MODEL_PATH.into(),
+                        message: error.to_string(),
+                    })?;
+            }
+            Event::Eof => break,
+            event => writer.write_event(event.into_owned()).map_err(|error| {
+                AnalysisError::InvalidXml {
+                    entry: MAIN_MODEL_PATH.into(),
+                    message: error.to_string(),
+                }
+            })?,
+        }
+        buffer.clear();
+    }
+    if !replaced {
+        return Err(AnalysisError::InvalidStructure(format!(
+            "primary model has no build item at index {target_build_item_index}"
+        )));
+    }
+    Ok(writer.into_inner())
+}
+
+fn validate_orientation_options(
+    options: &OrientationOptimizationOptions,
+) -> Result<(), AnalysisError> {
+    let valid = options.overhang_threshold_degrees.is_finite()
+        && (1.0..89.0).contains(&options.overhang_threshold_degrees)
+        && (12..=4_096).contains(&options.direction_samples)
+        && options.finalist_count > 0
+        && options.alternatives > 0
+        && options.connectivity_cell_mm.is_finite()
+        && (0.1..=20.0).contains(&options.connectivity_cell_mm)
+        && options.max_vertices_per_resource > 0
+        && options.max_total_transformed_vertices > 0
+        && options.max_triangles_per_part > 0;
+    if valid {
+        Ok(())
+    } else {
+        Err(AnalysisError::InvalidLimits(
+            "orientation options contain an invalid angle, sample count, geometry limit, or connectivity cell size"
+                .into(),
+        ))
+    }
+}
+
+fn parse_selected_mesh_entry(
+    package: &mut ValidatedPackage,
+    path: &str,
+    selected_ids: &BTreeSet<u32>,
+    options: &OrientationOptimizationOptions,
+) -> Result<BTreeMap<u32, SelectedRawMesh>, AnalysisError> {
+    let info = package.info(path)?.clone();
+    let entry = package.archive.by_index(info.index)?;
+    let limits = AnalysisLimits::default();
+    let mut reader = Reader::from_reader(BufReader::with_capacity(
+        MODEL_XML_BUFFER_BYTES,
+        XmlTokenLimitedReader::new(entry, limits.max_xml_token_bytes),
+    ));
+    reader.config_mut().trim_text(true);
+    let mut meshes = BTreeMap::<u32, SelectedRawMesh>::new();
+    let mut current_object = None;
+    let mut unit_scale = 1.0;
+    let mut depth = 0_usize;
+    let mut buffer = Vec::new();
+    loop {
+        match read_xml_event(&mut reader, &mut buffer, path)? {
+            Event::Start(event) => {
+                depth = checked_depth(depth, &limits, path)?;
+                selected_mesh_element(
+                    &reader,
+                    &event,
+                    path,
+                    false,
+                    selected_ids,
+                    options,
+                    &mut unit_scale,
+                    &mut current_object,
+                    &mut meshes,
+                )?;
+            }
+            Event::Empty(event) => selected_mesh_element(
+                &reader,
+                &event,
+                path,
+                true,
+                selected_ids,
+                options,
+                &mut unit_scale,
+                &mut current_object,
+                &mut meshes,
+            )?,
+            Event::End(event) => {
+                if local_eq(event.name().as_ref(), b"object") {
+                    current_object = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Event::DocType(_) => return Err(AnalysisError::ForbiddenDoctype(path.into())),
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(meshes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn selected_mesh_element<R: BufRead>(
+    reader: &Reader<R>,
+    event: &BytesStart<'_>,
+    path: &str,
+    empty: bool,
+    selected_ids: &BTreeSet<u32>,
+    options: &OrientationOptimizationOptions,
+    unit_scale: &mut f64,
+    current_object: &mut Option<u32>,
+    meshes: &mut BTreeMap<u32, SelectedRawMesh>,
+) -> Result<(), AnalysisError> {
+    let name = event.name();
+    if local_eq(name.as_ref(), b"model") {
+        if let Some(unit) = xml_attr(reader, event, b"unit", path)? {
+            *unit_scale = unit_scale_mm(&unit, path)?;
+        }
+    } else if local_eq(name.as_ref(), b"object") {
+        let object_id = required_u32_attr(reader, event, b"id", path)?;
+        if selected_ids.contains(&object_id) {
+            if meshes
+                .insert(object_id, SelectedRawMesh::default())
+                .is_some()
+            {
+                return Err(AnalysisError::InvalidStructure(format!(
+                    "duplicate selected object ID {object_id} in {path}"
+                )));
+            }
+            if !empty {
+                *current_object = Some(object_id);
+            }
+        } else if !empty {
+            *current_object = None;
+        }
+    } else if local_eq(name.as_ref(), b"vertex") {
+        let Some(object_id) = *current_object else {
+            return Ok(());
+        };
+        let mesh = meshes.get_mut(&object_id).expect("selected object exists");
+        if mesh.vertices.len() >= options.max_vertices_per_resource {
+            return Err(AnalysisError::InvalidStructure(format!(
+                "orientation mesh {path}#{object_id} exceeds the configured {} vertex limit",
+                options.max_vertices_per_resource
+            )));
+        }
+        mesh.vertices
+            .push(parse_vertex(reader, event, path, *unit_scale)?);
+    } else if local_eq(name.as_ref(), b"triangle") {
+        let Some(object_id) = *current_object else {
+            return Ok(());
+        };
+        let mesh = meshes.get_mut(&object_id).expect("selected object exists");
+        let triangle = [
+            required_u32_attr(reader, event, b"v1", path)?,
+            required_u32_attr(reader, event, b"v2", path)?,
+            required_u32_attr(reader, event, b"v3", path)?,
+        ];
+        mesh.triangle_count = mesh.triangle_count.saturating_add(1);
+        deterministic_reservoir_insert(
+            &mut mesh.triangles,
+            triangle,
+            mesh.triangle_count,
+            options.max_triangles_per_part,
+        );
+    }
+    Ok(())
+}
+
+fn deterministic_reservoir_insert(
+    samples: &mut Vec<[u32; 3]>,
+    triangle: [u32; 3],
+    seen: u64,
+    capacity: usize,
+) {
+    if samples.len() < capacity {
+        samples.push(triangle);
+        return;
+    }
+    let mut value = seen.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^= value >> 31;
+    let selected = value % seen;
+    if selected < capacity as u64 {
+        samples[selected as usize] = triangle;
+    }
+}
+
+fn orientation_directions(triangles: &[OrientationTriangle], requested: usize) -> Vec<[f64; 3]> {
+    let mut directions = vec![[0.0, 0.0, 1.0]];
+    let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    for index in 0..requested {
+        let y = 1.0 - (2.0 * (index as f64 + 0.5) / requested as f64);
+        let radius = (1.0 - y * y).max(0.0).sqrt();
+        let angle = golden_angle * index as f64;
+        push_unique_direction(
+            &mut directions,
+            [radius * angle.cos(), radius * angle.sin(), y],
+        );
+    }
+    let mut large_faces: Vec<_> = triangles
+        .iter()
+        .filter_map(|triangle| {
+            let cross = triangle_cross(triangle.points);
+            let length = vector_length(cross);
+            (length > f64::EPSILON).then_some((length * triangle.weight, cross))
+        })
+        .collect();
+    large_faces.sort_by(|left, right| right.0.total_cmp(&left.0));
+    for (_, normal) in large_faces.into_iter().take(32) {
+        let normal = normalize_vector(normal);
+        push_unique_direction(&mut directions, [-normal[0], -normal[1], -normal[2]]);
+    }
+    directions
+}
+
+fn push_unique_direction(directions: &mut Vec<[f64; 3]>, direction: [f64; 3]) {
+    let direction = normalize_vector(direction);
+    if !directions
+        .iter()
+        .any(|existing| vector_dot(*existing, direction) > 0.999_95)
+    {
+        directions.push(direction);
+    }
+}
+
+fn orientation_candidate(
+    orientation_points: &[[f64; 3]],
+    build_up: [f64; 3],
+    source_linear: Transform3mf,
+    source_center: [f64; 2],
+    metrics: OrientationMetrics,
+) -> OrientationCandidate {
+    let ([x_axis, y_axis, z_axis], _) = orientation_basis(build_up);
+    let rotation = [
+        x_axis[0], y_axis[0], z_axis[0], x_axis[1], y_axis[1], z_axis[1], x_axis[2], y_axis[2],
+        z_axis[2],
+    ];
+    OrientationCandidate {
+        build_up,
+        rotation,
+        target_transform: target_orientation_transform(
+            orientation_points,
+            rotation,
+            source_linear,
+            source_center,
+        ),
+        metrics,
+    }
+}
+
+fn target_orientation_transform(
+    orientation_points: &[[f64; 3]],
+    rotation: [f64; 9],
+    source_linear: Transform3mf,
+    source_center: [f64; 2],
+) -> Transform3mf {
+    let source = source_linear.values;
+    let source_matrix = [
+        source[0], source[1], source[2], source[3], source[4], source[5], source[6], source[7],
+        source[8],
+    ];
+    let mut linear = [0.0; 9];
+    for row in 0..3 {
+        for column in 0..3 {
+            linear[row * 3 + column] = (0..3)
+                .map(|inner| source_matrix[row * 3 + inner] * rotation[inner * 3 + column])
+                .sum();
+        }
+    }
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for point in orientation_points {
+        let oriented = [
+            point[0] * rotation[0] + point[1] * rotation[3] + point[2] * rotation[6],
+            point[0] * rotation[1] + point[1] * rotation[4] + point[2] * rotation[7],
+            point[0] * rotation[2] + point[1] * rotation[5] + point[2] * rotation[8],
+        ];
+        for axis in 0..3 {
+            min[axis] = min[axis].min(oriented[axis]);
+            max[axis] = max[axis].max(oriented[axis]);
+        }
+    }
+    Transform3mf {
+        values: [
+            linear[0],
+            linear[1],
+            linear[2],
+            linear[3],
+            linear[4],
+            linear[5],
+            linear[6],
+            linear[7],
+            linear[8],
+            source_center[0] - (min[0] + max[0]) * 0.5,
+            source_center[1] - (min[1] + max[1]) * 0.5,
+            -min[2],
+        ],
+    }
+}
+
+fn score_orientation(
+    triangles: &[OrientationTriangle],
+    build_up: [f64; 3],
+    options: &OrientationOptimizationOptions,
+    connectivity: bool,
+) -> OrientationMetrics {
+    let (basis, build_up) = orientation_basis(build_up);
+    let [x_axis, y_axis, _] = basis;
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for triangle in triangles {
+        for point in triangle.points {
+            let projected = [
+                vector_dot(point, x_axis),
+                vector_dot(point, y_axis),
+                vector_dot(point, build_up),
+            ];
+            for axis in 0..3 {
+                min[axis] = min[axis].min(projected[axis]);
+                max[axis] = max[axis].max(projected[axis]);
+            }
+        }
+    }
+    let support_normal_limit = -options.overhang_threshold_degrees.to_radians().cos();
+    let bed_tolerance = 0.3;
+    let mut support_volume = 0.0;
+    let mut overhang_area = 0.0;
+    let mut bed_contact_area = 0.0;
+    let mut cells = HashMap::<(usize, i32, i32), f64>::new();
+    let mut overhang_parts = HashSet::new();
+    for triangle in triangles {
+        let cross = triangle_cross(triangle.points);
+        let cross_length = vector_length(cross);
+        if cross_length <= f64::EPSILON {
+            continue;
+        }
+        let area = 0.5 * cross_length * triangle.weight;
+        let normal_z = vector_dot(cross, build_up) / cross_length;
+        let projected_points = triangle.points.map(|point| {
+            [
+                vector_dot(point, x_axis),
+                vector_dot(point, y_axis),
+                vector_dot(point, build_up),
+            ]
+        });
+        let centroid = [
+            projected_points.iter().map(|point| point[0]).sum::<f64>() / 3.0,
+            projected_points.iter().map(|point| point[1]).sum::<f64>() / 3.0,
+            projected_points.iter().map(|point| point[2]).sum::<f64>() / 3.0,
+        ];
+        let height = (centroid[2] - min[2]).max(0.0);
+        if normal_z < -0.5
+            && projected_points
+                .iter()
+                .all(|point| point[2] - min[2] <= bed_tolerance)
+        {
+            bed_contact_area += area * -normal_z;
+            continue;
+        }
+        if normal_z < support_normal_limit && height > bed_tolerance {
+            overhang_parts.insert(triangle.part_index);
+            let projected_area = area * -normal_z;
+            overhang_area += projected_area;
+            support_volume += projected_area * height;
+            if connectivity {
+                let cell = (
+                    triangle.part_index,
+                    (centroid[0] / options.connectivity_cell_mm).floor() as i32,
+                    (centroid[1] / options.connectivity_cell_mm).floor() as i32,
+                );
+                *cells.entry(cell).or_default() += projected_area;
+            }
+        }
+    }
+    let (component_count, small_component_count) = if connectivity {
+        connected_overhang_components(&cells)
+    } else {
+        (overhang_parts.len(), 0)
+    };
+    let height = (max[2] - min[2]).max(0.0);
+    let footprint_area = ((max[0] - min[0]) * (max[1] - min[1])).max(0.0);
+    let instability = if bed_contact_area < 1.0 {
+        (1.0 - bed_contact_area).max(0.0) * 2_000.0
+    } else {
+        0.0
+    };
+    let connectivity_penalty = component_count as f64 * 1_000.0
+        + if connectivity {
+            small_component_count as f64 * 2_500.0
+        } else {
+            0.0
+        };
+    let score =
+        support_volume + overhang_area * 8.0 + height * 5.0 + connectivity_penalty + instability
+            - bed_contact_area.min(2_000.0) * 2.0;
+    OrientationMetrics {
+        score,
+        estimated_support_volume_mm3: support_volume,
+        overhang_contact_area_mm2: overhang_area,
+        overhang_component_count: component_count,
+        small_overhang_component_count: small_component_count,
+        bed_contact_area_mm2: bed_contact_area,
+        height_mm: height,
+        footprint_area_mm2: footprint_area,
+    }
+}
+
+fn connected_overhang_components(cells: &HashMap<(usize, i32, i32), f64>) -> (usize, usize) {
+    let mut remaining: HashSet<_> = cells.keys().copied().collect();
+    let mut components = 0_usize;
+    let mut small = 0_usize;
+    while let Some(start) = remaining.iter().next().copied() {
+        components += 1;
+        remaining.remove(&start);
+        let mut stack = vec![start];
+        let mut area = 0.0;
+        while let Some(cell) = stack.pop() {
+            area += cells.get(&cell).copied().unwrap_or(0.0);
+            for x_offset in -1..=1 {
+                for y_offset in -1..=1 {
+                    if x_offset == 0 && y_offset == 0 {
+                        continue;
+                    }
+                    let neighbor = (cell.0, cell.1 + x_offset, cell.2 + y_offset);
+                    if remaining.remove(&neighbor) {
+                        stack.push(neighbor);
+                    }
+                }
+            }
+        }
+        if area < 20.0 {
+            small += 1;
+        }
+    }
+    (components, small)
+}
+
+fn orientation_basis(build_up: [f64; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
+    let z_axis = normalize_vector(build_up);
+    let reference = if z_axis[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let x_axis = normalize_vector(vector_cross(reference, z_axis));
+    let y_axis = normalize_vector(vector_cross(z_axis, x_axis));
+    ([x_axis, y_axis, z_axis], z_axis)
+}
+
+fn triangle_cross(points: [[f64; 3]; 3]) -> [f64; 3] {
+    vector_cross(
+        vector_sub(points[1], points[0]),
+        vector_sub(points[2], points[0]),
+    )
+}
+
+fn vector_sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn vector_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn vector_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn vector_length(vector: [f64; 3]) -> f64 {
+    vector_dot(vector, vector).sqrt()
+}
+
+fn normalize_vector(vector: [f64; 3]) -> [f64; 3] {
+    let length = vector_length(vector);
+    if length <= f64::EPSILON || !length.is_finite() {
+        [0.0, 0.0, 1.0]
+    } else {
+        [vector[0] / length, vector[1] / length, vector[2] / length]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4053,5 +5019,62 @@ mod tests {
         assert_eq!(transformed.max, [10.0, 22.0, 34.0]);
         assert_eq!(unit_scale_mm("inch", "test").unwrap(), 25.4);
         assert!(unit_scale_mm("parsec", "test").is_err());
+    }
+
+    #[test]
+    fn orientation_connectivity_keeps_printable_parts_separate() {
+        let cells = HashMap::from([
+            ((0, 0, 0), 4.0),
+            ((0, 1, 0), 4.0),
+            ((1, 0, 0), 4.0),
+            ((1, 1, 0), 4.0),
+        ]);
+        assert_eq!(connected_overhang_components(&cells), (2, 2));
+    }
+
+    #[test]
+    fn orientation_reservoir_is_bounded_and_deterministic() {
+        let build = || {
+            let mut samples = Vec::new();
+            for seen in 1..=10_000 {
+                deterministic_reservoir_insert(&mut samples, [seen as u32, 0, 0], seen, 128);
+            }
+            samples
+        };
+        let first = build();
+        assert_eq!(first.len(), 128);
+        assert_eq!(first, build());
+    }
+
+    #[test]
+    fn orientation_target_uses_every_vertex_for_bed_placement() {
+        let points = [[0.0, 0.0, 0.0], [2.0, 4.0, 3.0], [1.0, 1.0, -7.0]];
+        let transform = target_orientation_transform(
+            &points,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            Transform3mf::IDENTITY,
+            [10.0, 20.0],
+        );
+        assert_eq!(transform.values[9], 9.0);
+        assert_eq!(transform.values[10], 18.0);
+        assert_eq!(transform.values[11], 7.0);
+    }
+
+    #[test]
+    fn orientation_rewrite_changes_only_selected_build_transform() {
+        let source = br#"<?xml version="1.0"?><model><resources/><build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 2 3 4"/><item objectid="2" printable="1"/></build></model>"#;
+        let transform = Transform3mf {
+            values: [
+                0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 0.0,
+            ],
+        };
+        let rewritten = rewrite_build_item_transform(source, 1, transform).unwrap();
+        let text = String::from_utf8(rewritten).unwrap();
+        assert!(text.contains("objectid=\"1\" transform=\"1 0 0 0 1 0 0 0 1 2 3 4\""));
+        assert!(
+            text.contains(
+                "objectid=\"2\" printable=\"1\" transform=\"0.000000000000 1.000000000000"
+            )
+        );
     }
 }

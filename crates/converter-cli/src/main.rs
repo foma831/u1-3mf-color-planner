@@ -26,7 +26,10 @@ use u1_orca_adapter::{
     validate_u1_full_spectrum_gui_round_trip, validate_u1_gui_round_trip,
     write_u1_full_spectrum_normalized_substrate, write_u1_full_spectrum_qualification_candidate,
 };
-use u1_three_mf::{OutputValidationPolicy, analyze_project, validate_staged_output};
+use u1_three_mf::{
+    OrientationOptimizationOptions, OutputValidationPolicy, analyze_project,
+    optimize_object_orientation, validate_staged_output, write_optimized_object_orientation,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -73,6 +76,37 @@ enum Command {
     /// Safely inspect a project 3MF and print the analysis as JSON.
     Analyze {
         input: PathBuf,
+        /// Write one-line JSON instead of indented JSON.
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Experimentally find a lower-support orientation for one printable instance.
+    OptimizeOrientation {
+        input: PathBuf,
+        #[arg(long)]
+        object_id: u32,
+        #[arg(long, default_value_t = 0)]
+        instance_id: u32,
+        #[arg(long, default_value_t = 45.0)]
+        overhang_angle: f64,
+        #[arg(long, default_value_t = 144)]
+        direction_samples: usize,
+        /// Write one-line JSON instead of indented JSON.
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Write an experimental no-clobber copy with the recommended orientation.
+    ApplyOptimizedOrientation {
+        input: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        object_id: u32,
+        #[arg(long, default_value_t = 0)]
+        instance_id: u32,
+        #[arg(long, default_value_t = 45.0)]
+        overhang_angle: f64,
+        #[arg(long, default_value_t = 144)]
+        direction_samples: usize,
         /// Write one-line JSON instead of indented JSON.
         #[arg(long)]
         compact: bool,
@@ -247,6 +281,61 @@ fn main() -> Result<()> {
             let analysis = analyze_project(&input)
                 .with_context(|| format!("failed to analyze {}", input.display()))?;
             print_json(&analysis, compact)?;
+        }
+        Command::OptimizeOrientation {
+            input,
+            object_id,
+            instance_id,
+            overhang_angle,
+            direction_samples,
+            compact,
+        } => {
+            let report = optimize_object_orientation(
+                &input,
+                object_id,
+                instance_id,
+                OrientationOptimizationOptions {
+                    overhang_threshold_degrees: overhang_angle,
+                    direction_samples,
+                    ..OrientationOptimizationOptions::default()
+                },
+            )
+            .with_context(|| {
+                format!(
+                    "failed to optimize orientation for object {object_id}/{instance_id} in {}",
+                    input.display()
+                )
+            })?;
+            print_json(&report, compact)?;
+        }
+        Command::ApplyOptimizedOrientation {
+            input,
+            output,
+            object_id,
+            instance_id,
+            overhang_angle,
+            direction_samples,
+            compact,
+        } => {
+            let report = write_optimized_object_orientation(
+                &input,
+                &output,
+                object_id,
+                instance_id,
+                OrientationOptimizationOptions {
+                    overhang_threshold_degrees: overhang_angle,
+                    direction_samples,
+                    ..OrientationOptimizationOptions::default()
+                },
+            )
+            .with_context(|| {
+                format!(
+                    "failed to write optimized orientation for object {object_id}/{instance_id} from {} to {}",
+                    input.display(),
+                    output.display()
+                )
+            })?;
+            print_json(&report, compact)?;
         }
         Command::Plan {
             input,
@@ -798,6 +887,23 @@ mod tests {
     fn parses_documented_commands() {
         let analyze = Cli::try_parse_from(["u1-converter", "analyze", "model.3mf"]);
         assert!(analyze.is_ok());
+        let optimize = Cli::try_parse_from([
+            "u1-converter",
+            "optimize-orientation",
+            "model.3mf",
+            "--object-id",
+            "42",
+        ]);
+        assert!(optimize.is_ok());
+        let apply = Cli::try_parse_from([
+            "u1-converter",
+            "apply-optimized-orientation",
+            "model.3mf",
+            "oriented.3mf",
+            "--object-id",
+            "42",
+        ]);
+        assert!(apply.is_ok());
         let plan = Cli::try_parse_from([
             "u1-converter",
             "plan",

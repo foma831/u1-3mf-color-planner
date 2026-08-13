@@ -389,6 +389,74 @@ pub struct AxisAlignedBounds {
     pub max: [f64; 3],
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrientationOptimizationOptions {
+    pub overhang_threshold_degrees: f64,
+    pub direction_samples: usize,
+    pub finalist_count: usize,
+    pub alternatives: usize,
+    pub connectivity_cell_mm: f64,
+    pub max_vertices_per_resource: usize,
+    pub max_total_transformed_vertices: usize,
+    pub max_triangles_per_part: usize,
+}
+
+impl Default for OrientationOptimizationOptions {
+    fn default() -> Self {
+        Self {
+            overhang_threshold_degrees: 45.0,
+            direction_samples: 144,
+            finalist_count: 12,
+            alternatives: 5,
+            connectivity_cell_mm: 2.0,
+            max_vertices_per_resource: 5_000_000,
+            max_total_transformed_vertices: 10_000_000,
+            max_triangles_per_part: 25_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrientationOptimizationReport {
+    pub source: InputIdentity,
+    pub object_id: u32,
+    pub instance_id: u32,
+    pub object_name: Option<String>,
+    pub source_triangle_count: u64,
+    pub sampled_triangle_count: usize,
+    pub evaluated_orientation_count: usize,
+    pub overhang_threshold_degrees: f64,
+    pub source_orientation: OrientationCandidate,
+    pub recommendation: OrientationCandidate,
+    pub alternatives: Vec<OrientationCandidate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrientationCandidate {
+    /// Build-platform up direction expressed in the source instance's current
+    /// oriented coordinate system.
+    pub build_up: [f64; 3],
+    /// Row-vector 3x3 rotation in 3MF serialized order. Translation is applied
+    /// separately after the rotated geometry is seated on Z=0.
+    pub rotation: [f64; 9],
+    /// Complete recommended build-item transform. The object is centered on
+    /// its source XY location and seated on Z=0 after applying `rotation`.
+    pub target_transform: Transform3mf,
+    pub metrics: OrientationMetrics,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrientationMetrics {
+    pub score: f64,
+    pub estimated_support_volume_mm3: f64,
+    pub overhang_contact_area_mm2: f64,
+    pub overhang_component_count: usize,
+    pub small_overhang_component_count: usize,
+    pub bed_contact_area_mm2: f64,
+    pub height_mm: f64,
+    pub footprint_area_mm2: f64,
+}
+
 impl AxisAlignedBounds {
     #[must_use]
     pub fn from_point(point: [f64; 3]) -> Option<Self> {
