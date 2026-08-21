@@ -17,12 +17,13 @@ use filament_library::{FilamentLibraryView, load_for_app, save_for_app};
 use print_instructions::render_print_instructions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -1692,6 +1693,7 @@ fn register_optimized_output(
     Ok(optimized)
 }
 
+#[cfg(target_os = "macos")]
 fn discover_registered_slicer(slicer: RegisteredSlicer) -> Result<PathBuf, String> {
     match slicer {
         RegisteredSlicer::SnapmakerOrca => discover_installation().ok_or_else(|| {
