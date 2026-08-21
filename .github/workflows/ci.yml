@@ -12,6 +12,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: 0
+      CARGO_PROFILE_TEST_OPT_LEVEL: 0
 
     steps:
       - name: Check out repository
@@ -45,5 +48,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify project
-        run: npm run verify
+      - name: Verify frontend
+        run: |
+          npm test
+          npm run check
+          npm run build:web
+
+      - name: Check Rust
+        run: npm run check:rust
+
+      - name: Test Rust without private 3MF fixtures
+        run: |
+          node scripts/run-with-rust.mjs cargo test \
+            --workspace \
+            --all-targets \
+            --locked \
+            -- \
+            --skip versioned_withered_foxy_acceptance_plan_is_reproducible \
+            --skip withered_foxy_acceptance_counts_and_fixture_identity \
+            --skip a1_mini_no_ams_sample_identity_and_target_are_stable
+          node scripts/run-with-rust.mjs cargo test --workspace --doc --locked
