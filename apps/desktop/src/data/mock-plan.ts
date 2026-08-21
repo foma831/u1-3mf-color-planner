@@ -258,6 +258,7 @@ export function createDemoPlan(fileName = "Withered_Foxy.3mf"): ProjectPlan {
       unusedFilamentCount: 0,
       alternativePlateCount: 4,
     },
+    detectedAdhesion: { mode: "none", profileName: null },
     alternativePlates: [
       { id: 7, name: "Updated Ball Joints", included: false },
       { id: 10, name: "Alternate Joints", included: false },

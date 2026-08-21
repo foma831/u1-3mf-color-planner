@@ -3891,7 +3891,7 @@ mod tests {
     fn exact_installation_writes_one_real_forensic_sample_unit() {
         let application = std::env::var_os("A1MINI_BAMBU_STUDIO_APP")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/Volumes/Eugene/Applications/BambuStudio.app"));
+            .unwrap_or_else(|| PathBuf::from("/Applications/BambuStudio.app"));
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../Sample/Withered_Foxy_A1_mini_No_AMS.3mf");
         let analysis = analyze_project(&source).unwrap();

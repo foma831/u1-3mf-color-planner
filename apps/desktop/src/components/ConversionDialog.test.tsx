@@ -8,12 +8,22 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  listPublishedOrientationPlates,
+  optimizePublishedPlates,
+} from "../services/project-analysis";
 import type { PreparedConversion, PublishedConversionArtifact } from "../types";
 import { ConversionDialog } from "./ConversionDialog";
+
+vi.mock("../services/project-analysis", () => ({
+  listPublishedOrientationPlates: vi.fn(),
+  optimizePublishedPlates: vi.fn(),
+}));
 
 const u1Slot = {
   toolhead: "T1",
@@ -147,6 +157,13 @@ function defaultProps(): ComponentProps<typeof ConversionDialog> {
 }
 
 afterEach(cleanup);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(listPublishedOrientationPlates).mockResolvedValue([
+    { id: 1, name: "Plate 1", printableInstanceCount: 1 },
+  ]);
+});
 
 describe("ConversionDialog", () => {
   it("groups mixed preparation artifacts by printer and slicer", () => {
@@ -357,7 +374,7 @@ describe("ConversionDialog", () => {
     });
     expect(heading).toHaveFocus();
     expect(
-      screen.getByRole("heading", { name: "2 converted project files" }),
+      screen.getByRole("heading", { name: "2 project files ready to open" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Snapmaker Orca")).toBeInTheDocument();
     expect(screen.getByText("Bambu Studio")).toBeInTheDocument();
@@ -410,6 +427,96 @@ describe("ConversionDialog", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Open Print Run" }));
     expect(actionProps.onOpenPrintRun).toHaveBeenCalledOnce();
+  });
+
+  it("promotes optimized copies and keeps published originals in a secondary list", async () => {
+    const original = publishedArtifact({});
+    const optimizedPath = "/output/fixture__u1_direct-support-optimized.3mf";
+    vi.mocked(optimizePublishedPlates).mockResolvedValue({
+      sourcePath: original.path,
+      destinationPath: optimizedPath,
+      byteSize: 3 * 1024 * 1024,
+      sha256: "b".repeat(64),
+      reports: [
+        {
+          plate_id: 1,
+          repair_attempts: 1,
+          source_score: 100,
+          selected_score: 80,
+          estimated_support_volume_improvement: 0.2,
+          adhesion_mode: "reliable",
+          reserved_process_envelope_mm: 18,
+          maximum_adhesion_risk: {
+            score: 42,
+            level: "moderate",
+            recommended_brim_width_mm: 8,
+          },
+          instances: [],
+        },
+      ],
+    });
+    const props = {
+      ...defaultProps(),
+      onPreferredArtifactsChange: vi.fn(),
+    };
+    render(
+      <ConversionDialog
+        {...props}
+        prepared={null}
+        result={{
+          adapterId: "u1-planner/mixed-native",
+          outputDirectory: "/output/fixture__converted",
+          manifestPath: "/output/fixture__converted/manifest.json",
+          reportPath: "/output/fixture__converted/conversion-report.html",
+          artifacts: [original],
+          warnings: [],
+          excludedSourceUnits: [],
+          warningsAcknowledged: false,
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Enable optional support-aware optimization after conversion",
+      }),
+    );
+    await screen.findByRole("checkbox", { name: "Plate 1 · 1 instance" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Optimize 1 selected plate" }),
+    );
+
+    expect(
+      await screen.findByText("fixture__u1_direct-support-optimized.3mf"),
+    ).toBeVisible();
+    const originalList = screen.getByText("1 original non-optimized file");
+    expect(originalList).toBeVisible();
+    fireEvent.click(originalList);
+    expect(screen.getByText(original.path)).toBeVisible();
+    expect(props.onPreferredArtifactsChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        path: optimizedPath,
+        sha256: "b".repeat(64),
+      }),
+    ]);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open in Snapmaker Orca" }),
+    );
+    await waitFor(() => {
+      expect(props.onOpenOutput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: optimizedPath,
+          sha256: "b".repeat(64),
+        }),
+      );
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open original in Snapmaker Orca",
+      }),
+    );
+    expect(props.onOpenOutput).toHaveBeenLastCalledWith(original);
   });
 
   it("restores focus when the dialog fallback closes", () => {

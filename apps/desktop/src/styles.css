@@ -2057,6 +2057,280 @@ svg {
   padding: 1rem;
 }
 
+.orientation-optimization {
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 0.9rem;
+  background: var(--color-surface-subtle);
+}
+
+.orientation-optimization__heading {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+}
+
+.orientation-optimization__icon {
+  display: grid;
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 0.55rem;
+  background: var(--color-accent-soft);
+  color: var(--color-focus);
+}
+
+.orientation-optimization h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.orientation-optimization p {
+  margin: 0.25rem 0 0;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.orientation-optimization__toggle,
+.orientation-optimization__confirmation {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  color: var(--color-ink);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.orientation-optimization input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-block-start: 0.12rem;
+}
+
+.orientation-optimization__controls {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) auto;
+  gap: 0.5rem 0.7rem;
+  align-items: end;
+}
+
+.orientation-optimization__controls > label,
+.orientation-optimization__controls > select {
+  grid-column: 1;
+}
+
+.orientation-optimization__controls > label {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.orientation-optimization__controls > select {
+  min-height: 2.5rem;
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-control);
+  padding: 0.5rem 2rem 0.5rem 0.65rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+.orientation-optimization__preview {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: end;
+}
+
+.orientation-optimization__status {
+  grid-column: 1 / -1;
+}
+
+.orientation-optimization__result {
+  display: grid;
+  gap: 0.75rem;
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: 0.8rem;
+}
+
+.orientation-optimization__result dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.orientation-optimization__result dl > div {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.55rem;
+  background: var(--color-surface);
+}
+
+.orientation-optimization__result dt {
+  color: var(--color-muted);
+  font-size: 0.65rem;
+  line-height: 1.3;
+}
+
+.orientation-optimization__result dd {
+  margin: 0.2rem 0 0;
+  color: var(--color-ink);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.orientation-optimization__save {
+  justify-self: start;
+}
+
+.orientation-optimization__saved {
+  overflow-wrap: anywhere;
+  color: var(--color-success-text) !important;
+}
+
+.orientation-optimization__error {
+  color: var(--color-danger) !important;
+}
+
+.published-orientation {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-subtle);
+}
+
+.published-orientation__heading {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.published-orientation__heading > svg {
+  flex: 0 0 auto;
+  color: var(--color-focus);
+}
+
+.published-orientation__heading h3,
+.published-orientation__heading p {
+  margin: 0;
+}
+
+.published-orientation__heading p {
+  margin-top: 0.25rem;
+  color: var(--color-muted);
+}
+
+.published-orientation__toggle,
+.published-orientation__files fieldset label {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+}
+
+.published-orientation__files {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.published-orientation__files fieldset {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.7rem;
+}
+
+.published-orientation__adhesion label > span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.published-orientation__adhesion small {
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+
+.published-orientation__profile-note {
+  margin: 0.25rem 0 0;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.published-orientation__profile-warning {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: 0.85rem;
+}
+
+.published-orientation__files legend {
+  padding: 0 0.35rem;
+  font-weight: 700;
+}
+
+.published-orientation__files .button {
+  justify-self: start;
+}
+
+.published-orientation__status,
+.published-orientation__results li {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.published-orientation__results ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.published-orientation__results li {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.published-orientation__skipped {
+  color: var(--color-warning);
+}
+
+.published-orientation__skipped ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.published-orientation__skipped li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.published-orientation__error {
+  margin: 0;
+  color: var(--color-danger);
+}
+
+@media (max-width: 48rem) {
+  .orientation-optimization__controls,
+  .orientation-optimization__result dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .orientation-optimization__preview,
+  .orientation-optimization__controls > label,
+  .orientation-optimization__controls > select {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
 .section-heading-row {
   display: flex;
   justify-content: space-between;
@@ -6951,6 +7225,49 @@ tbody tr.is-selected > * {
 
 .conversion-success-reminder {
   margin: 0;
+}
+
+.conversion-original-files {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-subtle);
+}
+
+.conversion-original-files summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.conversion-original-files > p {
+  margin: 0.65rem 0;
+  color: var(--color-ink-muted);
+  font-size: 0.75rem;
+}
+
+.conversion-original-files > ul {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversion-original-files > ul > li,
+.conversion-original-files > ul > li > div:first-child {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.conversion-original-files > ul > li {
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.conversion-original-files code {
+  overflow-wrap: anywhere;
+  color: var(--color-ink-muted);
+  font-size: 0.6875rem;
 }
 
 .conversion-dialog__actions {

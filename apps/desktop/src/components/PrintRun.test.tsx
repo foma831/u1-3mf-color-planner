@@ -886,6 +886,55 @@ describe("PrintRun", () => {
     expect(onOpenArtifact).toHaveBeenCalledTimes(2);
   });
 
+  it("uses optimized copies for the run and keeps published originals available", async () => {
+    const plan = executionPlan();
+    const bundle = publishedBundleFor(plan);
+    const original = bundle.result.artifacts[0];
+    const optimized = {
+      ...original,
+      fileName: "target-01-support-optimized.3mf",
+      relativePath: "/output/target-01-support-optimized.3mf",
+      path: "/output/target-01-support-optimized.3mf",
+      byteSize: 2048,
+      sha256: "b".repeat(64),
+      validationStatus: "Passed",
+    };
+    const onOpenArtifact = vi.fn().mockResolvedValue(undefined);
+
+    renderPrintRun(plan, {
+      publishedBundle: bundle,
+      preferredArtifacts: [optimized],
+      onOpenArtifact,
+      storage: null,
+    });
+
+    expect(screen.getByText(optimized.fileName)).toBeVisible();
+    expect(screen.getByText("Support optimized")).toBeVisible();
+    const originals = screen.getByText("Original non-optimized files");
+    fireEvent.click(originals);
+    expect(screen.getByText(original.path)).toBeVisible();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Open in Snapmaker Orca" })[0],
+    );
+    await waitFor(() =>
+      expect(onOpenArtifact).toHaveBeenLastCalledWith(optimized),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open original in Snapmaker Orca" }),
+    );
+    await waitFor(() =>
+      expect(onOpenArtifact).toHaveBeenLastCalledWith(original),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Start print run" }));
+    expect(
+      within(screen.getByRole("article", { name: "Target Plate 01" })).getByText(
+        optimized.fileName,
+      ),
+    ).toBeVisible();
+  });
+
   it("locks an A1 run when the published artifact does not identify one exact physical spool", () => {
     const plan = executionPlan();
     const bundle = publishedBundleFor(plan);

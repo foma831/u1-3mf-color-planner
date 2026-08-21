@@ -74,13 +74,54 @@ The orientation experiment is available from the CLI:
 ```sh
 u1-converter optimize-orientation model.3mf --object-id 122
 u1-converter apply-optimized-orientation model.3mf oriented.3mf --object-id 122
+u1-converter optimize-plate-orientations model.3mf --plate-id 1
+u1-converter apply-optimized-plate-orientations model.3mf oriented.3mf \
+  --plate-id 1 --adhesion-mode reliable
 scripts/benchmark-orientation.sh Sample/Withered_Foxy.3mf 122
 ```
 
-The apply command never overwrites its destination. It rewrites only the
-selected primary build-item transform, re-analyzes the staged and published
-copy, and leaves the source hash unchanged. The result must still be reviewed
-and repacked before production conversion.
+The desktop exposes plate-level optimization only after native project files
+have been generated. In **Conversion complete**, enable **Optimize generated
+plates**, select the actual plates found in each published 3MF, and save a
+separate `-support-optimized.3mf` copy. The verified published bundle is never
+modified, so its manifest and checksums remain valid.
+
+Plate packing reserves an 18 mm process envelope on every side of each model
+for generated supports and Auto Brim, in addition to the 2 mm model clearance.
+Consequently, model geometry stays at least 19 mm from the printable-area edge
+and neighboring model footprints stay at least 38 mm apart. A layout that fits
+the meshes but not these process envelopes is rejected.
+
+The optional desktop step offers Standard, Reliable, and Maximum bed-adhesion
+policies. It records a bounded per-instance adhesion-risk assessment, writes the
+selected brim/raft/slow-layer settings into the optimized project copy, and
+uses a versioned `U1 Planner` project profile identity instead of relabeling or
+overwriting an installed Snapmaker system preset.
+
+For Snapmaker U1 projects with supports enabled, the v2 planner profile also
+normalizes the support contract to `tree(auto)` with `tree_hybrid` style,
+disables `support_on_build_plate_only`, uses three interface layers (four in
+Maximum), 0.2 mm rectilinear-interlaced interface spacing, two tree walls, and
+100/50 mm/s support/interface speeds. The top Z distance remains one project
+layer. This avoids relying on the unsafe tree-interface combination preserved
+by older v1 optimized copies.
+
+When an optimized copy is analyzed again, the desktop restores its Standard,
+Reliable, or Maximum selection only after all embedded brim, raft, slow-layer,
+and first-layer speed values match the named versioned profile. A modified U1
+Planner profile is reported as custom and defaults safely to Reliable; external
+Orca profiles are not guessed from similar values.
+
+Orientation changes are strictly opt-in; ordinary analysis, planning, and
+conversion preserve source orientations. The plate command starts with the
+best Pareto-safe candidate for every printable instance, runs one deterministic
+packing pass, and explores at most 50 local repairs involving the failed,
+largest-footprint, or tallest instances. A candidate may not worsen support
+volume, small support-island count, or the combined score relative to that
+instance's source orientation. The apply commands never overwrite their
+destination. They rewrite only approved primary build-item transforms,
+re-analyze the staged and published copy, and leave the source hash unchanged.
+The result must still be reviewed and repacked before production conversion.
 
 Both analysis and pre-publication validation cap ZIP expansion, XML depth, and
 the size of a single XML lexical token. Package manifests can only be built from
@@ -473,3 +514,7 @@ Capture and qualification procedures:
 - [Native 3MF writer implementation specification (Russian)](docs/NATIVE_3MF_WRITER_IMPLEMENTATION_SPEC_RU.md)
 
 The detailed requirements are in [TECHNICAL_SPECIFICATION_RU.md](TECHNICAL_SPECIFICATION_RU.md).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

@@ -7,15 +7,18 @@ import type { PlanningIntent } from "./planning-intent";
 import type { PrinterLoadoutProfile } from "./printer-loadout";
 import type {
   AnalysisResult,
+  AdhesionMode,
   CancelAnalysisResult,
   CancelConversionResult,
   ConversionCapability,
   ConversionProgress,
   ConversionResult,
   ExperimentalDialectApproval,
+  OrientationPlateOption,
   PartialConversionApproval,
-  PreparedConversion,
   PublishedConversionArtifact,
+  PublishedOrientationResult,
+  PreparedConversion,
   ProjectPlan,
   ProjectSelection,
   ReplanRequest,
@@ -97,6 +100,51 @@ export async function exportNativePlan(
 
 export function replanProject(sourcePath: string, request: ReplanRequest) {
   return invoke<ProjectPlan>("replan_project", { sourcePath, request });
+}
+
+export function listPublishedOrientationPlates(
+  artifact: PublishedConversionArtifact,
+) {
+  return invoke<OrientationPlateOption[]>("list_published_orientation_plates", {
+    path: artifact.path,
+    adapterId: artifact.adapterId,
+  });
+}
+
+export async function optimizePublishedPlates(
+  artifact: PublishedConversionArtifact,
+  plateIds: number[],
+  adhesionMode: AdhesionMode,
+) {
+  const base = artifact.fileName.replace(/\.3mf$/i, "");
+  const optimizedFileName = `${base}-support-optimized.3mf`;
+  const separator = artifact.path.includes("\\") ? "\\" : "/";
+  const sourceDirectory = artifact.path.slice(
+    0,
+    artifact.path.lastIndexOf(separator),
+  );
+  const bundleDirectory = sourceDirectory.slice(
+    0,
+    sourceDirectory.lastIndexOf(separator),
+  );
+  const destinationDirectory = bundleDirectory.slice(
+    0,
+    bundleDirectory.lastIndexOf(separator),
+  );
+  const destinationPath = await save({
+    defaultPath: destinationDirectory
+      ? `${destinationDirectory}${separator}${optimizedFileName}`
+      : optimizedFileName,
+    filters: [{ name: "Support-optimized 3MF project", extensions: ["3mf"] }],
+  });
+  if (!destinationPath) return null;
+  return invoke<PublishedOrientationResult>("optimize_published_plates", {
+    path: artifact.path,
+    adapterId: artifact.adapterId,
+    plateIds,
+    adhesionMode,
+    destinationPath,
+  });
 }
 
 export function inspectConversionCapabilities(sourcePath: string) {

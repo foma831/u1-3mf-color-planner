@@ -18,6 +18,8 @@ apps/desktop/src-tauri/gen/
 
 # Local reports and generated projects
 /output/
+/apps/desktop/output/
+/Sample/Results/
 *.partial
 *.log
 

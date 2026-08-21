@@ -357,6 +357,9 @@ export default function App() {
     useState<ConversionResult | null>(null);
   const [publishedPrintRunBundle, setPublishedPrintRunBundle] =
     useState<PublishedPrintRunBundle | null>(null);
+  const [preferredPrintArtifacts, setPreferredPrintArtifacts] = useState<
+    PublishedConversionArtifact[]
+  >([]);
   const [printRunRecoveryStatus, setPrintRunRecoveryStatus] = useState<
     "idle" | "checking" | "recovered"
   >("idle");
@@ -414,6 +417,13 @@ export default function App() {
     () => createPrintRunFingerprint(plan),
     [plan],
   );
+  const publishedPrintRunBundleIdentity = publishedPrintRunBundle
+    ? `${publishedPrintRunBundle.result.outputDirectory}:${publishedPrintRunBundle.backendPlanFingerprint}`
+    : "";
+
+  useEffect(() => {
+    setPreferredPrintArtifacts([]);
+  }, [publishedPrintRunBundleIdentity]);
   const partialConversionEvidenceKey = useMemo(
     () =>
       JSON.stringify({
@@ -2859,8 +2869,7 @@ export default function App() {
                       <summary>
                         <span>Advanced planning</span>
                         <small>
-                          Alternative source plates and project-wide Direct
-                          Spools
+                          Alternative plates and project-wide Direct Spools
                         </small>
                       </summary>
                       <div className="advanced-planning__content">
@@ -3117,6 +3126,7 @@ export default function App() {
               analysisSource === "tauri"
             }
             publishedBundle={publishedPrintRunBundle}
+            preferredArtifacts={preferredPrintArtifacts}
             finalLoadoutSaved={printerLoadoutEquals(printerLoadout, {
               schemaVersion: 1,
               currentLoadout: plan.plannedFinalLoadout,
@@ -3138,6 +3148,7 @@ export default function App() {
         error={conversionError}
         needsNewPreflight={conversionNeedsNewPreflight}
         activeOutputAction={activeConversionOutputAction}
+        detectedAdhesion={plan.detectedAdhesion}
         onConvert={convertPreparedProjects}
         onCancelConversion={cancelPreparedConversion}
         onOpenOutput={(artifact) => {
@@ -3146,6 +3157,7 @@ export default function App() {
         onShowOutputInFinder={(artifact) => {
           void runConversionOutputAction("reveal", artifact);
         }}
+        onPreferredArtifactsChange={setPreferredPrintArtifacts}
         onRetryPreflight={retryConversionPreflight}
         onOpenPrintRun={() => {
           closeConversionDialog();

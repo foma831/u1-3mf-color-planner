@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   CheckCircle2,
   ExternalLink,
@@ -16,11 +23,14 @@ import type {
   ActiveConversionOutputAction,
   ConversionProgress,
   ConversionResult,
+  DetectedAdhesionPolicy,
   ExcludedSourceUnit,
   PreparedConversion,
   PreparedPhysicalSlot,
   PublishedConversionArtifact,
+  PublishedOrientationResult,
 } from "../types";
+import { PublishedOrientationPanel } from "./PublishedOrientationPanel";
 
 interface ConversionDialogProps {
   prepared: PreparedConversion | null;
@@ -31,10 +41,14 @@ interface ConversionDialogProps {
   error: string;
   needsNewPreflight: boolean;
   activeOutputAction: ActiveConversionOutputAction | null;
+  detectedAdhesion?: DetectedAdhesionPolicy;
   onConvert: (warningsAcknowledged: boolean) => void;
   onCancelConversion: () => void;
   onOpenOutput: (artifact: PublishedConversionArtifact) => void;
   onShowOutputInFinder: (artifact: PublishedConversionArtifact) => void;
+  onPreferredArtifactsChange?: (
+    artifacts: PublishedConversionArtifact[],
+  ) => void;
   onRetryPreflight: () => void;
   onOpenPrintRun: () => void;
   onClose: () => void;
@@ -90,6 +104,26 @@ function artifactKey(artifact: RoutedArtifact) {
     artifact.batchId,
     artifact.fileName,
   ].join(":");
+}
+
+function pathFileName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function promotedOrientationArtifact(
+  source: PublishedConversionArtifact,
+  optimized: PublishedOrientationResult,
+): PublishedConversionArtifact {
+  const fileName = pathFileName(optimized.destinationPath);
+  return {
+    ...source,
+    fileName,
+    relativePath: optimized.destinationPath,
+    path: optimized.destinationPath,
+    byteSize: optimized.byteSize,
+    sha256: optimized.sha256,
+    validationStatus: "Passed",
+  };
 }
 
 function excludedUnitPlate(sourcePlateId: number | null) {
@@ -155,10 +189,12 @@ export function ConversionDialog({
   error,
   needsNewPreflight,
   activeOutputAction,
+  detectedAdhesion,
   onConvert,
   onCancelConversion,
   onOpenOutput,
   onShowOutputInFinder,
+  onPreferredArtifactsChange,
   onRetryPreflight,
   onOpenPrintRun,
   onClose,
@@ -172,6 +208,9 @@ export function ConversionDialog({
   const fallbackDialogRef = useRef(false);
   const previousResultRef = useRef<ConversionResult | null>(null);
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false);
+  const [orientationResults, setOrientationResults] = useState<
+    PublishedOrientationResult[]
+  >([]);
   const isOpen = Boolean(prepared || result || error);
   const warningEvidenceKey = useMemo(
     () =>
@@ -232,9 +271,39 @@ export function ConversionDialog({
     previousResultRef.current = result;
   }, [result]);
 
+  useEffect(() => {
+    setOrientationResults([]);
+  }, [result]);
+
+  const updateOrientationResults = useCallback(
+    (next: PublishedOrientationResult[]) => {
+      setOrientationResults(next);
+      const sources = new Map(
+        (result?.artifacts ?? []).map((artifact) => [artifact.path, artifact]),
+      );
+      onPreferredArtifactsChange?.(
+        next.flatMap((optimized) => {
+          const source = sources.get(optimized.sourcePath);
+          return source ? [promotedOrientationArtifact(source, optimized)] : [];
+        }),
+      );
+    },
+    [onPreferredArtifactsChange, result],
+  );
+
   const preparation = prepared?.preparation;
   const preparedGroups = groupArtifacts(preparation?.artifacts ?? []);
-  const resultGroups = groupArtifacts(result?.artifacts ?? []);
+  const optimizedBySource = new Map(
+    orientationResults.map((optimized) => [optimized.sourcePath, optimized]),
+  );
+  const primaryArtifacts = (result?.artifacts ?? []).map((artifact) => {
+    const optimized = optimizedBySource.get(artifact.path);
+    return optimized ? promotedOrientationArtifact(artifact, optimized) : artifact;
+  });
+  const originalBackupArtifacts = (result?.artifacts ?? []).filter((artifact) =>
+    optimizedBySource.has(artifact.path),
+  );
+  const resultGroups = groupArtifacts(primaryArtifacts);
   const titleId = `${instanceId}-conversion-dialog-title`;
   const filesHeadingId = `${instanceId}-conversion-files-heading`;
   const resultFilesHeadingId = `${instanceId}-conversion-result-files-heading`;
@@ -463,7 +532,9 @@ export function ConversionDialog({
             />
             <section aria-labelledby={resultFilesHeadingId}>
               <h3 id={resultFilesHeadingId}>
-                {countLabel(result.artifacts.length, "converted project file")}
+                {primaryArtifacts.length}{" "}
+                {primaryArtifacts.length === 1 ? "project file" : "project files"}{" "}
+                ready to open
               </h3>
               <div className="conversion-target-groups">
                 {resultGroups.map((group, groupIndex) => {
@@ -589,6 +660,65 @@ export function ConversionDialog({
                 })}
               </div>
             </section>
+            {originalBackupArtifacts.length > 0 ? (
+              <details className="conversion-original-files">
+                <summary>
+                  {countLabel(
+                    originalBackupArtifacts.length,
+                    "original non-optimized file",
+                  )}
+                </summary>
+                <p>
+                  Use these published originals only when you need to inspect or
+                  compare the layout before support optimization.
+                </p>
+                <ul role="list">
+                  {originalBackupArtifacts.map((artifact) => (
+                    <li key={artifactKey(artifact)}>
+                      <div>
+                        <strong>{artifact.fileName}</strong>
+                        <code>{artifact.path}</code>
+                      </div>
+                      <div className="conversion-result-actions">
+                        <button
+                          className="button button--secondary"
+                          type="button"
+                          disabled={activeOutputAction !== null}
+                          onClick={() => onOpenOutput(artifact)}
+                        >
+                          {activeOutputAction?.kind === "open" &&
+                          activeOutputAction.path === artifact.path ? (
+                            <LoaderCircle className="spin" aria-hidden="true" />
+                          ) : (
+                            <ExternalLink aria-hidden="true" />
+                          )}
+                          Open original in {artifact.slicer}
+                        </button>
+                        <button
+                          className="button button--secondary"
+                          type="button"
+                          disabled={activeOutputAction !== null}
+                          onClick={() => onShowOutputInFinder(artifact)}
+                        >
+                          {activeOutputAction?.kind === "reveal" &&
+                          activeOutputAction.path === artifact.path ? (
+                            <LoaderCircle className="spin" aria-hidden="true" />
+                          ) : (
+                            <FolderOpen aria-hidden="true" />
+                          )}
+                          Show original in Finder
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+            <PublishedOrientationPanel
+              artifacts={result.artifacts}
+              detectedAdhesion={detectedAdhesion}
+              onResultsChange={updateOrientationResults}
+            />
             <p className="conversion-success-reminder">
               Bundle manifest and checksums were published. Open each project in
               its listed slicer and verify filament mapping before printing.

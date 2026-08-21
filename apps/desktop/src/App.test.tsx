@@ -2793,7 +2793,7 @@ describe("Print Plan workflow", () => {
     expect(printRunTab).toBeEnabled();
     fireEvent.click(printRunTab);
     expect(
-      screen.getByRole("heading", { name: "Published files for this run" }),
+      screen.getByRole("heading", { name: "Files for this run" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText("/tmp/output/Withered_Foxy__converted/manifest.json"),

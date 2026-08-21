@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::{
     fs::File,
@@ -27,9 +27,28 @@ use u1_orca_adapter::{
     write_u1_full_spectrum_normalized_substrate, write_u1_full_spectrum_qualification_candidate,
 };
 use u1_three_mf::{
-    OrientationOptimizationOptions, OutputValidationPolicy, analyze_project,
-    optimize_object_orientation, validate_staged_output, write_optimized_object_orientation,
+    AdhesionMode, OrientationOptimizationOptions, OutputValidationPolicy,
+    PlateOrientationOptimizationOptions, analyze_project, optimize_object_orientation,
+    optimize_plate_orientations, validate_staged_output, write_optimized_object_orientation,
+    write_optimized_plate_orientations,
 };
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliAdhesionMode {
+    Standard,
+    Reliable,
+    Maximum,
+}
+
+impl From<CliAdhesionMode> for AdhesionMode {
+    fn from(value: CliAdhesionMode) -> Self {
+        match value {
+            CliAdhesionMode::Standard => Self::Standard,
+            CliAdhesionMode::Reliable => Self::Reliable,
+            CliAdhesionMode::Maximum => Self::Maximum,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -107,6 +126,41 @@ enum Command {
         overhang_angle: f64,
         #[arg(long, default_value_t = 144)]
         direction_samples: usize,
+        /// Write one-line JSON instead of indented JSON.
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Explicitly evaluate support-aware orientations for every printable instance on one plate.
+    OptimizePlateOrientations {
+        input: PathBuf,
+        #[arg(long)]
+        plate_id: u32,
+        #[arg(long, default_value_t = 45.0)]
+        overhang_angle: f64,
+        #[arg(long, default_value_t = 144)]
+        direction_samples: usize,
+        #[arg(long, default_value_t = 50)]
+        max_repair_attempts: usize,
+        #[arg(long, value_enum, default_value_t = CliAdhesionMode::Standard)]
+        adhesion_mode: CliAdhesionMode,
+        /// Write one-line JSON instead of indented JSON.
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Opt in to rotate and repack every printable instance on one plate into a new copy.
+    ApplyOptimizedPlateOrientations {
+        input: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        plate_id: u32,
+        #[arg(long, default_value_t = 45.0)]
+        overhang_angle: f64,
+        #[arg(long, default_value_t = 144)]
+        direction_samples: usize,
+        #[arg(long, default_value_t = 50)]
+        max_repair_attempts: usize,
+        #[arg(long, value_enum, default_value_t = CliAdhesionMode::Standard)]
+        adhesion_mode: CliAdhesionMode,
         /// Write one-line JSON instead of indented JSON.
         #[arg(long)]
         compact: bool,
@@ -331,6 +385,63 @@ fn main() -> Result<()> {
             .with_context(|| {
                 format!(
                     "failed to write optimized orientation for object {object_id}/{instance_id} from {} to {}",
+                    input.display(),
+                    output.display()
+                )
+            })?;
+            print_json(&report, compact)?;
+        }
+        Command::OptimizePlateOrientations {
+            input,
+            plate_id,
+            overhang_angle,
+            direction_samples,
+            max_repair_attempts,
+            adhesion_mode,
+            compact,
+        } => {
+            let report = optimize_plate_orientations(
+                &input,
+                plate_id,
+                plate_orientation_options(
+                    overhang_angle,
+                    direction_samples,
+                    max_repair_attempts,
+                    adhesion_mode.into(),
+                ),
+            )
+            .with_context(|| {
+                format!(
+                    "failed to optimize orientations for plate {plate_id} in {}",
+                    input.display()
+                )
+            })?;
+            print_json(&report, compact)?;
+        }
+        Command::ApplyOptimizedPlateOrientations {
+            input,
+            output,
+            plate_id,
+            overhang_angle,
+            direction_samples,
+            max_repair_attempts,
+            adhesion_mode,
+            compact,
+        } => {
+            let report = write_optimized_plate_orientations(
+                &input,
+                &output,
+                plate_id,
+                plate_orientation_options(
+                    overhang_angle,
+                    direction_samples,
+                    max_repair_attempts,
+                    adhesion_mode.into(),
+                ),
+            )
+            .with_context(|| {
+                format!(
+                    "failed to write optimized orientations for plate {plate_id} from {} to {}",
                     input.display(),
                     output.display()
                 )
@@ -820,6 +931,24 @@ fn read_plan_options(path: &Path) -> Result<PreliminaryPlanOptions> {
         .with_context(|| format!("invalid planning options JSON in {}", path.display()))
 }
 
+fn plate_orientation_options(
+    overhang_angle: f64,
+    direction_samples: usize,
+    max_repair_attempts: usize,
+    adhesion_mode: AdhesionMode,
+) -> PlateOrientationOptimizationOptions {
+    PlateOrientationOptimizationOptions {
+        orientation: OrientationOptimizationOptions {
+            overhang_threshold_degrees: overhang_angle,
+            direction_samples,
+            ..OrientationOptimizationOptions::default()
+        },
+        max_repair_attempts,
+        adhesion_mode,
+        ..PlateOrientationOptimizationOptions::default()
+    }
+}
+
 fn read_calibration_project_spec(path: &Path) -> Result<CmyxCalibrationProjectSpec> {
     const MAX_SPEC_BYTES: u64 = 1024 * 1024;
     let file = File::open(path).with_context(|| {
@@ -904,6 +1033,25 @@ mod tests {
             "42",
         ]);
         assert!(apply.is_ok());
+        let optimize_plate = Cli::try_parse_from([
+            "u1-converter",
+            "optimize-plate-orientations",
+            "model.3mf",
+            "--plate-id",
+            "1",
+            "--adhesion-mode",
+            "reliable",
+        ]);
+        assert!(optimize_plate.is_ok());
+        let apply_plate = Cli::try_parse_from([
+            "u1-converter",
+            "apply-optimized-plate-orientations",
+            "model.3mf",
+            "oriented.3mf",
+            "--plate-id",
+            "1",
+        ]);
+        assert!(apply_plate.is_ok());
         let plan = Cli::try_parse_from([
             "u1-converter",
             "plan",

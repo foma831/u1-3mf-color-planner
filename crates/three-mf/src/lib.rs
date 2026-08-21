@@ -18,7 +18,8 @@ mod zip_preflight;
 
 pub use analyzer::{
     AnalysisError, Analyzer, OrientationWriteError, analyze_project, analyze_project_with_limits,
-    optimize_object_orientation, write_optimized_object_orientation,
+    optimize_object_orientation, optimize_plate_orientations, write_optimized_object_orientation,
+    write_optimized_plate_orientations, write_optimized_plate_reports,
 };
 pub use deterministic_ids::{DeterministicIdError, DeterministicProductionIds};
 pub use opc::*;

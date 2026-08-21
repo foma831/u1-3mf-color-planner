@@ -785,8 +785,106 @@ mesh-resources выбранного объекта, применяет отде�
 Применение создаёт новый no-clobber 3MF, меняет только transform выбранного
 `<build><item>`, копирует mesh и material identities без изменений, сажает
 повёрнутую деталь на Z=0 и повторно анализирует staged и опубликованный файл.
-После применения требуется повторный packing и проверка collison/prime tower
+После применения требуется повторный packing и проверка collision/prime tower
 перед production conversion.
+
+Plate-level вариант является отдельным явным opt-in и не вызывается обычными
+analysis/planning/conversion путями. Он независимо строит ограниченный набор
+кандидатов для каждого printable instance, отбрасывает ориентации, которые
+ухудшают относительно source хотя бы одну из трёх величин — общий score,
+support volume или число малых overhang-компонент — и выполняет один
+детерминированный AABB packing-проход. Если исходный набор лучших кандидатов не
+помещается, bounded repair рассматривает альтернативы только для failed
+instance и пяти крупнейших/наиболее высоких деталей. Число попыток по умолчанию
+ограничено 50; полный декартов перебор запрещён. Для исходной multicolor-платы
+с активной prime tower packing также резервирует её консервативный envelope.
+Если доказанная раскладка не найдена, публикация не выполняется. Одинаковые
+source objects сохраняют отдельные instance transforms и отдельную проверку
+размещения, даже когда их mesh identity совпадает.
+
+Для support-aware plate packing AABB каждой модели расширяется на 18 мм с каждой
+стороны под tree-support, Auto Brim и другие траектории первого слоя. Это тот же
+максимум, который writer допускает для фактической first-layer геометрии;
+меньший packing envelope запрещён контрактом. Дополнительно сохраняется 2-мм
+object clearance. В результате геометрия модели находится не ближе 19 мм к
+границе printable area, а геометрия соседних моделей разделена не менее чем
+38 мм. Раскладка, в которую входят только mesh-footprints без этих
+process envelopes, считается недопустимой.
+
+Plate optimizer рассчитывает для каждого выбранного кандидата
+`AdhesionRiskAssessment`: bounded score 0–100, уровень
+`low|moderate|high|critical` и рекомендуемую ширину brim 5/8/12/18 мм. Score
+учитывает bed-contact area, height/contact slenderness, абсолютную высоту и
+малые overhang-компоненты. Отчёт платы фиксирует adhesion mode, использованный
+packing envelope и максимальный риск, чтобы UI и writer не могли применить
+разные политики.
+
+Adhesion mode является явным opt-in параметром второго этапа:
+
+- `standard`: Auto Brim, два slow layers, 25 мм/с на первом слое;
+- `reliable`: risk-sized outer brim без зазора, три slow layers, 20 мм/с;
+- `maximum`: 18-мм outer brim, двухслойный raft с 8-мм expansion, четыре slow
+  layers, 15 мм/с.
+
+Для Snapmaker U1 оптимизированная project copy получает отдельный versioned
+`print_settings_id` пространства `U1 Planner`; системный preset и его файлы не
+изменяются. Для других принтеров исходный `print_settings_id` сохраняется.
+Project settings переписываются как отдельная ограниченная ZIP entry без
+извлечения архива и публикуются тем же no-clobber writer вместе с одобренными
+transforms.
+
+Текущий контракт `U1 Planner ... v2` при `enable_support=1` обязан также
+нормализовать безопасность поддержек: `support_type=tree(auto)`,
+`support_style=tree_hybrid`, `support_on_build_plate_only=0`, три верхних
+interface-слоя для Standard/Reliable и четыре для Maximum, spacing 0,2 мм,
+pattern `rectilinear_interlaced`, две стенки дерева, скорости support/interface
+100/50 мм/с и `support_top_z_distance`, равный высоте слоя проекта. Контракт
+применяется только к Snapmaker U1; проекты других принтеров не получают
+Orca-специфичный стиль. Профили v1 считаются устаревшими/custom и должны быть
+нормализованы повторной оптимизацией.
+
+При последующем анализе 3MF parser восстанавливает adhesion mode только для
+известного versioned `U1 Planner` profile и только после проверки полного
+контракта `brim_type`, ширины и зазора brim, raft layers/expansion, slow layers
+и обеих скоростей первого слоя, а при включённых поддержках — также полного
+support safety contract v2. Совпадение одного `print_settings_id`
+недостаточно. Изменённый или неполный `U1 Planner` profile получает состояние
+`custom`; сторонний Orca profile получает `none` и не угадывается по похожим
+значениям. Detected policy входит в `ProjectPlanView` и восстанавливает выбор
+режима на втором этапе. Для `custom` UI выбирает безопасный Reliable default и
+явно предупреждает, что новая копия будет нормализована выбранным профилем.
+
+Desktop entry point находится на экране завершённой конвертации в блоке
+`Optimize generated plates`. Toggle изначально выключен. После включения UI
+анализирует фактические платы внутри каждого опубликованного 3MF, а пользователь
+флажками выбирает нужные платы. Оптимизация выполняется вторым этапом в blocking
+Rust worker и сохраняет отдельную no-clobber `.3mf` copy. Исходный итоговый файл
+и опубликованный bundle не изменяются, поэтому manifest и checksums остаются
+валидными. Перед чтением backend повторно проверяет зарегистрированные размер и
+SHA-256 итогового файла.
+
+После успешного plate-level шага desktop регистрирует canonical path, byte size,
+SHA-256, adapter и slicer оптимизированной копии. В conversion result UI эта
+копия становится preferred artifact для быстрых действий, а исходный published
+artifact остаётся доступен в отдельном сворачиваемом списке. Регистрация
+оптимизированной копии не удаляет регистрацию исходного файла и не изменяет
+manifest либо checksums опубликованного bundle.
+
+Оптимизация нескольких published artifacts имеет per-artifact partial-success
+семантику. Ошибка bounded packing одного файла не откатывает уже созданные и
+зарегистрированные копии других файлов. UI передаёт в preferred overlay только
+успешные результаты, а для каждого failed artifact явно сообщает, что исходный
+published artifact сохранён как effective fallback. Такой ожидаемый packing
+отказ отображается как status/warning, а не как общий `role=alert`; уменьшение
+18-мм support envelope в качестве автоматического fallback запрещено.
+
+Preferred artifacts являются session-scoped overlay для `Print Run`. Overlay
+может заменить published artifact только при точном совпадении adapter, target,
+batch, printer, slicer, target plate IDs и source unit IDs. Print Run продолжает
+проверять готовность и полноту canonical published bundle, но строит operator
+progress fingerprint и кнопки открытия по effective artifact set с checksum
+оптимизированных копий. Published originals остаются отдельными разрешёнными
+fallback actions.
 
 Регрессионный benchmark сравнивает рекомендацию с реальным
 `Snapmaker_Orca --orient` на геометрически эквивалентной однодетальной копии.

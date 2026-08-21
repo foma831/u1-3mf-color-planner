@@ -16,7 +16,7 @@ use u1_planner::{
     PrinterPreference, RgbColor, ScopeStrategy, ScopeStrategyOptions, SetupActionKind, SetupPhase,
     Spool, Toolhead, ToolheadSlotState, plan,
 };
-use u1_three_mf::{ProjectAnalysis, ProjectDialect};
+use u1_three_mf::{DetectedAdhesionMode, ProjectAnalysis, ProjectDialect};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -174,6 +174,7 @@ struct LoadedToolheadInputView {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPlanView {
     summary: ProjectSummaryView,
+    detected_adhesion: DetectedAdhesionPolicyView,
     alternative_plates: Vec<AlternativePlateView>,
     project_direct_palette: ProjectDirectPaletteView,
     scope_selections: Vec<ScopeSelectionView>,
@@ -196,6 +197,13 @@ pub struct ProjectPlanView {
     restore_cmy_by_default: bool,
     custom_direct_palettes_enabled: bool,
     u1_cross_source_repacking_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectedAdhesionPolicyView {
+    mode: DetectedAdhesionMode,
+    profile_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1359,6 +1367,10 @@ fn project_plan_view(
                 .filter(|filament| !filament.used)
                 .count(),
             alternative_plate_count: alternative_plates.len(),
+        },
+        detected_adhesion: DetectedAdhesionPolicyView {
+            mode: analysis.process.adhesion.mode,
+            profile_name: analysis.process.adhesion.profile_name.clone(),
         },
         alternative_plates,
         project_direct_palette: project_direct_palette(&input.scopes, &options),
@@ -2766,6 +2778,10 @@ mod tests {
                 unused_filament_count: 0,
                 alternative_plate_count: 1,
             },
+            detected_adhesion: DetectedAdhesionPolicyView {
+                mode: DetectedAdhesionMode::Reliable,
+                profile_name: Some("U1 Planner Reliable Adhesion v2".to_owned()),
+            },
             alternative_plates: vec![AlternativePlateView {
                 id: 7,
                 name: "Updated Ball Joints".to_owned(),
@@ -2845,6 +2861,11 @@ mod tests {
 
         assert_eq!(json["summary"]["fileName"], "fixture.3mf");
         assert_eq!(json["summary"]["sourcePlateCount"], 1);
+        assert_eq!(json["detectedAdhesion"]["mode"], "reliable");
+        assert_eq!(
+            json["detectedAdhesion"]["profileName"],
+            "U1 Planner Reliable Adhesion v2"
+        );
         assert_eq!(json["alternativePlates"][0]["id"], 7);
         assert_eq!(json["alternativePlates"][0]["name"], "Updated Ball Joints");
         assert_eq!(json["alternativePlates"][0]["included"], false);

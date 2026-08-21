@@ -165,6 +165,8 @@ export interface PlatePlan {
 
 export interface ProjectPlan {
   summary: ProjectSummary;
+  /** Adhesion policy recovered from a U1 Planner profile embedded in the source 3MF. */
+  detectedAdhesion?: DetectedAdhesionPolicy;
   alternativePlates: AlternativePlate[];
   /** Authoritative whole-project Direct Spools eligibility and source identities. */
   projectDirectPalette: ProjectDirectPalette;
@@ -206,6 +208,71 @@ export interface ProjectPlan {
   customDirectPalettesEnabled: boolean;
   /** Authoritative backend result for the selected U1 target-plate layout mode. */
   u1CrossSourceRepackingEnabled: boolean;
+}
+
+export interface OrientationPlateOption {
+  id: number;
+  name: string;
+  printableInstanceCount: number;
+}
+
+export interface OrientationMetrics {
+  score: number;
+  estimated_support_volume_mm3: number;
+  overhang_contact_area_mm2: number;
+  overhang_component_count: number;
+  small_overhang_component_count: number;
+  bed_contact_area_mm2: number;
+  height_mm: number;
+  footprint_width_mm: number;
+  footprint_depth_mm: number;
+  footprint_area_mm2: number;
+}
+
+export type AdhesionMode = "standard" | "reliable" | "maximum";
+export type DetectedAdhesionMode = AdhesionMode | "custom" | "none";
+
+export interface DetectedAdhesionPolicy {
+  mode: DetectedAdhesionMode;
+  profileName: string | null;
+}
+export type AdhesionRiskLevel = "low" | "moderate" | "high" | "critical";
+
+export interface AdhesionRiskAssessment {
+  score: number;
+  level: AdhesionRiskLevel;
+  recommended_brim_width_mm: number;
+}
+
+export interface PlateOrientationInstanceReport {
+  object_id: number;
+  instance_id: number;
+  candidate_rank: number;
+  used_source_orientation: boolean;
+  target_min_x_mm: number;
+  target_min_y_mm: number;
+  adhesion_risk: AdhesionRiskAssessment;
+  selected: { metrics: OrientationMetrics };
+}
+
+export interface PlateOrientationOptimizationReport {
+  plate_id: number;
+  repair_attempts: number;
+  source_score: number;
+  selected_score: number;
+  estimated_support_volume_improvement: number;
+  adhesion_mode: AdhesionMode;
+  reserved_process_envelope_mm: number;
+  maximum_adhesion_risk: AdhesionRiskAssessment;
+  instances: PlateOrientationInstanceReport[];
+}
+
+export interface PublishedOrientationResult {
+  sourcePath: string;
+  destinationPath: string;
+  byteSize: number;
+  sha256: string;
+  reports: PlateOrientationOptimizationReport[];
 }
 
 export interface ProjectDirectPaletteReference {

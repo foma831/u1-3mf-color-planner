@@ -51,6 +51,8 @@ export interface PrintRunProps {
   isPlanValidated: boolean;
   /** The validated native files published for this exact plan. */
   publishedBundle?: PublishedPrintRunBundle | null;
+  /** Session-registered optimized copies preferred over matching published files. */
+  preferredArtifacts?: PublishedConversionArtifact[];
   /** Defaults to window.localStorage. Pass null for an in-memory-only run. */
   storage?: Storage | null;
   /** Lets the host keep its plate inspector synchronized with this workflow. */
@@ -451,7 +453,7 @@ function CurrentPlate({
       </dl>
 
       <div className="print-run-artifact">
-        <strong>Published project file</strong>
+        <strong>Project file for this run</strong>
         <span>{artifact.fileName}</span>
         <code>{artifact.path}</code>
         <small>
@@ -477,7 +479,7 @@ function CurrentPlate({
       <div className="print-run-instruction">
         <strong>Print this target plate now.</strong>
         <p>
-          Launch the published file shown above on the {plate.printer}. This app
+          Launch the project file shown above on the {plate.printer}. This app
           does not start, pause, or monitor the printer.
         </p>
       </div>
@@ -502,6 +504,7 @@ function PublishedFiles({
   plan,
   bundle,
   artifactsByPlate,
+  publishedArtifactsByPlate,
   openingArtifactPath,
   canOpenArtifact,
   onOpenArtifact,
@@ -509,6 +512,7 @@ function PublishedFiles({
   plan: PrintRunPlan;
   bundle: PublishedPrintRunBundle;
   artifactsByPlate: Map<string, PublishedConversionArtifact>;
+  publishedArtifactsByPlate: Map<string, PublishedConversionArtifact>;
   openingArtifactPath: string | null;
   canOpenArtifact: boolean;
   onOpenArtifact: (artifact: PublishedConversionArtifact) => void;
@@ -519,7 +523,7 @@ function PublishedFiles({
       aria-labelledby="print-run-files-heading"
     >
       <div>
-        <h3 id="print-run-files-heading">Published files for this run</h3>
+        <h3 id="print-run-files-heading">Files for this run</h3>
         <p>
           Manifest: <code>{bundle.result.manifestPath}</code>
         </p>
@@ -544,6 +548,9 @@ function PublishedFiles({
                 </span>
                 <span>
                   <strong>{artifact.fileName}</strong>
+                  {artifact.path !== publishedArtifactsByPlate.get(plate.id)?.path ? (
+                    <small>Support optimized</small>
+                  ) : null}
                   <code>{artifact.path}</code>
                 </span>
                 <button
@@ -565,8 +572,96 @@ function PublishedFiles({
             );
           })}
       </ol>
+      {[...plan.plates].some(
+        (plate) =>
+          artifactsByPlate.get(plate.id)?.path !==
+          publishedArtifactsByPlate.get(plate.id)?.path,
+      ) ? (
+        <details className="print-run-original-files">
+          <summary>Original non-optimized files</summary>
+          <ol>
+            {[...plan.plates]
+              .sort(
+                (left, right) =>
+                  left.order - right.order || left.id.localeCompare(right.id),
+              )
+              .map((plate) => {
+                const original = publishedArtifactsByPlate.get(plate.id);
+                const preferred = artifactsByPlate.get(plate.id);
+                if (!original || original.path === preferred?.path) return null;
+                return (
+                  <li key={plate.id}>
+                    <span>
+                      <strong>{targetPlateLabel(plate.order)}</strong>
+                      <small>{plate.title}</small>
+                    </span>
+                    <span>
+                      <strong>{original.fileName}</strong>
+                      <code>{original.path}</code>
+                    </span>
+                    <button
+                      className="button button--compact"
+                      type="button"
+                      disabled={openingArtifactPath !== null || !canOpenArtifact}
+                      onClick={() => onOpenArtifact(original)}
+                    >
+                      {openingArtifactPath === original.path ? (
+                        <LoaderCircle className="is-spinning" aria-hidden="true" />
+                      ) : (
+                        <ExternalLink aria-hidden="true" />
+                      )}
+                      {openingArtifactPath === original.path
+                        ? `Opening original in ${original.slicer}…`
+                        : `Open original in ${original.slicer}`}
+                    </button>
+                  </li>
+                );
+              })}
+          </ol>
+        </details>
+      ) : null}
     </section>
   );
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function bundleWithPreferredArtifacts(
+  bundle: PublishedPrintRunBundle | null,
+  preferredArtifacts: readonly PublishedConversionArtifact[],
+) {
+  if (!bundle || preferredArtifacts.length === 0) return bundle;
+  const replacements = new Map<string, PublishedConversionArtifact>();
+  for (const preferred of preferredArtifacts) {
+    const source = bundle.result.artifacts.find(
+      (artifact) =>
+        artifact.adapterId === preferred.adapterId &&
+        artifact.target === preferred.target &&
+        artifact.batchId === preferred.batchId &&
+        artifact.printer === preferred.printer &&
+        artifact.slicer === preferred.slicer &&
+        sameStringSet(artifact.targetPlateIds, preferred.targetPlateIds) &&
+        sameStringSet(artifact.sourceUnitIds, preferred.sourceUnitIds),
+    );
+    if (source && preferred.validationStatus.toLowerCase().startsWith("passed")) {
+      replacements.set(source.path, preferred);
+    }
+  }
+  if (replacements.size === 0) return bundle;
+  return {
+    ...bundle,
+    result: {
+      ...bundle.result,
+      artifacts: bundle.result.artifacts.map(
+        (artifact) => replacements.get(artifact.path) ?? artifact,
+      ),
+    },
+  };
 }
 
 function A1SpoolCheckpoint({
@@ -849,6 +944,7 @@ export function PrintRun({
   plan,
   isPlanValidated,
   publishedBundle = null,
+  preferredArtifacts = [],
   storage,
   onCurrentTargetChange,
   onProgressChange,
@@ -857,13 +953,21 @@ export function PrintRun({
   onOpenArtifact,
   now = () => new Date().toISOString(),
 }: PrintRunProps) {
+  const effectiveBundle = useMemo(
+    () => bundleWithPreferredArtifacts(publishedBundle, preferredArtifacts),
+    [preferredArtifacts, publishedBundle],
+  );
   const descriptor = useMemo(
-    () => createPrintRunDescriptor(plan, publishedBundle),
+    () => createPrintRunDescriptor(plan, effectiveBundle),
+    [effectiveBundle, plan],
+  );
+  const publishedArtifactsByPlate = useMemo(
+    () => publishedArtifactsForPlan(plan, publishedBundle),
     [plan, publishedBundle],
   );
   const artifactsByPlate = useMemo(
-    () => publishedArtifactsForPlan(plan, publishedBundle),
-    [plan, publishedBundle],
+    () => publishedArtifactsForPlan(plan, effectiveBundle),
+    [effectiveBundle, plan],
   );
   const progressStorage = storage === undefined ? defaultStorage() : storage;
   const requiresPersistentProgress = storage !== null;
@@ -946,7 +1050,10 @@ export function PrintRun({
 
   const openArtifact = async (artifact: PublishedConversionArtifact) => {
     if (openingArtifactPath || !onOpenArtifact) return;
-    const registered = [...artifactsByPlate.values()].some(
+    const registered = [
+      ...artifactsByPlate.values(),
+      ...publishedArtifactsByPlate.values(),
+    ].some(
       (candidate) =>
         candidate.path === artifact.path &&
         candidate.adapterId === artifact.adapterId &&
@@ -1140,6 +1247,7 @@ export function PrintRun({
               plan={plan}
               bundle={publishedBundle}
               artifactsByPlate={artifactsByPlate}
+              publishedArtifactsByPlate={publishedArtifactsByPlate}
               openingArtifactPath={openingArtifactPath}
               canOpenArtifact={Boolean(onOpenArtifact)}
               onOpenArtifact={(artifact) => void openArtifact(artifact)}
@@ -1163,9 +1271,10 @@ export function PrintRun({
                   Ready to begin
                 </h3>
                 <p>
-                  Start only when these published project files are the ones
+                  Start only when these project files are the ones
                   loaded in their listed slicers. Progress is saved for this
-                  source file, exact plan, manifest, and artifact checksums.
+                  source file, exact plan, manifest, and selected file
+                  checksums.
                 </p>
                 <button
                   className="button button--primary"

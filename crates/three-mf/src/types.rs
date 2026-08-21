@@ -139,9 +139,39 @@ pub struct ProcessInformation {
     pub initial_layer_height_mm: Option<f64>,
     pub prime_tower_enabled: Option<bool>,
     #[serde(default)]
+    pub adhesion: DetectedAdhesionPolicy,
+    #[serde(default)]
     pub quality: QualityInformation,
     #[serde(default)]
     pub support: SupportInformation,
+}
+
+/// Adhesion settings recovered from a project profile written by U1 Planner.
+/// The mode is recognized only when every relevant setting still matches the
+/// profile contract; the profile name alone is never trusted.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DetectedAdhesionPolicy {
+    pub mode: DetectedAdhesionMode,
+    pub profile_name: Option<String>,
+    pub brim_type: Option<String>,
+    pub brim_width_mm: Option<f64>,
+    pub brim_object_gap_mm: Option<f64>,
+    pub raft_layers: Option<f64>,
+    pub raft_first_layer_expansion_mm: Option<f64>,
+    pub slow_layers: Option<f64>,
+    pub initial_layer_speed_mm_s: Option<f64>,
+    pub initial_layer_infill_speed_mm_s: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectedAdhesionMode {
+    Standard,
+    Reliable,
+    Maximum,
+    Custom,
+    #[default]
+    None,
 }
 
 /// Target-independent quality ceilings recovered from the source process.
@@ -454,7 +484,108 @@ pub struct OrientationMetrics {
     pub small_overhang_component_count: usize,
     pub bed_contact_area_mm2: f64,
     pub height_mm: f64,
+    pub footprint_width_mm: f64,
+    pub footprint_depth_mm: f64,
     pub footprint_area_mm2: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlateOrientationOptimizationOptions {
+    pub orientation: OrientationOptimizationOptions,
+    pub bed_min_x_mm: f64,
+    pub bed_min_y_mm: f64,
+    pub bed_width_mm: f64,
+    pub bed_depth_mm: f64,
+    pub bed_height_mm: f64,
+    /// Per-side space reserved beyond the model footprint for generated
+    /// supports, brims, and other first-layer process geometry.
+    #[serde(default = "default_support_envelope_mm")]
+    pub support_envelope_mm: f64,
+    /// Optional first-layer reliability policy. The same policy determines
+    /// both the packing envelope and the project settings written to an
+    /// optimized copy.
+    #[serde(default)]
+    pub adhesion_mode: AdhesionMode,
+    pub object_clearance_mm: f64,
+    pub max_repair_attempts: usize,
+    pub max_instances: usize,
+}
+
+const fn default_support_envelope_mm() -> f64 {
+    // Snapmaker Orca's Auto Brim can extend 18 mm beyond an object. Keeping
+    // this value aligned with the writer prevents a layout that fits the mesh
+    // but collides once first-layer process geometry is generated.
+    18.0
+}
+
+impl Default for PlateOrientationOptimizationOptions {
+    fn default() -> Self {
+        Self {
+            orientation: OrientationOptimizationOptions::default(),
+            bed_min_x_mm: 0.5,
+            bed_min_y_mm: 1.0,
+            bed_width_mm: 270.0,
+            bed_depth_mm: 270.0,
+            bed_height_mm: 270.0,
+            support_envelope_mm: default_support_envelope_mm(),
+            adhesion_mode: AdhesionMode::Standard,
+            object_clearance_mm: 2.0,
+            max_repair_attempts: 50,
+            max_instances: 64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdhesionMode {
+    #[default]
+    Standard,
+    Reliable,
+    Maximum,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdhesionRiskLevel {
+    Low,
+    Moderate,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdhesionRiskAssessment {
+    pub score: f64,
+    pub level: AdhesionRiskLevel,
+    pub recommended_brim_width_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlateOrientationInstanceReport {
+    pub object_id: u32,
+    pub instance_id: u32,
+    pub source_build_item_index: u32,
+    pub candidate_rank: usize,
+    pub used_source_orientation: bool,
+    pub target_min_x_mm: f64,
+    pub target_min_y_mm: f64,
+    pub adhesion_risk: AdhesionRiskAssessment,
+    pub selected: OrientationCandidate,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlateOrientationOptimizationReport {
+    pub source: InputIdentity,
+    pub plate_id: u32,
+    pub repair_attempts: usize,
+    pub source_score: f64,
+    pub selected_score: f64,
+    pub estimated_support_volume_improvement: f64,
+    pub adhesion_mode: AdhesionMode,
+    pub reserved_process_envelope_mm: f64,
+    pub maximum_adhesion_risk: AdhesionRiskAssessment,
+    pub instances: Vec<PlateOrientationInstanceReport>,
 }
 
 impl AxisAlignedBounds {

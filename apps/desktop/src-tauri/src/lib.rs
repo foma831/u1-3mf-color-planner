@@ -60,7 +60,9 @@ use u1_orca_adapter::{
 };
 use u1_planner::{ColorStrategy, PlanningInput, PlanningResult};
 use u1_three_mf::{
-    DialectSupport, InputIdentity, ProjectAnalysis, ProjectDialect, SourceApplication,
+    AdhesionMode, DialectSupport, InputIdentity, PlateOrientationOptimizationOptions,
+    PlateOrientationOptimizationReport, ProjectAnalysis, ProjectDialect, SourceApplication,
+    analyze_project as analyze_3mf, optimize_plate_orientations, write_optimized_plate_reports,
 };
 use view::{InitialPlanningIntentView, PlanningRequestView, ProjectPlanView};
 
@@ -611,6 +613,77 @@ async fn replan_project(
     cached.planning_result = outcome.result;
     cached.plan_fingerprint = plan_fingerprint;
     Ok(project_view)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrientationPlateOptionView {
+    id: u32,
+    name: String,
+    printable_instance_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishedOrientationResultView {
+    source_path: PathBuf,
+    destination_path: PathBuf,
+    byte_size: u64,
+    sha256: String,
+    reports: Vec<PlateOrientationOptimizationReport>,
+}
+
+fn desktop_plate_orientation_options() -> PlateOrientationOptimizationOptions {
+    let mut options = PlateOrientationOptimizationOptions::default();
+    options.orientation.direction_samples = 72;
+    options
+}
+
+fn published_plate_orientation_options(
+    slicer: RegisteredSlicer,
+    adhesion_mode: AdhesionMode,
+) -> PlateOrientationOptimizationOptions {
+    let mut options = desktop_plate_orientation_options();
+    options.max_instances = 512;
+    options.adhesion_mode = adhesion_mode;
+    options.support_envelope_mm = 18.0;
+    if slicer == RegisteredSlicer::BambuStudio {
+        options.bed_min_x_mm = 0.0;
+        options.bed_min_y_mm = 0.0;
+        options.bed_width_mm = 180.0;
+        options.bed_depth_mm = 180.0;
+        options.bed_height_mm = 180.0;
+    }
+    options
+}
+
+fn orientation_destination_path(
+    destination_path: &str,
+    source_path: &Path,
+) -> Result<PathBuf, String> {
+    let destination = PathBuf::from(destination_path);
+    if !destination.is_absolute() {
+        return Err("Choose an absolute destination for the optimized 3MF copy.".to_owned());
+    }
+    if !destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("3mf"))
+    {
+        return Err(
+            "The optimized orientation destination must use the .3mf extension.".to_owned(),
+        );
+    }
+    if destination == source_path {
+        return Err("The optimized copy cannot replace the immutable source 3MF.".to_owned());
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        "The optimized orientation destination has no parent directory.".to_owned()
+    })?;
+    if !parent.is_dir() {
+        return Err("The optimized orientation destination directory does not exist.".to_owned());
+    }
+    Ok(destination)
 }
 
 #[tauri::command]
@@ -1587,6 +1660,36 @@ fn validate_registered_output_identity(output: &RegisteredPublishedOutput) -> Re
         "output_action_file_changed: The converted project changed after publication. Validate or convert it again before opening it from this result."
             .to_owned()
     })
+}
+
+fn register_optimized_output(
+    registry: &Mutex<HashMap<PathBuf, RegisteredPublishedOutput>>,
+    source: &RegisteredPublishedOutput,
+    destination: &Path,
+) -> Result<RegisteredPublishedOutput, String> {
+    let (byte_size, sha256) = hash_file(destination)?;
+    let canonical_path = destination.canonicalize().map_err(|error| {
+        format!("The optimized project copy could not be resolved after saving: {error}")
+    })?;
+    let optimized = RegisteredPublishedOutput {
+        canonical_path: canonical_path.clone(),
+        adapter_id: source.adapter_id.clone(),
+        slicer: source.slicer,
+        byte_size,
+        sha256,
+    };
+    validate_registered_output_identity(&optimized)?;
+    let mut registered = registry
+        .lock()
+        .map_err(|_| "published output action registry is unavailable".to_owned())?;
+    if registered.get(&source.canonical_path) != Some(source) {
+        return Err(
+            "The conversion result changed while its optimized copy was being registered."
+                .to_owned(),
+        );
+    }
+    registered.insert(canonical_path, optimized.clone());
+    Ok(optimized)
 }
 
 fn discover_registered_slicer(slicer: RegisteredSlicer) -> Result<PathBuf, String> {
@@ -6205,6 +6308,89 @@ async fn show_output_in_finder(
         .map_err(|error| format!("output_action_worker_failed: Output action failed: {error}"))?
 }
 
+#[tauri::command]
+async fn list_published_orientation_plates(
+    path: String,
+    adapter_id: String,
+    cache: tauri::State<'_, ProjectCache>,
+) -> Result<Vec<OrientationPlateOptionView>, String> {
+    let output = resolve_registered_output(&cache.published_outputs, &path, &adapter_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_registered_output_identity(&output)?;
+        let analysis = analyze_3mf(&output.canonical_path).map_err(|error| error.to_string())?;
+        Ok(analysis
+            .plates
+            .iter()
+            .filter_map(|plate| {
+                let printable_instance_count = plate
+                    .instances
+                    .iter()
+                    .filter(|instance| instance.printable)
+                    .count();
+                (printable_instance_count > 0).then(|| OrientationPlateOptionView {
+                    id: plate.id,
+                    name: plate
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Plate {}", plate.id)),
+                    printable_instance_count,
+                })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| format!("output orientation inspection worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn optimize_published_plates(
+    path: String,
+    adapter_id: String,
+    plate_ids: Vec<u32>,
+    adhesion_mode: AdhesionMode,
+    destination_path: String,
+    cache: tauri::State<'_, ProjectCache>,
+) -> Result<PublishedOrientationResultView, String> {
+    let output = resolve_registered_output(&cache.published_outputs, &path, &adapter_id)?;
+    let selected = plate_ids.into_iter().collect::<BTreeSet<_>>();
+    if selected.is_empty() {
+        return Err("Select at least one generated plate to optimize.".into());
+    }
+    let destination = orientation_destination_path(&destination_path, &output.canonical_path)?;
+    if let Some(bundle_root) = output.canonical_path.parent().and_then(Path::parent)
+        && destination.starts_with(bundle_root)
+    {
+        return Err(
+            "Save optimized copies outside the published bundle so its manifest and checksums remain valid."
+                .into(),
+        );
+    }
+    let options = published_plate_orientation_options(output.slicer, adhesion_mode);
+    let published_outputs = Arc::clone(&cache.published_outputs);
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_registered_output_identity(&output)?;
+        let mut reports = Vec::with_capacity(selected.len());
+        for plate_id in selected {
+            reports.push(
+                optimize_plate_orientations(&output.canonical_path, plate_id, options.clone())
+                    .map_err(|error| format!("Generated plate {plate_id}: {error}"))?,
+            );
+        }
+        write_optimized_plate_reports(&output.canonical_path, &destination, &reports)
+            .map_err(|error| format!("Failed to save the optimized project copy: {error}"))?;
+        let optimized = register_optimized_output(&published_outputs, &output, &destination)?;
+        Ok(PublishedOrientationResultView {
+            source_path: output.canonical_path,
+            destination_path: optimized.canonical_path,
+            byte_size: optimized.byte_size,
+            sha256: optimized.sha256,
+            reports,
+        })
+    })
+    .await
+    .map_err(|error| format!("output orientation optimization worker failed: {error}"))?
+}
+
 fn cancel_prepared_or_active_conversion(
     conversion_id: &str,
     prepared_conversion: &Mutex<Option<CachedPreparation>>,
@@ -6663,7 +6849,9 @@ pub fn run() {
             revalidate_published_conversion,
             cancel_conversion,
             open_output_in_slicer,
-            show_output_in_finder
+            show_output_in_finder,
+            list_published_orientation_plates,
+            optimize_published_plates
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the U1 3MF Color Planner desktop app");
@@ -8197,6 +8385,35 @@ mod tests {
     }
 
     #[test]
+    fn optimized_output_is_registered_without_removing_its_published_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source_path = temporary.path().join("published.3mf");
+        let optimized_path = temporary.path().join("optimized.3mf");
+        fs::write(&source_path, b"published fixture").unwrap();
+        fs::write(&optimized_path, b"support optimized fixture").unwrap();
+        let (source_size, source_sha256) = hash_file(&source_path).unwrap();
+        let source = RegisteredPublishedOutput {
+            canonical_path: source_path.canonicalize().unwrap(),
+            adapter_id: "snapmaker-orca/fixture".into(),
+            slicer: RegisteredSlicer::SnapmakerOrca,
+            byte_size: source_size,
+            sha256: source_sha256,
+        };
+        let registry = Mutex::new(HashMap::from([(
+            source.canonical_path.clone(),
+            source.clone(),
+        )]));
+
+        let optimized = register_optimized_output(&registry, &source, &optimized_path).unwrap();
+
+        assert_eq!(registry.lock().unwrap().len(), 2);
+        validate_registered_output_identity(&source).unwrap();
+        validate_registered_output_identity(&optimized).unwrap();
+        assert_eq!(optimized.adapter_id, source.adapter_id);
+        assert_eq!(optimized.slicer, source.slicer);
+    }
+
+    #[test]
     fn quick_output_actions_reject_a_changed_published_file() {
         let temporary = tempfile::tempdir().unwrap();
         let target_directory = temporary.path().join("u1-direct");
@@ -8505,5 +8722,27 @@ mod tests {
 
         assert!(error.contains("differs from the latest backend-validated plan"));
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn orientation_destination_is_separate_absolute_3mf_and_never_clobbers_source() {
+        let directory = tempfile::tempdir().expect("temporary orientation directory");
+        let source = directory.path().join("source.3mf");
+        std::fs::write(&source, b"source").expect("write source fixture");
+
+        let destination = directory.path().join("optimized.3MF");
+        assert_eq!(
+            orientation_destination_path(destination.to_str().unwrap(), &source).unwrap(),
+            destination
+        );
+        assert!(orientation_destination_path(source.to_str().unwrap(), &source).is_err());
+        assert!(orientation_destination_path("relative.3mf", &source).is_err());
+        assert!(
+            orientation_destination_path(
+                directory.path().join("optimized.stl").to_str().unwrap(),
+                &source,
+            )
+            .is_err()
+        );
     }
 }

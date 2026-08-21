@@ -29,6 +29,7 @@ const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
 const MAX_COMPONENT_GRAPH_DEPTH: usize = 256;
 const MAX_SOURCE_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MODEL_XML_BUFFER_BYTES: usize = 128 * 1024;
+const MAX_FIRST_LAYER_PROCESS_ENVELOPE_MM: f64 = 18.0;
 
 #[derive(Debug, Error)]
 pub enum AnalysisError {
@@ -2169,10 +2170,147 @@ fn build_project_settings(
         layer_height_mm: numeric_setting(root, "layer_height", warnings),
         initial_layer_height_mm: numeric_setting(root, "initial_layer_print_height", warnings),
         prime_tower_enabled: bool_value(root.get("enable_prime_tower")),
+        adhesion: detect_adhesion_policy(root),
         quality: build_quality_information(root, warnings),
         support: build_support_information(root, warnings),
     };
     (filaments, printer, process)
+}
+
+fn detect_adhesion_policy(root: &Value) -> DetectedAdhesionPolicy {
+    let policy = DetectedAdhesionPolicy {
+        profile_name: string_value(root.get("print_settings_id")),
+        brim_type: string_value(root.get("brim_type")),
+        brim_width_mm: nonnegative_numeric_value(root.get("brim_width")),
+        brim_object_gap_mm: nonnegative_numeric_value(root.get("brim_object_gap")),
+        raft_layers: nonnegative_numeric_value(root.get("raft_layers")),
+        raft_first_layer_expansion_mm: nonnegative_numeric_value(
+            root.get("raft_first_layer_expansion"),
+        ),
+        slow_layers: nonnegative_numeric_value(root.get("slow_down_layers")),
+        initial_layer_speed_mm_s: nonnegative_numeric_value(root.get("initial_layer_speed")),
+        initial_layer_infill_speed_mm_s: nonnegative_numeric_value(
+            root.get("initial_layer_infill_speed"),
+        ),
+        ..Default::default()
+    };
+    let Some(profile_name) = policy.profile_name.as_deref() else {
+        return policy;
+    };
+    if !profile_name.starts_with("U1 Planner ") {
+        return policy;
+    }
+
+    let expected_mode = match profile_name {
+        "U1 Planner Standard v2" => DetectedAdhesionMode::Standard,
+        "U1 Planner Reliable Adhesion v2" => DetectedAdhesionMode::Reliable,
+        "U1 Planner Maximum Adhesion v2" => DetectedAdhesionMode::Maximum,
+        _ => DetectedAdhesionMode::Custom,
+    };
+    let adhesion_matches = match expected_mode {
+        DetectedAdhesionMode::Standard => {
+            adhesion_values_match(&policy, "auto_brim", 0.0, 0.0, 2.0, 25.0, false)
+        }
+        DetectedAdhesionMode::Reliable => {
+            adhesion_values_match(&policy, "outer_only", 0.0, 0.0, 3.0, 20.0, false)
+        }
+        DetectedAdhesionMode::Maximum => {
+            adhesion_values_match(&policy, "outer_only", 2.0, 8.0, 4.0, 15.0, true)
+        }
+        DetectedAdhesionMode::Custom | DetectedAdhesionMode::None => false,
+    };
+    let support_matches = match expected_mode {
+        DetectedAdhesionMode::Standard | DetectedAdhesionMode::Reliable => {
+            u1_support_safety_values_match(root, 3)
+        }
+        DetectedAdhesionMode::Maximum => u1_support_safety_values_match(root, 4),
+        DetectedAdhesionMode::Custom | DetectedAdhesionMode::None => false,
+    };
+    DetectedAdhesionPolicy {
+        mode: if adhesion_matches && support_matches {
+            expected_mode
+        } else {
+            DetectedAdhesionMode::Custom
+        },
+        ..policy
+    }
+}
+
+fn u1_support_safety_values_match(root: &Value, interface_layers: u8) -> bool {
+    if bool_value(root.get("enable_support")) != Some(true) {
+        return true;
+    }
+    let one_layer_top_gap_matches = nonnegative_numeric_value(root.get("layer_height"))
+        .zip(nonnegative_numeric_value(
+            root.get("support_top_z_distance"),
+        ))
+        .is_some_and(|(layer_height, top_gap)| {
+            layer_height > 0.0 && approximately_equal(layer_height, top_gap)
+        });
+    string_value(root.get("support_type")).as_deref() == Some("tree(auto)")
+        && string_value(root.get("support_style")).as_deref() == Some("tree_hybrid")
+        && bool_value(root.get("support_on_build_plate_only")) == Some(false)
+        && nonnegative_numeric_value(root.get("support_interface_top_layers"))
+            .is_some_and(|value| approximately_equal(value, f64::from(interface_layers)))
+        && nonnegative_numeric_value(root.get("support_interface_spacing"))
+            .is_some_and(|value| approximately_equal(value, 0.2))
+        && string_value(root.get("support_interface_pattern")).as_deref()
+            == Some("rectilinear_interlaced")
+        && nonnegative_numeric_value(root.get("support_speed"))
+            .is_some_and(|value| approximately_equal(value, 100.0))
+        && nonnegative_numeric_value(root.get("support_interface_speed"))
+            .is_some_and(|value| approximately_equal(value, 50.0))
+        && nonnegative_numeric_value(root.get("tree_support_wall_count"))
+            .is_some_and(|value| approximately_equal(value, 2.0))
+        && one_layer_top_gap_matches
+}
+
+fn adhesion_values_match(
+    policy: &DetectedAdhesionPolicy,
+    brim_type: &str,
+    raft_layers: f64,
+    raft_expansion: f64,
+    slow_layers: f64,
+    speed: f64,
+    fixed_maximum_brim: bool,
+) -> bool {
+    policy.brim_type.as_deref() == Some(brim_type)
+        && policy.brim_width_mm.is_some_and(|width| {
+            if fixed_maximum_brim {
+                approximately_equal(width, 18.0)
+            } else {
+                (5.0..=18.0).contains(&width)
+            }
+        })
+        && policy
+            .brim_object_gap_mm
+            .is_some_and(|value| approximately_equal(value, 0.0))
+        && policy
+            .raft_layers
+            .is_some_and(|value| approximately_equal(value, raft_layers))
+        && policy
+            .raft_first_layer_expansion_mm
+            .is_some_and(|value| approximately_equal(value, raft_expansion))
+        && policy
+            .slow_layers
+            .is_some_and(|value| approximately_equal(value, slow_layers))
+        && policy
+            .initial_layer_speed_mm_s
+            .is_some_and(|value| approximately_equal(value, speed))
+        && policy
+            .initial_layer_infill_speed_mm_s
+            .is_some_and(|value| approximately_equal(value, speed))
+}
+
+fn approximately_equal(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1e-6
+}
+
+fn nonnegative_numeric_value(value: Option<&Value>) -> Option<f64> {
+    value
+        .and_then(value_as_string)
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 fn build_quality_information(
@@ -3797,7 +3935,13 @@ pub fn optimize_object_orientation(
     }
 
     let directions = orientation_directions(&triangles, options.direction_samples);
-    let source_metrics = score_orientation(&triangles, [0.0, 0.0, 1.0], &options, true);
+    let source_metrics = score_orientation(
+        &triangles,
+        &orientation_points,
+        [0.0, 0.0, 1.0],
+        &options,
+        true,
+    );
     let source_center = instance
         .printable_bounds
         .map(|bounds| {
@@ -3818,7 +3962,8 @@ pub fn optimize_object_orientation(
         .iter()
         .copied()
         .map(|direction| {
-            let metrics = score_orientation(&triangles, direction, &options, false);
+            let metrics =
+                score_orientation(&triangles, &orientation_points, direction, &options, false);
             (direction, metrics.score)
         })
         .collect();
@@ -3832,7 +3977,7 @@ pub fn optimize_object_orientation(
                 direction,
                 instance_linear,
                 source_center,
-                score_orientation(&triangles, direction, &options, true),
+                score_orientation(&triangles, &orientation_points, direction, &options, true),
             )
         })
         .collect();
@@ -3862,6 +4007,461 @@ pub fn optimize_object_orientation(
         recommendation,
         alternatives,
     })
+}
+
+#[derive(Clone)]
+struct PlateOrientationWorkItem {
+    object_id: u32,
+    instance_id: u32,
+    build_item_index: u32,
+    source_center: [f64; 2],
+    source: OrientationCandidate,
+    candidates: Vec<OrientationCandidate>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OrientationPackRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    depth: f64,
+}
+
+impl OrientationPackRect {
+    fn right(self) -> f64 {
+        self.x + self.width
+    }
+
+    fn top(self) -> f64 {
+        self.y + self.depth
+    }
+}
+
+/// Optimize every printable instance on one source plate. This API is opt-in:
+/// ordinary analysis, planning, and conversion never call it implicitly.
+pub fn optimize_plate_orientations(
+    path: impl AsRef<Path>,
+    plate_id: u32,
+    options: PlateOrientationOptimizationOptions,
+) -> Result<PlateOrientationOptimizationReport, AnalysisError> {
+    validate_plate_orientation_options(&options)?;
+    let path = path.as_ref();
+    let analysis = analyze_project(path)?;
+    let plate = analysis
+        .plates
+        .iter()
+        .find(|plate| plate.id == plate_id)
+        .ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation plate {plate_id} is not present in the analyzed project"
+            ))
+        })?;
+    let printable: Vec<_> = plate
+        .instances
+        .iter()
+        .filter(|instance| instance.printable)
+        .collect();
+    let reserve_prime_tower =
+        analysis.process.prime_tower_enabled == Some(true) && plate.effective_slots.len() > 1;
+    optimize_orientation_instances(
+        path,
+        &analysis,
+        printable,
+        plate_id,
+        reserve_prime_tower,
+        options,
+    )
+}
+
+fn optimize_orientation_instances(
+    path: &Path,
+    analysis: &ProjectAnalysis,
+    printable: Vec<&ObjectInstance>,
+    plate_id: u32,
+    reserve_prime_tower: bool,
+    options: PlateOrientationOptimizationOptions,
+) -> Result<PlateOrientationOptimizationReport, AnalysisError> {
+    if printable.is_empty() || printable.len() > options.max_instances {
+        return Err(AnalysisError::InvalidStructure(format!(
+            "orientation plate {plate_id} has {} printable instances; supported range is 1..={} ",
+            printable.len(),
+            options.max_instances
+        )));
+    }
+
+    let mut work = Vec::with_capacity(printable.len());
+    for instance in printable {
+        let build_item_index = instance.source_build_item_index.ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation instance {}/{} has no stable source build-item index",
+                instance.object_id, instance.instance_id
+            ))
+        })?;
+        let bounds = instance.printable_bounds.ok_or_else(|| {
+            AnalysisError::InvalidStructure(format!(
+                "orientation instance {}/{} has no proven printable bounds",
+                instance.object_id, instance.instance_id
+            ))
+        })?;
+        let report = optimize_object_orientation(
+            path,
+            instance.object_id,
+            instance.instance_id,
+            options.orientation.clone(),
+        )?;
+        if report.source != analysis.input {
+            return Err(AnalysisError::SourceChangedDuringAnalysis(path.to_owned()));
+        }
+        let source = report.source_orientation;
+        let mut candidates = vec![report.recommendation];
+        candidates.extend(report.alternatives);
+        candidates.push(source.clone());
+        candidates.retain(|candidate| {
+            vector_dot(candidate.build_up, source.build_up) > 0.999_999
+                || (candidate.metrics.score <= source.metrics.score
+                    && candidate.metrics.estimated_support_volume_mm3
+                        <= source.metrics.estimated_support_volume_mm3
+                    && candidate.metrics.small_overhang_component_count
+                        <= source.metrics.small_overhang_component_count)
+        });
+        candidates.sort_by(|left, right| {
+            left.metrics
+                .score
+                .total_cmp(&right.metrics.score)
+                .then_with(|| left.build_up[0].total_cmp(&right.build_up[0]))
+                .then_with(|| left.build_up[1].total_cmp(&right.build_up[1]))
+                .then_with(|| left.build_up[2].total_cmp(&right.build_up[2]))
+        });
+        candidates.dedup_by(|left, right| vector_dot(left.build_up, right.build_up) > 0.999_999);
+        work.push(PlateOrientationWorkItem {
+            object_id: instance.object_id,
+            instance_id: instance.instance_id,
+            build_item_index,
+            source_center: [
+                (bounds.min[0] + bounds.max[0]) * 0.5,
+                (bounds.min[1] + bounds.max[1]) * 0.5,
+            ],
+            source,
+            candidates,
+        });
+    }
+
+    let mut frontier = vec![vec![0_usize; work.len()]];
+    let mut visited = BTreeSet::new();
+    let mut repair_attempts = 0_usize;
+    while !frontier.is_empty() && repair_attempts < options.max_repair_attempts {
+        frontier.sort_by(|left, right| {
+            plate_orientation_state_score(left, &work)
+                .total_cmp(&plate_orientation_state_score(right, &work))
+                .then_with(|| left.cmp(right))
+        });
+        let state = frontier.remove(0);
+        if !visited.insert(state.clone()) {
+            continue;
+        }
+        repair_attempts = repair_attempts.saturating_add(1);
+        match pack_plate_orientation_state(&state, &work, &options, reserve_prime_tower) {
+            Ok(placements) => {
+                let source_score = work.iter().map(|item| item.source.metrics.score).sum();
+                let source_support: f64 = work
+                    .iter()
+                    .map(|item| item.source.metrics.estimated_support_volume_mm3)
+                    .sum();
+                let selected_support: f64 = state
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rank)| {
+                        work[index].candidates[*rank]
+                            .metrics
+                            .estimated_support_volume_mm3
+                    })
+                    .sum();
+                let instances: Vec<PlateOrientationInstanceReport> = state
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rank)| {
+                        let item = &work[index];
+                        let mut selected = item.candidates[*rank].clone();
+                        let (target_min_x_mm, target_min_y_mm) = placements[index];
+                        let current_min_x =
+                            item.source_center[0] - selected.metrics.footprint_width_mm / 2.0;
+                        let current_min_y =
+                            item.source_center[1] - selected.metrics.footprint_depth_mm / 2.0;
+                        selected.target_transform.values[9] += target_min_x_mm - current_min_x;
+                        selected.target_transform.values[10] += target_min_y_mm - current_min_y;
+                        let adhesion_risk = adhesion_risk_assessment(&selected.metrics);
+                        PlateOrientationInstanceReport {
+                            object_id: item.object_id,
+                            instance_id: item.instance_id,
+                            source_build_item_index: item.build_item_index,
+                            candidate_rank: *rank,
+                            used_source_orientation: vector_dot(
+                                selected.build_up,
+                                item.source.build_up,
+                            ) > 0.999_999,
+                            target_min_x_mm,
+                            target_min_y_mm,
+                            adhesion_risk,
+                            selected,
+                        }
+                    })
+                    .collect();
+                let maximum_adhesion_risk = instances
+                    .iter()
+                    .map(|instance| instance.adhesion_risk.clone())
+                    .max_by(|left, right| left.score.total_cmp(&right.score))
+                    .expect("a non-empty plate always has an adhesion assessment");
+                return Ok(PlateOrientationOptimizationReport {
+                    source: analysis.input.clone(),
+                    plate_id,
+                    repair_attempts,
+                    source_score,
+                    selected_score: plate_orientation_state_score(&state, &work),
+                    estimated_support_volume_improvement: if source_support > 0.0 {
+                        1.0 - selected_support / source_support
+                    } else {
+                        0.0
+                    },
+                    adhesion_mode: options.adhesion_mode,
+                    reserved_process_envelope_mm: options.support_envelope_mm,
+                    maximum_adhesion_risk,
+                    instances,
+                });
+            }
+            Err(failed_index) => {
+                let mut repair_indices = vec![failed_index];
+                let mut priorities: Vec<_> = work
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let metrics = &item.candidates[state[index]].metrics;
+                        (index, metrics.footprint_area_mm2, metrics.height_mm)
+                    })
+                    .collect();
+                priorities.sort_by(|left, right| {
+                    right
+                        .1
+                        .total_cmp(&left.1)
+                        .then_with(|| right.2.total_cmp(&left.2))
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+                repair_indices.extend(priorities.into_iter().take(5).map(|item| item.0));
+                repair_indices.sort_unstable();
+                repair_indices.dedup();
+                for index in repair_indices {
+                    if state[index] + 1 < work[index].candidates.len() {
+                        let mut next = state.clone();
+                        next[index] += 1;
+                        if !visited.contains(&next) {
+                            frontier.push(next);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Err(AnalysisError::InvalidStructure(format!(
+        "no support-aware orientation layout fit plate {plate_id} within {} bounded repair attempts",
+        options.max_repair_attempts
+    )))
+}
+
+fn adhesion_risk_assessment(metrics: &OrientationMetrics) -> AdhesionRiskAssessment {
+    let contact_area = metrics.bed_contact_area_mm2.max(0.1);
+    let contact_penalty = (1.0 - (contact_area / 100.0).min(1.0)) * 35.0;
+    let slenderness = metrics.height_mm / contact_area.sqrt();
+    let slenderness_penalty = (slenderness / 8.0).min(1.0) * 35.0;
+    let height_penalty = (metrics.height_mm / 200.0).min(1.0) * 15.0;
+    let island_penalty = (metrics.small_overhang_component_count as f64 / 5.0).min(1.0) * 15.0;
+    let score =
+        (contact_penalty + slenderness_penalty + height_penalty + island_penalty).clamp(0.0, 100.0);
+    let (level, recommended_brim_width_mm) = if score < 25.0 {
+        (AdhesionRiskLevel::Low, 5.0)
+    } else if score < 50.0 {
+        (AdhesionRiskLevel::Moderate, 8.0)
+    } else if score < 75.0 {
+        (AdhesionRiskLevel::High, 12.0)
+    } else {
+        (AdhesionRiskLevel::Critical, 18.0)
+    };
+    AdhesionRiskAssessment {
+        score,
+        level,
+        recommended_brim_width_mm,
+    }
+}
+
+fn validate_plate_orientation_options(
+    options: &PlateOrientationOptimizationOptions,
+) -> Result<(), AnalysisError> {
+    validate_orientation_options(&options.orientation)?;
+    let finite_positive = [
+        options.bed_width_mm,
+        options.bed_depth_mm,
+        options.bed_height_mm,
+        options.object_clearance_mm,
+    ]
+    .into_iter()
+    .all(|value| value.is_finite() && value > 0.0);
+    if options.bed_min_x_mm.is_finite()
+        && options.bed_min_y_mm.is_finite()
+        && options.support_envelope_mm.is_finite()
+        && options.support_envelope_mm >= 0.0
+        && options.support_envelope_mm >= MAX_FIRST_LAYER_PROCESS_ENVELOPE_MM
+        && finite_positive
+        && options.max_repair_attempts > 0
+        && options.max_instances > 0
+    {
+        Ok(())
+    } else {
+        Err(AnalysisError::InvalidLimits(
+            "plate orientation options contain invalid bed, clearance, or search limits".into(),
+        ))
+    }
+}
+
+fn plate_orientation_state_score(state: &[usize], work: &[PlateOrientationWorkItem]) -> f64 {
+    state
+        .iter()
+        .enumerate()
+        .map(|(index, rank)| work[index].candidates[*rank].metrics.score)
+        .sum()
+}
+
+fn pack_plate_orientation_state(
+    state: &[usize],
+    work: &[PlateOrientationWorkItem],
+    options: &PlateOrientationOptimizationOptions,
+    reserve_prime_tower: bool,
+) -> Result<Vec<(f64, f64)>, usize> {
+    let mut free = vec![OrientationPackRect {
+        x: options.bed_min_x_mm,
+        y: options.bed_min_y_mm,
+        width: options.bed_width_mm,
+        depth: options.bed_depth_mm,
+    }];
+    if reserve_prime_tower {
+        let reserve_extent = 118.2_f64;
+        let reserve = OrientationPackRect {
+            x: options.bed_min_x_mm + options.bed_width_mm - reserve_extent,
+            y: options.bed_min_y_mm + options.bed_depth_mm - reserve_extent,
+            width: reserve_extent,
+            depth: reserve_extent,
+        };
+        orientation_commit_rect(&mut free, reserve);
+    }
+    let mut order: Vec<_> = state
+        .iter()
+        .enumerate()
+        .map(|(index, rank)| {
+            let metrics = &work[index].candidates[*rank].metrics;
+            (index, metrics.footprint_area_mm2, metrics.height_mm)
+        })
+        .collect();
+    order.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| right.2.total_cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let mut placements = vec![(0.0, 0.0); work.len()];
+    for (index, _, _) in order {
+        let metrics = &work[index].candidates[state[index]].metrics;
+        if metrics.height_mm > options.bed_height_mm {
+            return Err(index);
+        }
+        let process_padding = options.object_clearance_mm + 2.0 * options.support_envelope_mm;
+        let padded_width = metrics.footprint_width_mm + process_padding;
+        let padded_depth = metrics.footprint_depth_mm + process_padding;
+        let Some((free_index, placed)) = free
+            .iter()
+            .enumerate()
+            .filter(|(_, rect)| {
+                padded_width <= rect.width + 1.0e-6 && padded_depth <= rect.depth + 1.0e-6
+            })
+            .map(|(free_index, rect)| {
+                let remaining_width = rect.width - padded_width;
+                let remaining_depth = rect.depth - padded_depth;
+                (
+                    free_index,
+                    OrientationPackRect {
+                        x: rect.x,
+                        y: rect.y,
+                        width: padded_width,
+                        depth: padded_depth,
+                    },
+                    remaining_width.min(remaining_depth),
+                    remaining_width.max(remaining_depth),
+                )
+            })
+            .min_by(|left, right| {
+                left.2
+                    .total_cmp(&right.2)
+                    .then_with(|| left.3.total_cmp(&right.3))
+                    .then_with(|| left.1.y.total_cmp(&right.1.y))
+                    .then_with(|| left.1.x.total_cmp(&right.1.x))
+            })
+            .map(|(free_index, rect, _, _)| (free_index, rect))
+        else {
+            return Err(index);
+        };
+        let _ = free_index;
+        placements[index] = (
+            placed.x + options.object_clearance_mm / 2.0 + options.support_envelope_mm,
+            placed.y + options.object_clearance_mm / 2.0 + options.support_envelope_mm,
+        );
+        orientation_commit_rect(&mut free, placed);
+    }
+    Ok(placements)
+}
+
+fn orientation_commit_rect(free: &mut Vec<OrientationPackRect>, used: OrientationPackRect) {
+    let mut split = Vec::new();
+    for rect in free.drain(..) {
+        if used.x >= rect.right()
+            || used.right() <= rect.x
+            || used.y >= rect.top()
+            || used.top() <= rect.y
+        {
+            split.push(rect);
+            continue;
+        }
+        if used.x > rect.x {
+            split.push(OrientationPackRect {
+                x: rect.x,
+                y: rect.y,
+                width: used.x - rect.x,
+                depth: rect.depth,
+            });
+        }
+        if used.right() < rect.right() {
+            split.push(OrientationPackRect {
+                x: used.right(),
+                y: rect.y,
+                width: rect.right() - used.right(),
+                depth: rect.depth,
+            });
+        }
+        if used.y > rect.y {
+            split.push(OrientationPackRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                depth: used.y - rect.y,
+            });
+        }
+        if used.top() < rect.top() {
+            split.push(OrientationPackRect {
+                x: rect.x,
+                y: used.top(),
+                width: rect.width,
+                depth: rect.top() - used.top(),
+            });
+        }
+    }
+    split.retain(|rect| rect.width > 1.0e-6 && rect.depth > 1.0e-6);
+    free.extend(split);
 }
 
 /// Publish a no-clobber copy whose selected build item uses the optimizer's
@@ -3997,6 +4597,316 @@ pub fn write_optimized_object_orientation(
         .into());
     }
     Ok(report)
+}
+
+/// Publish an explicitly requested no-clobber copy with every selected plate
+/// instance rotated and repacked according to the bounded plate optimizer.
+pub fn write_optimized_plate_orientations(
+    source_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    plate_id: u32,
+    options: PlateOrientationOptimizationOptions,
+) -> Result<PlateOrientationOptimizationReport, OrientationWriteError> {
+    let source_path = source_path.as_ref();
+    let report = optimize_plate_orientations(source_path, plate_id, options)?;
+    write_optimized_plate_reports(source_path, destination, std::slice::from_ref(&report))?;
+    Ok(report)
+}
+/// Write one complete no-clobber 3MF copy using already approved orientation
+/// reports. Reports may describe logical target plates assembled from several
+/// source plates; only immutable build-item transforms are replaced.
+pub fn write_optimized_plate_reports(
+    source_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    reports: &[PlateOrientationOptimizationReport],
+) -> Result<(), OrientationWriteError> {
+    let source_path = source_path.as_ref();
+    let destination = destination.as_ref();
+    if reports.is_empty() {
+        return Err(AnalysisError::InvalidStructure(
+            "at least one planned orientation report is required".into(),
+        )
+        .into());
+    }
+    let adhesion_mode = reports[0].adhesion_mode;
+    if reports
+        .iter()
+        .any(|report| report.adhesion_mode != adhesion_mode)
+    {
+        return Err(AnalysisError::InvalidStructure(
+            "all optimized plate reports in one project copy must use the same adhesion mode"
+                .into(),
+        )
+        .into());
+    }
+    let maximum_adhesion_risk = reports
+        .iter()
+        .map(|report| &report.maximum_adhesion_risk)
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+        .expect("non-empty reports have an adhesion assessment");
+    let snapshotted = snapshot_input(source_path, MAX_SOURCE_ARCHIVE_BYTES)?;
+    if reports
+        .iter()
+        .any(|report| report.source != snapshotted.identity)
+    {
+        return Err(AnalysisError::SourceChangedDuringAnalysis(source_path.to_owned()).into());
+    }
+    let mut transforms = BTreeMap::new();
+    for instance in reports.iter().flat_map(|report| &report.instances) {
+        if transforms
+            .insert(
+                instance.source_build_item_index,
+                instance.selected.target_transform,
+            )
+            .is_some()
+        {
+            return Err(AnalysisError::InvalidStructure(format!(
+                "planned orientation reports select build item {} more than once",
+                instance.source_build_item_index
+            ))
+            .into());
+        }
+    }
+    let snapshot = snapshotted
+        .snapshot
+        .try_clone()
+        .map_err(AnalysisError::Io)?;
+    let archive = ZipArchive::new(snapshot).map_err(AnalysisError::Zip)?;
+    let mut package = ValidatedPackage::new(
+        archive,
+        snapshotted.identity.byte_size,
+        &AnalysisLimits::default(),
+    )?;
+    let mut rewritten_main = package.read_bytes(
+        MAIN_MODEL_PATH,
+        AnalysisLimits::default().max_model_entry_uncompressed_bytes,
+    )?;
+    for (build_item_index, transform) in &transforms {
+        rewritten_main =
+            rewrite_build_item_transform(&rewritten_main, *build_item_index, *transform)?;
+    }
+    let rewritten_project_settings = package
+        .contains(PROJECT_SETTINGS_PATH)
+        .then(|| {
+            package.read_bytes(
+                PROJECT_SETTINGS_PATH,
+                AnalysisLimits::default().max_config_bytes,
+            )
+        })
+        .transpose()?
+        .map(|bytes| {
+            rewrite_adhesion_project_settings(
+                &bytes,
+                adhesion_mode,
+                maximum_adhesion_risk.recommended_brim_width_mm,
+            )
+        })
+        .transpose()?;
+    snapshotted.source_guard.ensure_unchanged()?;
+
+    let expected = ExpectedSourceIdentity::new(
+        snapshotted.identity.byte_size,
+        snapshotted.identity.sha256.clone(),
+    )?;
+    let mut writer = OpcPackageWriter::new();
+    writer.verify_zip_source(source_path, expected.clone())?;
+    for entry_path in package.entries.keys() {
+        if entry_path == MAIN_MODEL_PATH {
+            writer.add_bytes(MAIN_MODEL_PATH, rewritten_main.clone())?;
+        } else if entry_path == PROJECT_SETTINGS_PATH {
+            if let Some(settings) = &rewritten_project_settings {
+                writer.add_bytes(PROJECT_SETTINGS_PATH, settings.clone())?;
+            }
+        } else if !entry_path.ends_with('/') {
+            writer.copy_zip_entry_raw(source_path, expected.clone(), entry_path)?;
+        }
+    }
+    let staged = writer.stage_to(destination)?;
+    verify_optimized_plate_transforms(staged.path(), &transforms)?;
+    let destination_parent = destination.parent().ok_or_else(|| {
+        AnalysisError::InvalidStructure(
+            "planned orientation destination has no parent directory".into(),
+        )
+    })?;
+    let mut publication = tempfile::NamedTempFile::new_in(destination_parent)?;
+    let mut staged_file = File::open(staged.path())?;
+    io::copy(&mut staged_file, publication.as_file_mut())?;
+    publication.as_file_mut().flush()?;
+    publication.as_file().sync_all()?;
+    publication
+        .persist_noclobber(destination)
+        .map_err(|error| {
+            if error.error.kind() == io::ErrorKind::AlreadyExists {
+                OpcWriteError::OutputExists(destination.to_owned())
+            } else {
+                OpcWriteError::Publish {
+                    path: destination.to_owned(),
+                    source: error.error,
+                }
+            }
+        })?;
+    verify_optimized_plate_transforms(destination, &transforms)?;
+    Ok(())
+}
+
+fn rewrite_adhesion_project_settings(
+    bytes: &[u8],
+    mode: AdhesionMode,
+    recommended_brim_width_mm: f64,
+) -> Result<Vec<u8>, AnalysisError> {
+    let mut root: Value =
+        serde_json::from_slice(bytes).map_err(|error| AnalysisError::InvalidJson {
+            entry: PROJECT_SETTINGS_PATH.into(),
+            message: error.to_string(),
+        })?;
+    let settings = root
+        .as_object_mut()
+        .ok_or_else(|| AnalysisError::InvalidJson {
+            entry: PROJECT_SETTINGS_PATH.into(),
+            message: "project settings root must be an object".into(),
+        })?;
+    let is_snapmaker_u1 = settings
+        .get("printer_model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| model == "Snapmaker U1");
+    let (profile_name, brim_type, brim_width, raft_layers, raft_expansion, slow_layers, speed) =
+        match mode {
+            AdhesionMode::Standard => (
+                "U1 Planner Standard v2",
+                "auto_brim",
+                recommended_brim_width_mm.clamp(5.0, 18.0),
+                0_u8,
+                0.0,
+                2_u8,
+                25_u8,
+            ),
+            AdhesionMode::Reliable => (
+                "U1 Planner Reliable Adhesion v2",
+                "outer_only",
+                recommended_brim_width_mm.clamp(5.0, 18.0),
+                0_u8,
+                0.0,
+                3_u8,
+                20_u8,
+            ),
+            AdhesionMode::Maximum => (
+                "U1 Planner Maximum Adhesion v2",
+                "outer_only",
+                18.0,
+                2_u8,
+                8.0,
+                4_u8,
+                15_u8,
+            ),
+        };
+    if is_snapmaker_u1 {
+        settings.insert(
+            "print_settings_id".into(),
+            Value::String(profile_name.into()),
+        );
+        apply_u1_support_safety_settings(settings, mode);
+    }
+    settings.insert("brim_type".into(), Value::String(brim_type.into()));
+    settings.insert(
+        "brim_width".into(),
+        Value::String(format_compact_number(brim_width)),
+    );
+    settings.insert("brim_object_gap".into(), Value::String("0".into()));
+    settings.insert("raft_layers".into(), Value::String(raft_layers.to_string()));
+    settings.insert(
+        "raft_first_layer_expansion".into(),
+        Value::String(format_compact_number(raft_expansion)),
+    );
+    settings.insert(
+        "slow_down_layers".into(),
+        Value::String(slow_layers.to_string()),
+    );
+    settings.insert(
+        "initial_layer_speed".into(),
+        Value::String(speed.to_string()),
+    );
+    settings.insert(
+        "initial_layer_infill_speed".into(),
+        Value::String(speed.to_string()),
+    );
+    let mut rewritten =
+        serde_json::to_vec_pretty(&root).map_err(|error| AnalysisError::InvalidJson {
+            entry: PROJECT_SETTINGS_PATH.into(),
+            message: error.to_string(),
+        })?;
+    rewritten.push(b'\n');
+    Ok(rewritten)
+}
+
+fn apply_u1_support_safety_settings(
+    settings: &mut serde_json::Map<String, Value>,
+    mode: AdhesionMode,
+) {
+    if bool_value(settings.get("enable_support")) != Some(true) {
+        return;
+    }
+    let interface_layers = match mode {
+        AdhesionMode::Standard | AdhesionMode::Reliable => 3,
+        AdhesionMode::Maximum => 4,
+    };
+    for (key, value) in [
+        ("support_type", "tree(auto)"),
+        ("support_style", "tree_hybrid"),
+        ("support_on_build_plate_only", "0"),
+        ("support_interface_spacing", "0.2"),
+        ("support_interface_pattern", "rectilinear_interlaced"),
+        ("support_speed", "100"),
+        ("support_interface_speed", "50"),
+        ("tree_support_wall_count", "2"),
+    ] {
+        settings.insert(key.into(), Value::String(value.into()));
+    }
+    settings.insert(
+        "support_interface_top_layers".into(),
+        Value::String(interface_layers.to_string()),
+    );
+    if let Some(layer_height) = nonnegative_numeric_value(settings.get("layer_height"))
+        && layer_height > 0.0
+    {
+        settings.insert(
+            "support_top_z_distance".into(),
+            Value::String(format_compact_number(layer_height)),
+        );
+    }
+}
+
+fn format_compact_number(value: f64) -> String {
+    if value.fract().abs() <= f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn verify_optimized_plate_transforms(
+    path: &Path,
+    transforms: &BTreeMap<u32, Transform3mf>,
+) -> Result<(), AnalysisError> {
+    let output = analyze_project(path)?;
+    for (build_item_index, expected_transform) in transforms {
+        let actual = output
+            .plates
+            .iter()
+            .flat_map(|plate| &plate.instances)
+            .find(|instance| instance.source_build_item_index == Some(*build_item_index))
+            .and_then(|instance| instance.transform)
+            .ok_or_else(|| {
+                AnalysisError::InvalidStructure(format!(
+                    "planned oriented output lost build item {build_item_index}"
+                ))
+            })?;
+        if !orientation_transforms_close(actual, *expected_transform) {
+            return Err(AnalysisError::InvalidStructure(format!(
+                "planned oriented output transform for build item {build_item_index} differs from the approved recommendation"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn orientation_transforms_close(left: Transform3mf, right: Transform3mf) -> bool {
@@ -4381,6 +5291,7 @@ fn target_orientation_transform(
 
 fn score_orientation(
     triangles: &[OrientationTriangle],
+    orientation_points: &[[f64; 3]],
     build_up: [f64; 3],
     options: &OrientationOptimizationOptions,
     connectivity: bool,
@@ -4389,17 +5300,15 @@ fn score_orientation(
     let [x_axis, y_axis, _] = basis;
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
-    for triangle in triangles {
-        for point in triangle.points {
-            let projected = [
-                vector_dot(point, x_axis),
-                vector_dot(point, y_axis),
-                vector_dot(point, build_up),
-            ];
-            for axis in 0..3 {
-                min[axis] = min[axis].min(projected[axis]);
-                max[axis] = max[axis].max(projected[axis]);
-            }
+    for point in orientation_points {
+        let projected = [
+            vector_dot(*point, x_axis),
+            vector_dot(*point, y_axis),
+            vector_dot(*point, build_up),
+        ];
+        for axis in 0..3 {
+            min[axis] = min[axis].min(projected[axis]);
+            max[axis] = max[axis].max(projected[axis]);
         }
     }
     let support_normal_limit = -options.overhang_threshold_degrees.to_radians().cos();
@@ -4459,7 +5368,9 @@ fn score_orientation(
         (overhang_parts.len(), 0)
     };
     let height = (max[2] - min[2]).max(0.0);
-    let footprint_area = ((max[0] - min[0]) * (max[1] - min[1])).max(0.0);
+    let footprint_width = (max[0] - min[0]).max(0.0);
+    let footprint_depth = (max[1] - min[1]).max(0.0);
+    let footprint_area = footprint_width * footprint_depth;
     let instability = if bed_contact_area < 1.0 {
         (1.0 - bed_contact_area).max(0.0) * 2_000.0
     } else {
@@ -4482,6 +5393,8 @@ fn score_orientation(
         small_overhang_component_count: small_component_count,
         bed_contact_area_mm2: bed_contact_area,
         height_mm: height,
+        footprint_width_mm: footprint_width,
+        footprint_depth_mm: footprint_depth,
         footprint_area_mm2: footprint_area,
     }
 }
@@ -4567,6 +5480,115 @@ fn normalize_vector(vector: [f64; 3]) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn adhesion_settings(profile_name: &str) -> Value {
+        serde_json::json!({
+            "printer_model": "Snapmaker U1",
+            "print_settings_id": profile_name,
+            "brim_type": "outer_only",
+            "brim_width": "12",
+            "brim_object_gap": "0",
+            "raft_layers": "0",
+            "raft_first_layer_expansion": "0",
+            "slow_down_layers": "3",
+            "initial_layer_speed": "20",
+            "initial_layer_infill_speed": "20",
+            "enable_support": "1",
+            "layer_height": "0.12",
+            "support_type": "tree(auto)",
+            "support_style": "tree_hybrid",
+            "support_on_build_plate_only": "0",
+            "support_interface_top_layers": "3",
+            "support_interface_spacing": "0.2",
+            "support_interface_pattern": "rectilinear_interlaced",
+            "support_speed": "100",
+            "support_interface_speed": "50",
+            "tree_support_wall_count": "2",
+            "support_top_z_distance": "0.12"
+        })
+    }
+
+    #[test]
+    fn adhesion_detection_validates_reliable_profile_values() {
+        let settings = adhesion_settings("U1 Planner Reliable Adhesion v2");
+        let detected = detect_adhesion_policy(&settings);
+
+        assert_eq!(detected.mode, DetectedAdhesionMode::Reliable);
+        assert_eq!(detected.brim_width_mm, Some(12.0));
+    }
+
+    #[test]
+    fn adhesion_detection_recognizes_standard_profile() {
+        let mut settings = adhesion_settings("U1 Planner Standard v2");
+        settings["brim_type"] = Value::String("auto_brim".into());
+        settings["slow_down_layers"] = Value::String("2".into());
+        settings["initial_layer_speed"] = Value::String("25".into());
+        settings["initial_layer_infill_speed"] = Value::String("25".into());
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::Standard
+        );
+    }
+
+    #[test]
+    fn adhesion_detection_marks_modified_planner_profile_custom() {
+        let mut settings = adhesion_settings("U1 Planner Reliable Adhesion v2");
+        settings["initial_layer_speed"] = Value::String("25".into());
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::Custom
+        );
+    }
+
+    #[test]
+    fn adhesion_detection_marks_legacy_support_profile_custom() {
+        let settings = adhesion_settings("U1 Planner Reliable Adhesion v1");
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::Custom
+        );
+    }
+
+    #[test]
+    fn adhesion_detection_marks_unsafe_support_contract_custom() {
+        let mut settings = adhesion_settings("U1 Planner Reliable Adhesion v2");
+        settings["support_on_build_plate_only"] = Value::String("1".into());
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::Custom
+        );
+    }
+
+    #[test]
+    fn adhesion_detection_does_not_guess_from_external_profile_values() {
+        let settings = adhesion_settings("0.16 Optimal @Snapmaker U1");
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::None
+        );
+    }
+
+    #[test]
+    fn adhesion_detection_recognizes_maximum_profile() {
+        let mut settings = adhesion_settings("U1 Planner Maximum Adhesion v2");
+        settings["brim_width"] = Value::String("18".into());
+        settings["raft_layers"] = Value::String("2".into());
+        settings["raft_first_layer_expansion"] = Value::String("8".into());
+        settings["slow_down_layers"] = Value::String("4".into());
+        settings["initial_layer_speed"] = Value::String("15".into());
+        settings["initial_layer_infill_speed"] = Value::String("15".into());
+        settings["support_interface_top_layers"] = Value::String("4".into());
+
+        assert_eq!(
+            detect_adhesion_policy(&settings).mode,
+            DetectedAdhesionMode::Maximum
+        );
+    }
     use std::fs;
     use tempfile::{NamedTempFile, tempdir};
     use zip::CompressionMethod;
@@ -5058,6 +6080,169 @@ mod tests {
         assert_eq!(transform.values[9], 9.0);
         assert_eq!(transform.values[10], 18.0);
         assert_eq!(transform.values[11], 7.0);
+    }
+
+    #[test]
+    fn plate_orientation_packing_places_every_instance_with_clearance() {
+        let candidate = |width: f64, depth: f64| OrientationCandidate {
+            build_up: [0.0, 0.0, 1.0],
+            rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            target_transform: Transform3mf::IDENTITY,
+            metrics: OrientationMetrics {
+                score: 1.0,
+                estimated_support_volume_mm3: 1.0,
+                overhang_contact_area_mm2: 1.0,
+                overhang_component_count: 1,
+                small_overhang_component_count: 0,
+                bed_contact_area_mm2: 1.0,
+                height_mm: 10.0,
+                footprint_width_mm: width,
+                footprint_depth_mm: depth,
+                footprint_area_mm2: width * depth,
+            },
+        };
+        let work: Vec<_> = [(40.0, 30.0), (30.0, 20.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (width, depth))| PlateOrientationWorkItem {
+                object_id: index as u32 + 1,
+                instance_id: 0,
+                build_item_index: index as u32,
+                source_center: [0.0, 0.0],
+                source: candidate(width, depth),
+                candidates: vec![candidate(width, depth)],
+            })
+            .collect();
+        let options = PlateOrientationOptimizationOptions {
+            bed_min_x_mm: 0.0,
+            bed_min_y_mm: 0.0,
+            bed_width_mm: 160.0,
+            bed_depth_mm: 160.0,
+            bed_height_mm: 100.0,
+            support_envelope_mm: 18.0,
+            object_clearance_mm: 2.0,
+            ..PlateOrientationOptimizationOptions::default()
+        };
+        let placements = pack_plate_orientation_state(&[0, 0], &work, &options, false).unwrap();
+        assert_eq!(placements[0], (19.0, 19.0));
+        assert!(placements[1].0 >= 19.0 && placements[1].1 >= 19.0);
+        let required_gap = 2.0 + 2.0 * 18.0;
+        assert!(
+            placements[0].0 + 40.0 + required_gap <= placements[1].0
+                || placements[1].0 + 30.0 + required_gap <= placements[0].0
+                || placements[0].1 + 30.0 + required_gap <= placements[1].1
+                || placements[1].1 + 20.0 + required_gap <= placements[0].1
+        );
+        for (placement, (width, depth)) in placements.iter().zip([(40.0, 30.0), (30.0, 20.0)]) {
+            assert!(placement.0 - 19.0 >= -1.0e-6);
+            assert!(placement.1 - 19.0 >= -1.0e-6);
+            assert!(placement.0 + width + 19.0 <= 160.0 + 1.0e-6);
+            assert!(placement.1 + depth + 19.0 <= 160.0 + 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn adhesion_risk_increases_for_tall_models_with_small_bed_contact() {
+        let stable = OrientationMetrics {
+            score: 0.0,
+            estimated_support_volume_mm3: 0.0,
+            overhang_contact_area_mm2: 0.0,
+            overhang_component_count: 0,
+            small_overhang_component_count: 0,
+            bed_contact_area_mm2: 900.0,
+            height_mm: 20.0,
+            footprint_width_mm: 30.0,
+            footprint_depth_mm: 30.0,
+            footprint_area_mm2: 900.0,
+        };
+        let risky = OrientationMetrics {
+            bed_contact_area_mm2: 2.0,
+            height_mm: 180.0,
+            small_overhang_component_count: 5,
+            ..stable.clone()
+        };
+        let stable_risk = adhesion_risk_assessment(&stable);
+        let risky_risk = adhesion_risk_assessment(&risky);
+        assert_eq!(stable_risk.level, AdhesionRiskLevel::Low);
+        assert_eq!(risky_risk.level, AdhesionRiskLevel::Critical);
+        assert!(risky_risk.score > stable_risk.score);
+        assert_eq!(risky_risk.recommended_brim_width_mm, 18.0);
+    }
+
+    #[test]
+    fn reliable_adhesion_uses_a_separate_u1_planner_project_profile() {
+        let source = br#"{
+          "printer_model": "Snapmaker U1",
+          "print_settings_id": "0.16 Optimal @Snapmaker U1",
+          "enable_support": "1",
+          "layer_height": "0.12",
+          "support_on_build_plate_only": "1"
+        }"#;
+        let rewritten =
+            rewrite_adhesion_project_settings(source, AdhesionMode::Reliable, 12.0).unwrap();
+        let settings: Value = serde_json::from_slice(&rewritten).unwrap();
+        assert_eq!(
+            settings["print_settings_id"],
+            "U1 Planner Reliable Adhesion v2"
+        );
+        assert_eq!(settings["brim_type"], "outer_only");
+        assert_eq!(settings["brim_width"], "12");
+        assert_eq!(settings["brim_object_gap"], "0");
+        assert_eq!(settings["raft_layers"], "0");
+        assert_eq!(settings["slow_down_layers"], "3");
+        assert_eq!(settings["initial_layer_speed"], "20");
+        assert_eq!(settings["support_type"], "tree(auto)");
+        assert_eq!(settings["support_style"], "tree_hybrid");
+        assert_eq!(settings["support_on_build_plate_only"], "0");
+        assert_eq!(settings["support_interface_top_layers"], "3");
+        assert_eq!(settings["support_interface_spacing"], "0.2");
+        assert_eq!(
+            settings["support_interface_pattern"],
+            "rectilinear_interlaced"
+        );
+        assert_eq!(settings["support_speed"], "100");
+        assert_eq!(settings["support_interface_speed"], "50");
+        assert_eq!(settings["tree_support_wall_count"], "2");
+        assert_eq!(settings["support_top_z_distance"], "0.12");
+    }
+
+    #[test]
+    fn maximum_adhesion_uses_four_support_interface_layers_on_u1() {
+        let source = br#"{
+          "printer_model": "Snapmaker U1",
+          "enable_support": "1",
+          "layer_height": "0.2"
+        }"#;
+        let rewritten =
+            rewrite_adhesion_project_settings(source, AdhesionMode::Maximum, 18.0).unwrap();
+        let settings: Value = serde_json::from_slice(&rewritten).unwrap();
+
+        assert_eq!(settings["support_interface_top_layers"], "4");
+        assert_eq!(settings["support_top_z_distance"], "0.2");
+    }
+
+    #[test]
+    fn maximum_adhesion_adds_a_two_layer_raft_without_relabeling_other_printers() {
+        let source = br#"{
+          "printer_model": "Bambu Lab A1 mini",
+          "print_settings_id": "0.16 Optimal @BBL A1M"
+        }"#;
+        let rewritten =
+            rewrite_adhesion_project_settings(source, AdhesionMode::Maximum, 18.0).unwrap();
+        let settings: Value = serde_json::from_slice(&rewritten).unwrap();
+        assert_eq!(settings["print_settings_id"], "0.16 Optimal @BBL A1M");
+        assert_eq!(settings["raft_layers"], "2");
+        assert_eq!(settings["raft_first_layer_expansion"], "8");
+        assert_eq!(settings["initial_layer_speed"], "15");
+    }
+
+    #[test]
+    fn plate_options_reject_an_envelope_smaller_than_generated_first_layer_geometry() {
+        let options = PlateOrientationOptimizationOptions {
+            support_envelope_mm: 8.0,
+            ..PlateOrientationOptimizationOptions::default()
+        };
+        assert!(validate_plate_orientation_options(&options).is_err());
     }
 
     #[test]
