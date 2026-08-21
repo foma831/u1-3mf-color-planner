@@ -146,7 +146,9 @@ struct OrcaProfile {
 /// Returns conventional application locations without requiring that they
 /// exist. Callers may add user-selected locations before inspection.
 pub fn conventional_application_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    let paths = Vec::new();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let mut paths = paths;
     #[cfg(target_os = "macos")]
     {
         paths.push(PathBuf::from("/Applications/Snapmaker Orca.app"));
