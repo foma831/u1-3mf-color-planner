@@ -340,6 +340,7 @@ export function FilamentLibrary({
               <option value="all">All materials</option>
               <option value="PLA">PLA</option>
               <option value="PETG">PETG</option>
+              <option value="PVA">PVA</option>
             </select>
           </div>
         </fieldset>

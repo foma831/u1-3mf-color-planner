@@ -10,11 +10,11 @@ use u1_application::{
 };
 use u1_planner::{
     A1MiniConfig, CmyxFallbackApproval, CmyxRecipe, ColorConfidence, ColorStrategy,
-    CurrentToolheadState, DirectAssignmentRequest, DirectIneligibility, DirectSpoolEligibility,
-    Estimate, FullSpectrumMode, Material, MaterialColorRequirement, MaterialRole,
-    MaterialSubstitutionApproval, PlanningInput, PlanningResult, Printer, PrinterLoadout,
-    PrinterPreference, RgbColor, ScopeStrategy, ScopeStrategyOptions, SetupActionKind, SetupPhase,
-    Spool, Toolhead, ToolheadSlotState, plan,
+    CurrentToolheadState, DedicatedSupportMaterial, DirectAssignmentRequest, DirectIneligibility,
+    DirectSpoolEligibility, Estimate, FullSpectrumMode, Material, MaterialColorRequirement,
+    MaterialRole, MaterialSubstitutionApproval, PlanningInput, PlanningResult, Printer,
+    PrinterLoadout, PrinterPreference, RgbColor, ScopeStrategy, ScopeStrategyOptions,
+    SetupActionKind, SetupPhase, Spool, SupportMaterialUsage, Toolhead, ToolheadSlotState, plan,
 };
 use u1_three_mf::{DetectedAdhesionMode, ProjectAnalysis, ProjectDialect};
 
@@ -32,6 +32,9 @@ pub struct PlanningRequestView {
     allow_direct_palette_reduction: bool,
     #[serde(default)]
     allow_u1_cross_source_repacking: bool,
+    dedicated_support_spool_id: Option<String>,
+    #[serde(default)]
+    dedicated_support_usage: SupportMaterialUsageView,
     a1_mini_enabled: bool,
     included_alternative_plate_ids: Vec<u32>,
 }
@@ -50,6 +53,9 @@ pub struct InitialPlanningIntentView {
     current_a1_spool_id: Option<String>,
     #[serde(default)]
     allow_u1_cross_source_repacking: bool,
+    dedicated_support_spool_id: Option<String>,
+    #[serde(default)]
+    dedicated_support_usage: SupportMaterialUsageView,
 }
 
 impl Default for InitialPlanningIntentView {
@@ -61,6 +67,25 @@ impl Default for InitialPlanningIntentView {
             current_t4_spool_id: None,
             current_a1_spool_id: None,
             allow_u1_cross_source_repacking: false,
+            dedicated_support_spool_id: None,
+            dedicated_support_usage: SupportMaterialUsageView::InterfaceOnly,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SupportMaterialUsageView {
+    #[default]
+    InterfaceOnly,
+    BodyAndInterface,
+}
+
+impl SupportMaterialUsageView {
+    fn into_domain(self) -> SupportMaterialUsage {
+        match self {
+            Self::InterfaceOnly => SupportMaterialUsage::InterfaceOnly,
+            Self::BodyAndInterface => SupportMaterialUsage::BodyAndInterface,
         }
     }
 }
@@ -328,6 +353,7 @@ struct ColorResolutionView {
     scope_id: String,
     scope_name: String,
     requirement_id: String,
+    source_identity_key: String,
     candidate_id: String,
     source_material: String,
     source_hex: String,
@@ -345,6 +371,22 @@ struct ColorResolutionView {
     requires_material_substitution: bool,
     can_add_dedicated_spool: bool,
     recommendation: String,
+    palette_options: Vec<CmyxPaletteOptionView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CmyxPaletteOptionView {
+    candidate_id: String,
+    target_material: String,
+    target_hex: String,
+    predicted_hex: Option<String>,
+    recipe: String,
+    delta_e00: Option<f64>,
+    confidence: &'static str,
+    required_t4_spool_id: Option<String>,
+    required_t4_name: Option<String>,
+    required_t4_hex: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -467,6 +509,7 @@ struct DirectColorMappingView {
     cmy_confidence: &'static str,
     direct_toolhead: &'static str,
     selected_spool_id: String,
+    dedicated_support: bool,
     material_substitution_acknowledged: bool,
 }
 
@@ -504,6 +547,8 @@ impl PlanningRequestView {
             restore_cmy_after_direct,
             allow_direct_palette_reduction,
             allow_u1_cross_source_repacking,
+            dedicated_support_spool_id,
+            dedicated_support_usage,
             a1_mini_enabled,
             included_alternative_plate_ids,
         } = self;
@@ -513,6 +558,14 @@ impl PlanningRequestView {
             .map(ConfirmedSpoolInputView::into_spool)
             .collect::<Result<Vec<_>, _>>()?;
         let confirmed_spools = merge_confirmed_spools(library_spools, requested_spools)?;
+        let dedicated_support = dedicated_support_spool_id
+            .map(|spool_id| spool_id.trim().to_owned())
+            .filter(|spool_id| !spool_id.is_empty())
+            .map(|spool_id| DedicatedSupportMaterial {
+                spool_id,
+                usage: dedicated_support_usage.into_domain(),
+                toolhead: Toolhead::T4,
+            });
         let scope_overrides = scope_overrides
             .into_iter()
             .map(ScopePlanningInputView::into_override)
@@ -546,6 +599,7 @@ impl PlanningRequestView {
                 .unwrap_or(defaults.restore_cmy_after_direct),
             allow_direct_palette_reduction,
             allow_u1_cross_source_repacking,
+            dedicated_support,
             confirmed_spools,
             scope_overrides,
             unit_printer_overrides,
@@ -575,6 +629,8 @@ impl InitialPlanningIntentView {
             current_t4_spool_id,
             current_a1_spool_id,
             allow_u1_cross_source_repacking,
+            dedicated_support_spool_id,
+            dedicated_support_usage,
         } = self;
         let defaults = PreliminaryPlanOptions::default();
         let current_toolheads = match current_loadout {
@@ -590,6 +646,14 @@ impl InitialPlanningIntentView {
             }
         };
         let current_a1_spool_id = normalized_optional_spool_id(current_a1_spool_id);
+        let dedicated_support =
+            normalized_optional_spool_id(dedicated_support_spool_id).map(|spool_id| {
+                DedicatedSupportMaterial {
+                    spool_id,
+                    usage: dedicated_support_usage.into_domain(),
+                    toolhead: Toolhead::T4,
+                }
+            });
         validate_cross_printer_current_loadout(&current_toolheads, current_a1_spool_id.as_deref())
             .map_err(|message| ApplicationError::InvalidCurrentPrinterLoadout { message })?;
 
@@ -597,6 +661,7 @@ impl InitialPlanningIntentView {
             current_toolheads,
             scope_strategy: default_strategy.into_scope_strategy(),
             allow_u1_cross_source_repacking,
+            dedicated_support,
             confirmed_spools: library_spools,
             a1_mini: A1MiniConfig {
                 enabled: a1_mini_enabled,
@@ -804,8 +869,9 @@ fn parse_spool_material(value: &str) -> Result<Material, String> {
     match value.trim().to_ascii_uppercase().as_str() {
         "PLA" => Ok(Material::Pla),
         "PETG" => Ok(Material::Petg),
+        "PVA" => Ok(Material::Pva),
         _ => Err(format!(
-            "Unsupported spool material '{value}'; the desktop inventory currently accepts PLA or PETG."
+            "Unsupported spool material '{value}'; the desktop inventory currently accepts PLA, PETG, or PVA."
         )),
     }
 }
@@ -825,6 +891,7 @@ fn parse_source_material(value: &str) -> Result<Material, String> {
     match trimmed.to_ascii_uppercase().as_str() {
         "PLA" => Ok(Material::Pla),
         "PETG" | "PET" => Ok(Material::Petg),
+        "PVA" => Ok(Material::Pva),
         "ABS" => Ok(Material::Abs),
         "ASA" => Ok(Material::Asa),
         "TPU" => Ok(Material::Tpu),
@@ -1873,17 +1940,23 @@ fn color_resolutions(
         for mut requirements in grouped.into_values() {
             requirements.sort_by(|left, right| left.id.cmp(&right.id));
             let requirement = requirements[0];
-            let Some(fallback) = requirement.best_effort_cmyx_candidate.as_ref() else {
+            let Some(default_fallback) = requirement.best_effort_cmyx_candidate.as_ref() else {
                 continue;
             };
             let requirement_ids = requirements
                 .iter()
                 .map(|requirement| requirement.id.as_str())
                 .collect::<BTreeSet<_>>();
-            let color_approved = scope.approved_cmyx_fallbacks.iter().any(|approval| {
-                requirement_ids.contains(approval.requirement_id.as_str())
-                    && approval.candidate_id == fallback.candidate_id
-            });
+            let approved_candidate_id = scope
+                .approved_cmyx_fallbacks
+                .iter()
+                .find(|approval| requirement_ids.contains(approval.requirement_id.as_str()))
+                .map(|approval| approval.candidate_id.as_str());
+            let fallback = std::iter::once(default_fallback)
+                .chain(requirement.cmyx_palette_candidates.iter())
+                .find(|candidate| Some(candidate.candidate_id.as_str()) == approved_candidate_id)
+                .unwrap_or(default_fallback);
+            let color_approved = approved_candidate_id == Some(fallback.candidate_id.as_str());
             let material_approved = scope
                 .approved_material_substitutions
                 .iter()
@@ -1925,10 +1998,15 @@ fn color_resolutions(
                     color_hex(requirement.source_color)
                 )
             };
+            let palette_options = std::iter::once(default_fallback)
+                .chain(requirement.cmyx_palette_candidates.iter())
+                .map(|candidate| cmyx_palette_option(candidate, inventory))
+                .collect::<Vec<_>>();
             resolutions.push(ColorResolutionView {
                 scope_id: scope.id.clone(),
                 scope_name: scope.display_name.clone(),
                 requirement_id: requirement.id.clone(),
+                source_identity_key: fallback_mapping_inheritance_key(requirement),
                 candidate_id: fallback.candidate_id.clone(),
                 source_material: material_name(&requirement.material).to_owned(),
                 source_hex: color_hex(requirement.source_color),
@@ -1946,6 +2024,7 @@ fn color_resolutions(
                 requires_material_substitution,
                 can_add_dedicated_spool,
                 recommendation,
+                palette_options,
             });
         }
     }
@@ -1955,6 +2034,29 @@ fn color_resolutions(
             .then_with(|| left.requirement_id.cmp(&right.requirement_id))
     });
     resolutions
+}
+
+fn cmyx_palette_option(
+    fallback: &u1_planner::BestEffortCmyxCandidate,
+    inventory: &BTreeMap<&str, &Spool>,
+) -> CmyxPaletteOptionView {
+    let required_t4 = fallback
+        .candidate
+        .required_t4_spool_id
+        .as_deref()
+        .and_then(|spool_id| inventory.get(spool_id).copied());
+    CmyxPaletteOptionView {
+        candidate_id: fallback.candidate_id.clone(),
+        target_material: material_name(&fallback.target_material).to_owned(),
+        target_hex: color_hex(fallback.target_color),
+        predicted_hex: fallback.candidate.predicted_color.map(color_hex),
+        recipe: recipe_name(&fallback.candidate.recipe),
+        delta_e00: fallback.candidate.delta_e00.map(round_one),
+        confidence: confidence_name(fallback.candidate.confidence),
+        required_t4_spool_id: fallback.candidate.required_t4_spool_id.clone(),
+        required_t4_name: required_t4.map(|spool| spool.display_name.clone()),
+        required_t4_hex: required_t4.map(|spool| color_hex(spool.actual_color())),
+    }
 }
 
 fn color_mappings(
@@ -2033,6 +2135,18 @@ fn color_mappings(
                 .get(mapping.scope_id.as_str())
                 .map(|scope| scope.display_name.clone())
                 .unwrap_or_else(|| mapping.scope_id.clone());
+            let dedicated_support = source_requirement.is_some_and(|requirement| {
+                requirement.material == Material::Pva
+                    && requirement.role == MaterialRole::Support
+                    && scopes
+                        .get(mapping.scope_id.as_str())
+                        .is_some_and(|scope| scope.dedicated_support.is_some())
+            });
+            let source_slot = if dedicated_support {
+                "Generated support".to_owned()
+            } else {
+                mapping.source_slots.join(", ")
+            };
             Some(DirectColorMappingView {
                 id: mapping
                     .source_requirement_ids
@@ -2045,8 +2159,12 @@ fn color_mappings(
                     || format!("scope:{}:mapping:{}", mapping.scope_id, index + 1),
                     direct_mapping_inheritance_key,
                 ),
-                source_slot: mapping.source_slots.join(", "),
-                source_name: format!("Source {}", mapping.source_slots.join(" + ")),
+                source_slot,
+                source_name: if dedicated_support {
+                    "Dedicated PVA support".to_owned()
+                } else {
+                    format!("Source {}", mapping.source_slots.join(" + "))
+                },
                 source_hex: color_hex(mapping.source_color),
                 source_material: material,
                 used_by,
@@ -2056,6 +2174,7 @@ fn color_mappings(
                 cmy_confidence: confidence_name(mapping.cmyx_comparison.confidence),
                 direct_toolhead: toolhead_name(toolhead),
                 selected_spool_id: spool_id,
+                dedicated_support,
                 material_substitution_acknowledged: requested_assignment
                     .is_some_and(|request| request.allow_material_substitution),
             })
@@ -2101,13 +2220,24 @@ fn unresolved_mappings(
                 .direct_assignments
                 .iter()
                 .find(|request| request.requirement_id == requirement.id);
+            let dedicated_support = requirement.material == Material::Pva
+                && requirement.role == MaterialRole::Support
+                && scope.dedicated_support.is_some();
             Some(DirectColorMappingView {
                 id: requirement.id.clone(),
                 scope_id: scope.id.clone(),
                 physical_identity_id: physical_identity_id.clone(),
                 inheritance_key: direct_mapping_inheritance_key(requirement),
-                source_slot: requirement.source_slots.join(", "),
-                source_name: format!("Source {}", requirement.source_slots.join(" + ")),
+                source_slot: if dedicated_support {
+                    "Generated support".to_owned()
+                } else {
+                    requirement.source_slots.join(", ")
+                },
+                source_name: if dedicated_support {
+                    "Dedicated PVA support".to_owned()
+                } else {
+                    format!("Source {}", requirement.source_slots.join(" + "))
+                },
                 source_hex: color_hex(requirement.source_color),
                 source_material: material,
                 used_by: scope.display_name.clone(),
@@ -2123,6 +2253,7 @@ fn unresolved_mappings(
                 selected_spool_id: assignment
                     .map(|assignment| assignment.spool_id.clone())
                     .unwrap_or_default(),
+                dedicated_support,
                 material_substitution_acknowledged: requested_assignment
                     .is_some_and(|request| request.allow_material_substitution),
             })
@@ -2227,6 +2358,31 @@ fn direct_mapping_inheritance_key(requirement: &MaterialColorRequirement) -> Str
         )),
     }
     .expect("Direct inheritance identity is JSON serializable")
+}
+
+fn fallback_mapping_inheritance_key(requirement: &MaterialColorRequirement) -> String {
+    let identity = fallback_mapping_identity(requirement);
+    let material = material_name(&identity.material).to_owned();
+    let color = color_hex(identity.color);
+    match identity.source_profile {
+        FallbackSourceProfileIdentity::Declared(profiles) => serde_json::to_string(&(
+            "cmyx-source-v1",
+            material,
+            color,
+            material_role_name(identity.role),
+            "declared",
+            profiles,
+        )),
+        FallbackSourceProfileIdentity::Unknown(discriminator) => serde_json::to_string(&(
+            "cmyx-source-v1",
+            material,
+            color,
+            material_role_name(identity.role),
+            "unknown",
+            discriminator,
+        )),
+    }
+    .expect("CMY+X inheritance identity is JSON serializable")
 }
 
 fn direct_physical_identity_metadata<'a>(
@@ -2518,6 +2674,7 @@ fn material_name(material: &Material) -> &str {
     match material {
         Material::Pla => "PLA",
         Material::Petg => "PETG",
+        Material::Pva => "PVA",
         Material::Abs => "ABS",
         Material::Asa => "ASA",
         Material::Tpu => "TPU",
@@ -2538,6 +2695,7 @@ fn ui_material(material: &Material) -> Option<&'static str> {
     match material {
         Material::Pla => Some("PLA"),
         Material::Petg => Some("PETG"),
+        Material::Pva => Some("PVA"),
         Material::Abs | Material::Asa | Material::Tpu | Material::Other(_) => None,
     }
 }
@@ -2664,6 +2822,7 @@ mod tests {
                 warnings: Vec::new(),
             },
             best_effort_cmyx_candidate: None,
+            cmyx_palette_candidates: Vec::new(),
             direct_candidates: Vec::new(),
         }
     }
@@ -2676,6 +2835,7 @@ mod tests {
             units: Vec::new(),
             strategy: ScopeStrategy::Auto,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }
@@ -2966,6 +3126,55 @@ mod tests {
         assert!(!options.allow_u1_cross_source_repacking);
         assert_eq!(options.a1_mini.current_spool_id, None);
         assert_eq!(options.current_toolheads, defaults.current_toolheads);
+    }
+
+    #[test]
+    fn dedicated_pva_defaults_to_interface_only_and_accepts_explicit_full_support() {
+        let pva = Spool {
+            id: "support-pva".to_owned(),
+            calibration_id: Some("support-pva".to_owned()),
+            display_name: "Reli3D PVA".to_owned(),
+            color_name: Some("Natural".to_owned()),
+            material: Material::Pva,
+            nominal_color: RgbColor::new(225, 214, 120),
+            measured_color: None,
+            sku: None,
+            profile_id: Some("Reli3D PVA @U1".to_owned()),
+            available: true,
+        };
+        let intent = |usage: Option<&str>| {
+            let mut value = serde_json::json!({
+                "defaultStrategy": "cmyx",
+                "a1MiniEnabled": false,
+                "currentT4SpoolId": null,
+                "currentA1SpoolId": null,
+                "dedicatedSupportSpoolId": "support-pva"
+            });
+            if let Some(usage) = usage {
+                value["dedicatedSupportUsage"] = serde_json::json!(usage);
+            }
+            serde_json::from_value::<InitialPlanningIntentView>(value).unwrap()
+        };
+
+        let default_options = intent(None)
+            .into_options_with_backend_state(
+                vec![pva.clone()],
+                Vec::new(),
+                CmyxGeometryContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            default_options.dedicated_support.unwrap().usage,
+            SupportMaterialUsage::InterfaceOnly
+        );
+
+        let full_options = intent(Some("body-and-interface"))
+            .into_options_with_backend_state(vec![pva], Vec::new(), CmyxGeometryContext::default())
+            .unwrap();
+        assert_eq!(
+            full_options.dedicated_support.unwrap().usage,
+            SupportMaterialUsage::BodyAndInterface
+        );
     }
 
     #[test]
@@ -3552,7 +3761,7 @@ mod tests {
             unsupported_target
                 .into_override()
                 .expect_err("unsupported target must fail")
-                .contains("desktop inventory currently accepts PLA or PETG")
+                .contains("desktop inventory currently accepts PLA, PETG, or PVA")
         );
     }
 
@@ -3587,6 +3796,27 @@ mod tests {
                             warnings: vec!["Approval required.".to_owned()],
                         },
                     });
+                if index == 0 {
+                    requirement
+                        .cmyx_palette_candidates
+                        .push(u1_planner::BestEffortCmyxCandidate {
+                            candidate_id: "candidate-0-cyan".to_owned(),
+                            target_material: Material::Pla,
+                            target_color: requirement.source_color,
+                            candidate: u1_planner::CmyxColorCandidate {
+                                recipe: CmyxRecipe::Solid {
+                                    toolhead: Toolhead::T1,
+                                },
+                                calibration_sample_id: None,
+                                process_compatibility: None,
+                                required_t4_spool_id: None,
+                                predicted_color: Some(RgbColor::new(8, 171, 251)),
+                                delta_e00: Some(22.0),
+                                confidence: ColorConfidence::Nominal,
+                                warnings: vec!["Manual palette choice.".to_owned()],
+                            },
+                        });
+                }
                 requirement
             })
             .collect::<Vec<_>>();
@@ -3636,6 +3866,13 @@ mod tests {
         assert_eq!(json["materialApproved"], true);
         assert_eq!(json["requiresMaterialSubstitution"], true);
         assert_eq!(json["canAddDedicatedSpool"], true);
+        assert!(
+            json["sourceIdentityKey"]
+                .as_str()
+                .is_some_and(|identity| identity.contains("cmyx-source-v1"))
+        );
+        assert_eq!(json["paletteOptions"].as_array().map(Vec::len), Some(2));
+        assert_eq!(json["paletteOptions"][1]["candidateId"], "candidate-0-cyan");
 
         let unsupported_source = serde_json::to_value(&resolutions[4]).unwrap();
         assert_eq!(unsupported_source["sourceMaterial"], "ABS");

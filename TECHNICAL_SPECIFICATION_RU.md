@@ -1,7 +1,7 @@
 # Техническое задание: конвертер многоцветных 3MF-проектов для Snapmaker U1
 
-Версия документа: 1.4 (persisted printer loadout, custom four-spool palettes, production writers и trusted recovery)
-Дата: 11 августа 2026 года
+Версия документа: 1.7 (Snapmaker Orca 2.3.6 qualification, Reli3D PVA diagnostic, interface-only support, guarded orientation, persisted printer loadout и production writers)
+Дата: 7 сентября 2026 года
 Рабочее название продукта: **U1 3MF Color Planner**  
 Язык документа и обсуждения: русский  
 Язык исходного кода, комментариев в коде, логов, CLI и пользовательского интерфейса: английский
@@ -74,6 +74,7 @@
 | `CMY_WHITE` | Cyan PLA | Magenta PLA | Yellow PLA | White PLA |
 | `CMY_BLACK_PLA` | Cyan PLA | Magenta PLA | Yellow PLA | Black PLA |
 | `CMY_BLACK_PETG` | Cyan PLA | Magenta PLA | Yellow PLA | Black PETG |
+| `CMY_PVA_SUPPORT` | Cyan PLA | Magenta PLA | Yellow PLA | PVA support |
 | `CMY_CUSTOM` | Cyan PLA | Magenta PLA | Yellow PLA | выбранная пользователем катушка |
 
 Фактический ключ loadout должен включать не только цвет, но и SKU, тип материала, профиль, партию филамента и идентификатор калибровки. Чёрный PLA и чёрный PETG — разные физические катушки и разные loadout, даже если их HEX совпадает.
@@ -132,11 +133,35 @@ four-spool palettes per U1 plate` расширяют Direct Spools для scope,
 T1–T4 между Direct batches и сохраняет A1 mini routing: scope, сведённый к одной
 совместимой катушке, повторно проверяется как A1 Mono candidate.
 
+### 3.5. Выделенная поддержка PVA
+
+Пользователь может включить project-level режим `Dedicated PVA on T4` и выбрать
+доступную физическую PVA-катушку из Filament Library. В этом режиме T4
+резервируется для PVA, поддержка и support interface генерируются из T4, а
+модель использует не более трёх остальных физических катушек. Для CMY+X это
+фиксированный loadout C/M/Y/PVA; для Direct Spools T1–T3 могут содержать любые
+три допустимые model spools. Ограничение считается как physical loadout:
+`3 model spools + 1 PVA`, а не как четыре видимых цвета плюс PVA.
+
+PVA является функциональным материалом роли `Support`, не участвует в
+оптических mixed recipes и не может быть назначен модельной геометрии этим
+режимом. Production-политика по умолчанию — `InterfaceOnly`: support body
+печатается материалом модели (`support_filament=0`), а три контактных слоя —
+PVA из T4 (`support_interface_filament=4`). Расширенный режим
+`BodyAndInterface` остаётся доступен только как явный выбор для недоступных
+полостей и сопровождается предупреждением о расходе, влаге и адгезии PVA.
+Режим применяется ко всем U1 scopes проекта и исключает их маршрутизацию на
+однокатушечный A1 mini.
+
 ## 4. Поддерживаемая программная среда
 
 ### 4.1. Snapmaker Orca
 
-Начальная целевая версия — **Snapmaker Orca 2.3.5**, которая уже установлена в текущей рабочей среде. Для неё найден системный профиль `Snapmaker PLA Full Spectrum @U1 0.4 nozzle`.
+Текущая квалифицированная целевая версия — **Snapmaker Orca 2.3.6**. Адаптер
+привязан к точному SHA-256 исполняемого файла и установленного профильного
+пакета; для этой версии подтверждены GUI round trip Direct Spools и Full
+Spectrum. Системный профиль `Snapmaker PLA Full Spectrum @U1 0.4 nozzle`
+остаётся частью проверенного контракта.
 
 Внутренняя сериализация Full Spectrum в `Metadata/project_settings.config` не является документированным стабильным API. Поэтому:
 
@@ -281,7 +306,7 @@ T1–T4 между Direct batches и сохраняет A1 mini routing: scope, 
 
 Неиспользуемые объявленные filament slots отмечаются и не участвуют в планировании.
 
-Support/interface assignment учитывается отдельно от цвета модели. В MVP support печатается только solid physical filament, никогда не получает mixed recipe и обязан входить в loadout. Если source support slot нельзя безопасно сопоставить с target spool/material, план требует ручного решения.
+Support/interface assignment учитывается отдельно от цвета модели. В MVP support печатается только solid physical filament, никогда не получает mixed recipe и обязан входить в loadout. Если включён `Dedicated PVA on T4`, исходные support requirements заменяются одной role-bound PVA requirement, принудительно назначенной выбранной катушке и T4; поддержка добавляется в slicing intent даже при отсутствии отдельного source support slot. Если source support slot нельзя безопасно сопоставить с target spool/material и выделенный PVA не выбран, план требует ручного решения.
 
 ### FR-006. Корректный кодек facet painting
 
@@ -341,6 +366,11 @@ Negative/modifier/support volumes никогда не становятся от�
 - Full Spectrum из Panchroma PLA не применяется к функциональной PETG-детали;
 - одинаковый RGB, но разный материал не объединяется.
 
+Узкое production-исключение разрешает совместную PLA+PVA plate только при наличии
+явной project-level политики dedicated support, если все PVA requirements имеют
+роль `Support` и используют solid T4. Это исключение не включает PETG/PVA,
+модельную PVA-геометрию или cross-polymer Full Spectrum recipe.
+
 Пользователь может явно выбрать `Convert material to PLA`, после чего план содержит заметное предупреждение о возможном изменении прочности, трения, посадки и долговечности.
 
 Ограничение одного семейства является консервативной политикой MVP, а не универсальным аппаратным запретом U1. Full Spectrum допускает отдельные экспериментальные multi-material сценарии, однако приложение не экспортирует их, пока конкретная комбинация не поддержана adapter, не принята проверкой совместимости Snapmaker Orca и не имеет отдельной калибровки.
@@ -382,10 +412,11 @@ inventory, и требует `Recalculate Plan` до экспорта или з�
 - calibration set;
 - user notes.
 
-Локальный persisted document использует `filament-library` schema v2. При
-первом запуске schema v1 переносится в новый v2-файл атомарной публикацией;
-исходный v1-файл остаётся recovery-копией и не удаляется. Для каждой
-пользовательской катушки v2 хранит отдельный opaque `calibrationIdentity`.
+Локальный persisted document использует `filament-library` schema v3 и принимает
+материалы PLA, PETG и PVA. При первом запуске schema v1 или v2 переносится в новый
+v3-файл атомарной публикацией; исходный legacy-файл остаётся recovery-копией и не
+удаляется. Для каждой пользовательской катушки v3 хранит отдельный opaque
+`calibrationIdentity`.
 Миграция присваивает ему прежний spool ID, поэтому существующие измерения не
 теряются. Изменение только имени, vendor, профиля или заметок сохраняет identity,
 но изменение `batch/lot` либо `calibration set/reference` обязательно создаёт
@@ -568,6 +599,10 @@ semantic material-color-role pairs при этом может быть боль�
 role-only пары с одинаковыми material, RGB и явно объявленным source profile
 сохраняются отдельными строками решений, но используют одну physical identity.
 При неизвестном source profile такие строки консервативно остаются разными.
+При включённой dedicated PVA support одна из четырёх identities зарезервирована
+за PVA/T4, поэтому без palette reduction допускается не более трёх model
+physical identities. PVA mapping отображается как заблокированная строка
+`Dedicated PVA support` и не редактируется обычным color-mapping контролом.
 
 При явном `allowDirectPaletteReduction=true` scope с большим числом physical
 Direct identities также получает Direct-вариант, если все его требования можно
@@ -702,10 +737,17 @@ scopes, UI показывает `Varies by scope` и все соответств
 должно превращаться в неинформативный тупик. Backend сохраняет ближайший
 структурно допустимый candidate для общего loadout scope и возвращает source
 color/material, predicted color, ΔE00, confidence, recipe и required T4.
-Пользователь может явно принять именно этот candidate либо добавить физическую
-катушку. Согласие привязывается к fingerprint конкретного recipe/loadout/process
-context; после изменения inventory, калибровки или T4 устаревшее согласие не
-применяется к новому candidate.
+Вместе с ним backend возвращает fingerprint-bound палитру остальных физически
+допустимых recipes текущего loadout. Пользователь может выбрать candidate из
+палитры централизованно в `Original source palette` либо локально в карточке
+решения, явно принять его или добавить физическую катушку. UI не создаёт recipe
+и не передаёт произвольный RGB: planner принимает только candidate ID из
+backend-палитры точной semantic source identity. Выбор наследуется между scopes
+с той же material/role/RGB/source-profile identity; разные материалы и profiles
+не объединяются. При `PVA@T4` модельная палитра исключает все recipes с T4.
+Согласие привязывается к fingerprint конкретного recipe/loadout/process context;
+после изменения inventory, калибровки или T4 устаревшее согласие не применяется
+к новому candidate.
 
 Color approximation внутри того же material и material substitution являются
 разными решениями. PETG→PLA требует отдельного подтверждения изменения
@@ -790,26 +832,32 @@ mesh-resources выбранного объекта, применяет отде�
 
 Plate-level вариант является отдельным явным opt-in и не вызывается обычными
 analysis/planning/conversion путями. Он независимо строит ограниченный набор
-кандидатов для каждого printable instance, отбрасывает ориентации, которые
-ухудшают относительно source хотя бы одну из трёх величин — общий score,
-support volume или число малых overhang-компонент — и выполняет один
-детерминированный AABB packing-проход. Если исходный набор лучших кандидатов не
-помещается, bounded repair рассматривает альтернативы только для failed
-instance и пяти крупнейших/наиболее высоких деталей. Число попыток по умолчанию
-ограничено 50; полный декартов перебор запрещён. Для исходной multicolor-платы
-с активной prime tower packing также резервирует её консервативный envelope.
-Если доказанная раскладка не найдена, публикация не выполняется. Одинаковые
-source objects сохраняют отдельные instance transforms и отдельную проверку
-размещения, даже когда их mesh identity совпадает.
+кандидатов для каждого printable instance. При обычных поддержках отбрасываются
+ориентации, которые ухудшают относительно source хотя бы одну из трёх величин —
+общий score, support volume или число малых overhang-компонент. Если проект
+назначает выделенный PVA поддержкам, низкая ориентация допускается только при
+росте оценочного support volume не более 35% относительно source (плюс 50 мм³
+допуска дискретизации) и не более одного дополнительного малого
+overhang-компонента. Среди прошедших guard кандидатов минимизируются высота,
+площадь footprint и затем обычный support score. Далее выполняется AABB
+packing-проход. Если
+исходный набор лучших кандидатов не помещается, bounded repair рассматривает
+альтернативы только для failed instance и пяти крупнейших/наиболее высоких
+деталей. Число попыток по умолчанию ограничено 50; полный декартов перебор
+запрещён. Для исходной multicolor-платы с активной prime tower packing также
+резервирует её консервативный envelope. Если доказанная раскладка не найдена,
+публикация не выполняется. Одинаковые source objects сохраняют отдельные
+instance transforms и отдельную проверку размещения, даже когда их mesh
+identity совпадает.
 
-Для support-aware plate packing AABB каждой модели расширяется на 18 мм с каждой
-стороны под tree-support, Auto Brim и другие траектории первого слоя. Это тот же
-максимум, который writer допускает для фактической first-layer геометрии;
-меньший packing envelope запрещён контрактом. Дополнительно сохраняется 2-мм
-object clearance. В результате геометрия модели находится не ближе 19 мм к
-границе printable area, а геометрия соседних моделей разделена не менее чем
-38 мм. Раскладка, в которую входят только mesh-footprints без этих
-process envelopes, считается недопустимой.
+Для support-aware plate packing AABB каждой модели по умолчанию расширяется на
+18 мм с каждой стороны под tree-support, Auto Brim и другие траектории первого
+слоя. Дополнительно сохраняется 2-мм object clearance. Исключение — Reliable с
+выделенным PVA: writer записывает внешний brim 5 мм, а packing использует точно
+такой же 5-мм envelope. Геометрия соседних моделей тогда разделена не менее чем
+на 12 мм, то есть два brim не пересекаются и между ними остаётся 2 мм. Любая
+раскладка, в которую входят только mesh-footprints без выбранных process
+envelopes, считается недопустимой.
 
 Plate optimizer рассчитывает для каждого выбранного кандидата
 `AdhesionRiskAssessment`: bounded score 0–100, уровень
@@ -822,7 +870,8 @@ packing envelope и максимальный риск, чтобы UI и writer �
 Adhesion mode является явным opt-in параметром второго этапа:
 
 - `standard`: Auto Brim, два slow layers, 25 мм/с на первом слое;
-- `reliable`: risk-sized outer brim без зазора, три slow layers, 20 мм/с;
+- `reliable`: risk-sized outer brim без зазора, а с выделенным PVA — фиксированный
+  отдельный brim 5 мм; три slow layers, 20 мм/с;
 - `maximum`: 18-мм outer brim, двухслойный raft с 8-мм expansion, четыре slow
   layers, 15 мм/с.
 
@@ -992,6 +1041,7 @@ secondary disclosure или post-analysis recommendation. Пользовател
 - `Preserve source plates` либо явный opt-in `Combine compatible source plates`;
 - фактические currently loaded spools в T1–T4;
 - при включённом A1 mini — фактический currently loaded A1 spool.
+- `Use model material` либо доступную PVA-катушку для `Dedicated PVA on T4`.
 
 Hardware capability и project routing не являются одним boolean. Сохранённый
 A1 mini разрешает показать project-level вариант U1+A1; выбранный для проекта
@@ -1007,7 +1057,8 @@ immutable 3MF. До результата запрещено строить ск�
 PlanningIntent {
   defaultStrategy: Auto | Cmyx | Direct,
   a1MiniEnabled: bool,
-  allowU1CrossSourceRepacking: bool
+  allowU1CrossSourceRepacking: bool,
+  dedicatedSupportSpoolId: SpoolId?
 }
 
 PrinterLoadoutProfile {
@@ -1106,7 +1157,8 @@ requested · 0 eligible plates`. Редактирование создаёт `Ch
 - закрепить object за принтером или платой;
 - выбрать initial T4;
 - выбрать Grey/White/Black/Custom для спорного цвета;
-- заменить auto recipe;
+- заменить auto recipe на любой backend-authorized recipe из палитры текущего
+  loadout, централизованно или в карточке решения;
 - принять fallback;
 - сохранить исходный материал либо разрешить conversion;
 - включить/исключить optional plate;
@@ -1143,6 +1195,28 @@ recalculation` и расположенную рядом кнопку `Recalculat
 Process profile создаётся на уровне target plate/group. Writer обязан использовать рассчитанную plate layer height и не может поместить на одну plate recipes с несовместимыми effective layer patterns.
 
 Для Direct Spool profile содержит выбранные реальные катушки в назначенном порядке T1–T4 и не содержит активных Full Spectrum definitions для соответствующего scope. Цвет swatch профиля должен отражать фактическую выбранную катушку, а не исходный желаемый HEX.
+
+Для dedicated PVA writer обязан использовать одну из точных квалифицированных
+identity: системную `Snapmaker PVA @U1` либо производную
+`Reli3D PVA @U1`. Последняя строится поверх hash-проверенной структурной цепочки
+PVA, но получает собственные `name`/`setting_id`/`filament_id` и значения:
+диапазон сопла 190–230 °C, 210 °C в рабочем слое, 220 °C в первом слое, стол
+60 °C, maximum volumetric speed 3 мм³/с, retract 1 мм при 25 мм/с. Пустой или
+неизвестный PVA profile блокирует план вместо скрытой подмены на Snapmaker.
+
+Для проверки новой PVA-катушки до длительной печати CLI создаёт no-clobber
+одноматериальный диагностический Project 3MF. Он назначает Reli3D PVA только на
+T4, отключает support и prime tower и содержит общее основание, четыре
+разнесённые башни, стенку 0,6 мм и мост 10 мм. Один и тот же файл печатается до
+и после сушки: сравнение отделяет moisture-sensitive нестабильность от
+повторяемых ошибок температуры, ретракта, подачи и первого слоя.
+
+Writer записывает `filament_type` T4 как `PVA`, включает support, задаёт
+`support_interface_filament=4`, три interface-слоя, скорость interface 30 мм/с
+и нулевые верхний/нижний Z-зазоры. По умолчанию `support_filament=0`; значение
+`4` допустимо только при явном `BodyAndInterface`. Все ключи объявляются в
+`different_settings_to_system`; несовпадение профиля, материала, T4 или
+значений блокирует публикацию.
 
 Профиль строится из known-good U1 baseline 3MF/установленного официального preset, а не из P1S-профиля путём замены имени.
 
@@ -1188,7 +1262,7 @@ project-level process overrides. Без этого маркера Snapmaker Orca
 
 ### FR-027. Full Spectrum metadata
 
-Adapter Snapmaker Orca 2.3.5 формирует все необходимые version-specific keys, включая physical и mixed filament definitions, virtual IDs, режимы смешивания и layer subdivision.
+Adapter Snapmaker Orca 2.3.6 формирует все необходимые version-specific keys, включая physical и mixed filament definitions, virtual IDs, режимы смешивания и layer subdivision.
 
 Правила:
 
@@ -1324,7 +1398,7 @@ Validator проверяет, в частности:
 - plate-specific settings;
 - отсутствие ссылок на удалённый filament ID.
 
-Наличие и семантика purge/prime tower, ramming и flush-related arrays берутся только из проверенного U1 baseline 2.3.5. Bambu AMS-значения не копируются. На Этапе 0 golden diff должен определить, какие из этих полей действительно нужны U1 с независимыми toolheads и какие значения ожидает Snapmaker Orca.
+Наличие и семантика purge/prime tower, ramming и flush-related arrays берутся только из проверенного U1 baseline 2.3.6. Bambu AMS-значения не копируются. На Этапе 0 golden diff должен определить, какие из этих полей действительно нужны U1 с независимыми toolheads и какие значения ожидает Snapmaker Orca.
 
 ### FR-032. Структурная валидация
 
@@ -1557,7 +1631,26 @@ Preview подписывается `Estimated appearance — printed result may 
 Встроенную запись разрешено только включить или исключить из наличия. В списках
 назначения T1–T4 и в candidate search отображаются только `In stock` entries.
 
-### 9.8. Экран `Print Run`
+### 9.8. Экран `Color Reference`
+
+Отдельный верхнеуровневый read-only экран не зависит от выбранного 3MF и
+показывает полный nominal search grid текущего color engine:
+
+- CMY: T1 Cyan `#08ABFB`, T2 Magenta `#D93B90`, T3 Yellow `#F9ED3D`;
+- CMYK: те же компоненты плюс теоретический T4 Black `#080A0D`;
+- Ratio использует positive compositions со знаменателем 8 для двух и трёх
+  компонентов;
+- Cycle использует равные веса для двух–четырёх компонентов;
+- одинаковые прогнозные sRGB объединяются по HEX, но эквивалентные рецепты
+  остаются видимыми в строке.
+
+Ожидаемые размеры после дедупликации: 46 CMY и 135 CMYK цветов. Экран обязан
+показывать компонентный loadout, метод, рецепт, HEX, текстовый результат поиска
+и предупреждение, что значения nominal. CMYK-таблица является справочной и не
+отменяет `SolidOnlyUntilCalibrated` для встроенного непрозрачного Black или
+пользовательской T4-катушки.
+
+### 9.9. Экран `Print Run`
 
 `Print Run` — локальный пошаговый чек-лист выполнения валидированного плана, а
 не средство управления принтером. Экран показывает целевые платы в фактическом
@@ -1595,7 +1688,7 @@ target plate является отдельным заданием; выгруз�
 штатными действиями принтера между заданиями. UI обязан явно показывать это
 ограничение.
 
-### 9.9. Доступность
+### 9.10. Доступность
 
 - все действия доступны с клавиатуры;
 - после действия, заменяющего текущую карточку или строку, фокус переносится на
@@ -1947,7 +2040,7 @@ as current printer loadout** обновляет versioned профиль для 
 
 Каждый U1 output:
 
-- открывается Snapmaker Orca 2.3.5 без repair dialog;
+- открывается Snapmaker Orca 2.3.6 без repair dialog;
 - отображает ожидаемые plates и recipes;
 - сохраняется и повторно открывается;
 - успешно выполняет `Slice All`;
@@ -2006,7 +2099,7 @@ Manifest и HTML-report содержат source→target mapping, исключё
 - negative/modifier/support blocker/support enforcer volumes;
 - support/interface physical filament assignments;
 - sliced project со stale artifacts;
-- known-good U1 Full Spectrum 2.3.5;
+- known-good U1 Full Spectrum 2.3.6;
 - known-good U1 Direct Spool project with 1, 2, 3 and 4 colors;
 - known-good A1 mini project;
 - контрольный `Withered_Foxy.3mf`.
@@ -2043,7 +2136,7 @@ Manifest и HTML-report содержат source→target mapping, исключё
 
 ### Этап 0. Format lock и fixtures
 
-- зафиксировать Snapmaker Orca 2.3.5;
+- зафиксировать Snapmaker Orca 2.3.6;
 - создать known-good U1 baseline 3MF;
 - создать вручную несколько Full Spectrum recipes и сохранить fixtures;
 - зафиксировать plate-layer-height rules и необходимость U1 prime/purge-related fields по baseline diff;
@@ -2096,7 +2189,7 @@ Manifest и HTML-report содержат source→target mapping, исключё
 
 - calibration model/data;
 - CIEDE2000 matching;
-- adapter 2.3.5 mixed definitions;
+- adapter 2.3.6 mixed definitions;
 - geometry warnings;
 - Full Spectrum golden/slicer tests;
 - output profiles.
@@ -2221,7 +2314,7 @@ project, окрашенные TriangleSelector meshes и machine/process metadat
 этот файл не содержит ни одного serialised virtual Full Spectrum recipe.
 Реализованный clean-room writer создал шестиплатный deterministic candidate с
 virtual mixed colors и solid T4 assignments из canonical Withered Foxy plan.
-Candidate и два GUI save прошли полный Snapmaker Orca 2.3.5 round trip и strict
+Candidate и два GUI save прошли полный Snapmaker Orca 2.3.6 round trip и strict
 semantic validator; hash-bound writer gate имеет статус `qualified`. Это
 квалифицирует структуру файла и GUI interoperability, но не физическую точность
 оттенка: measured recipe по-прежнему требует per-user calibration provenance
@@ -2278,7 +2371,7 @@ plate при этом может содержать несколько успе�
 
 | Риск | Влияние | Митигирование |
 |---|---|---|
-| Full Spectrum остаётся Beta | schema/результат меняются | version adapters, frozen 2.3.5, golden tests |
+| Full Spectrum остаётся Beta | schema/результат меняются | version adapters, frozen 2.3.6, golden tests |
 | Цвет preview отличается от печати | неверный внешний вид | measured calibration, ΔE/confidence, physical test |
 | Translucent CMY зависит от геометрии | один recipe выглядит по-разному | geometry warnings, test coupons, manual review |
 | White/Black непрозрачны | mixed recipe непредсказуем | solid by default, mixing only after calibration |
@@ -2314,7 +2407,7 @@ plate при этом может содержать несколько успе�
 
 - все обязательные FR и NFR реализованы;
 - контрольный sample и Direct Spool fixtures проходят AC-001–AC-013;
-- U1 output успешно открывается, сохраняется и слайсится в Snapmaker Orca 2.3.5;
+- U1 output успешно открывается, сохраняется и слайсится в Snapmaker Orca 2.3.6;
 - A1 output успешно открывается и слайсится в согласованной Bambu Studio;
 - physical loadout каждой платы однозначен;
 - для scope с ≤4 material-color pairs пользователь может сравнить CMY+X и Direct Spool, назначить реальные катушки и видеть source→actual colors;

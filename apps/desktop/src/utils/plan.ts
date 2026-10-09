@@ -87,6 +87,9 @@ export function buildReplanRequest(
   allowDirectPaletteReduction = false,
   defaultStrategy: "auto" | "cmyx" | "direct" = "auto",
   allowU1CrossSourceRepacking = false,
+  dedicatedSupportSpoolId: string | null = null,
+  dedicatedSupportUsage: "interface-only" | "body-and-interface" =
+    "interface-only",
 ): ReplanRequest {
   const availableSpoolIds = new Set(
     inStockSpools(plan.spools).map((spool) => spool.id),
@@ -291,6 +294,11 @@ export function buildReplanRequest(
     a1MiniEnabled,
     allowDirectPaletteReduction,
     allowU1CrossSourceRepacking,
+    dedicatedSupportSpoolId:
+      dedicatedSupportSpoolId && availableSpoolIds.has(dedicatedSupportSpoolId)
+        ? dedicatedSupportSpoolId
+        : null,
+    dedicatedSupportUsage,
     includedAlternativePlateIds: plan.alternativePlates
       .filter((plate) => plate.included)
       .map((plate) => plate.id),

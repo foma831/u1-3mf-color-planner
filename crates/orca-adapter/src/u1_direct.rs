@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -22,33 +23,36 @@ use std::sync::{
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use u1_planner::{
-    ColorStrategy, Material, PackingStatus, PlannedBatch, PlannedJob, PlannedPlate, PlanningInput,
-    PlanningResult, PrintableUnit, Printer, PrinterLoadout, RgbColor, Spool, Toolhead,
+    ColorStrategy, DedicatedSupportMaterial, Material, PackingStatus, PlannedBatch, PlannedJob,
+    PlannedPlate, PlanningInput, PlanningResult, PrintableUnit, Printer, PrinterLoadout, RgbColor,
+    Spool, SupportMaterialUsage, Toolhead,
 };
 use u1_three_mf::{
-    ContentTypesBuilder, ExpectedSourceIdentity, InputIdentity, MAIN_MODEL_PATH,
-    MAIN_MODEL_RELATIONSHIPS_PATH, MODEL_RELATIONSHIP_TYPE, OpcPackageWriter, OpcRelationship,
-    OpcWriteReport, ProcessInformation, ProjectAnalysis, SupportInformation,
-    ValidatedStagedPackage, analyze_project, decode_paint_annotation, encode_paint_annotation,
-    relationships_xml,
+    CONTENT_TYPES_PATH, ContentTypesBuilder, ExpectedSourceIdentity, InputIdentity,
+    MAIN_MODEL_PATH, MAIN_MODEL_RELATIONSHIPS_PATH, MODEL_RELATIONSHIP_TYPE, OpcPackageWriter,
+    OpcRelationship, OpcWriteReport, ProcessInformation, ProjectAnalysis, ROOT_RELATIONSHIPS_PATH,
+    SupportInformation, ValidatedStagedPackage, analyze_project, decode_paint_annotation,
+    encode_paint_annotation, relationships_xml,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
+use crate::pva_profile::{RELI3D_PVA_PROFILE_NAME, apply_reli3d_pva_profile};
 use crate::{SUPPORTED_ORCA_VERSION, U1FullSpectrumPreparedArtifact, inspect_macos_application};
 
-pub const U1_DIRECT_ADAPTER_ID: &str = "snapmaker-orca/2.3.5/u1-0.4-direct";
+pub const U1_DIRECT_ADAPTER_ID: &str = "snapmaker-orca/2.3.6/u1-0.4-direct";
 pub const U1_DIRECT_MACHINE_PROFILE: &str = "Snapmaker U1 (0.4 nozzle)";
 pub const U1_DIRECT_PROCESS_PROFILE: &str = "0.20 Standard @Snapmaker U1 (0.4 nozzle)";
 pub const U1_DIRECT_PROCESS_SETTING_ID: &str = "GP004";
 pub const U1_DIRECT_EXECUTABLE_SHA256: &str =
-    "4c30e59cf582dcc4f12e43741fcab2f97045e972065d465481ed3760678d0fbe";
-pub const U1_DIRECT_PROFILE_PACK_VERSION: &str = "02.02.53.02";
+    "553a02a813e031ef2ea49616dc0edb9d0a4f0cc077b99c70fc30d5060dea3658";
+pub const U1_DIRECT_PROFILE_PACK_VERSION: &str = "02.02.56.02";
 pub const U1_DIRECT_PROFILE_MANIFEST_SHA256: &str =
-    "08d2e3a4450f07fa75f123c691495b3cd3c354c3c29697ceb8a35d6407186cb9";
+    "51949563d16ddbb1611d64f991c56b13269399ab15e57c18d3152aa1ec0a6c69";
 
 const PROJECT_SETTINGS_PATH: &str = "Metadata/project_settings.config";
 const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
+const PVA_DIAGNOSTIC_OBJECT_PATH: &str = "3D/Objects/pva-diagnostic.model";
 const BUNDLED_SNAPMAKER_PROFILE_ROOT: &str = "profiles/Snapmaker";
 const BUNDLED_SNAPMAKER_PROFILE_MANIFEST: &str = "profiles/Snapmaker.json";
 const SNAPMAKER_SYSTEM_DIR: &str = "system";
@@ -58,6 +62,7 @@ const MACHINE_PATH: &str = "machine/Snapmaker U1 (0.4 nozzle).json";
 const GENERIC_PLA_PATH: &str = "filament/Generic PLA.json";
 const POLYMAKER_PLA_PATH: &str = "filament/Polymaker General PLA Family @U1.json";
 const GENERIC_PETG_PATH: &str = "filament/Generic PETG.json";
+const SNAPMAKER_PVA_PATH: &str = "filament/Snapmaker PVA @U1.json";
 const TARGET_BED_SIZE_MM: f64 = 270.0;
 const TARGET_MIN_X_MM: f64 = 0.5;
 const TARGET_MAX_X_MM: f64 = 270.5;
@@ -65,6 +70,11 @@ const TARGET_MIN_Y_MM: f64 = 1.0;
 const TARGET_MAX_Y_MM: f64 = 271.0;
 const TARGET_PRINTABLE_HEIGHT_MM: f64 = 270.05;
 const TARGET_BOUNDS_TOLERANCE_MM: f64 = 0.02;
+// The planner packs clearance envelopes with a 1e-6 mm geometric epsilon.
+// Apply the same tolerance when the adapter reconstructs those envelopes from
+// source AABBs so two mathematically touching edges cannot become an overlap
+// through a few ulps of floating-point addition.
+const RECTANGLE_OVERLAP_EPSILON_MM: f64 = 1.0e-6;
 const PRIME_TOWER_WIDTH_MM: f64 = 30.0;
 const PRIME_TOWER_DEPTH_MM: f64 = 45.0;
 const PRIME_TOWER_VOLUME_MM3: f64 = 45.0;
@@ -121,9 +131,9 @@ const STAGING_DIRECTORY_PREFIX: &str = ".u1-3mf-conversion-";
 const STAGING_OWNER_SUFFIX: &str = ".owner";
 const MAX_STAGING_OWNER_BYTES: u64 = 4 * 1024;
 const U1_DIRECT_QUALIFICATION_RECORD: &[u8] =
-    include_bytes!("../qualification/u1-direct-2.3.5.json");
+    include_bytes!("../qualification/u1-direct-2.3.6.json");
 const U1_DIRECT_QUALIFICATION_REPORT: &[u8] =
-    include_bytes!("../qualification/u1-direct-2.3.5-report.json");
+    include_bytes!("../qualification/u1-direct-2.3.6-report.json");
 const U1_DIRECT_QUALIFICATION_FIXTURE: &str = "Sailfin Dragon - Articulated Lizard by Raki-Box.3mf";
 const U1_DIRECT_QUALIFICATION_FIXTURE_SHA256: &str =
     "1b20d6124353d3bc31c4ea554e482ba6f8ef281dd23e2df6bbc0d561b4f6e0d7";
@@ -131,35 +141,35 @@ const U1_DIRECT_QUALIFICATION_FIXTURE_SHA256: &str =
 const DIRECT_PROFILE_BASELINE: &[(&str, &str)] = &[
     (
         MACHINE_PATH,
-        "545e4456b78cc58e701ed257e4024b0ed9e2461cccc1046e6f901ce3c020ee0d",
+        "f1791cbe2f1d1cf494986e638d181c2dcbeb6417a7243e1c8b68197cf4d30d1e",
     ),
     (
         "machine/fdm_U1.json",
-        "ff0724000b1436fcc3d77ffa74bb623a9b322474fc20c8a8d5a26ee164077046",
+        "ec0e4b95fae1d52290d19c1017393961678405ee0b7028e70e74d30fb68c9476",
     ),
     (
         "machine/fdm_toolchanger.json",
-        "b2ee2d2c31a26ddee7b0c8bd84c58934d9c01e84e1b8f7ae45e14acfd1f7b52a",
+        "c2adacdbccbc716f58c217dbb5579023836a44c87195c8c0218e29b4699ce4f5",
     ),
     (
         "machine/fdm_klipper.json",
-        "78dd750211347543368a8a0f136441ef7e23b3a4a09a9e33a370c91dbda273b9",
+        "16aca9ed7d36c23955156c57ca8ff464c672208e981889bfa6237c58f782c801",
     ),
     (
         DIRECT_PROCESS_PATH,
-        "3342dbe3e995b66ab5700245c676f446a88d35f56498b074ab6fe14039d67763",
+        "4e0459578b918c061e24fb89baba5f64ff62a309701558fc7d0c58fae6dd0b84",
     ),
     (
         "process/fdm_process_U1_0.20.json",
-        "2df28dc2474b6aeb77d5416043b3a67e54ff7ea1cdf5a5daa9e97db7e5b034a6",
+        "9f3c4b91972d6b7fb2519091d9a12a08b5564e53c107b5fe3b33c49be21153b2",
     ),
     (
         "process/fdm_process_U1_common.json",
-        "43fba9fe359864b265ffa8682cf404c2b935d12164ffe3d0048e5dcb0691db74",
+        "30f1b32d21f18e903b10ba7f46ff1e00a75cea7191e5748f2c08d6ab9a4bc2ff",
     ),
     (
         "process/fdm_process_U1.json",
-        "66e9e51c4bd04cbbec49fa1a3a043bc3c6e329396c2b38a18db5a66b6e72b4e2",
+        "a60fa5dd78ff1204b3bf164dcd7eb3a72ac6a2adba9feaf2b4ca7b251f3a6288",
     ),
     (
         GENERIC_PLA_PATH,
@@ -167,43 +177,65 @@ const DIRECT_PROFILE_BASELINE: &[(&str, &str)] = &[
     ),
     (
         "filament/Generic PLA @base.json",
-        "bfee7e83f1d76c862e36680ae3bccba55d45c88bc84bfdc489272f881fad9564",
+        "b429b410382b1b9aff795ccb1c9b38c678cb230145a9a524093be678f2ef12e1",
     ),
     (
         "filament/fdm_filament_pla_generic.json",
-        "b815ff418638712ac57f740b5d735e231147128fcd13dc16a16c69011d3bd75a",
+        "d3cb6456d9a15923d732d5ba0ceaaa7ebeeb6b569cbe49bb13383fdbf425f90c",
     ),
     (
         "filament/fdm_filament_common_generic.json",
-        "24e4920907489bfdeb250ba749b005c97571d7a547416989af10df502896e99d",
+        "f2e3be440a33d2642a84d0b4feb13359c3f27950b28db3288096ea897fa655c4",
     ),
     (
         POLYMAKER_PLA_PATH,
-        "37f61ec15169713050f6ace92da102fc5ad39b05556965f364db941b3a8f9729",
+        "32e3cc2b753288acdb5199596e10c0a9e72c5c7aa865c0bfbfcbe59fad8c4ce0",
     ),
     (
         "filament/Polymaker PLA @U1 base.json",
-        "f9770b13c948e0249c09741babda89f8a6b16a0302f1a9f5e86cc2d3e57e3f96",
+        "c8cfe138966bffcbde9bc881e31b13524aa30f0f08a0a58f1760185c3ca32671",
     ),
     (
         "filament/fdm_filament_pla_poly.json",
-        "b3aa7fda86cec0cb9c6bee3bb600aa44a54f962fc7c8350bfd6e82d1295bc533",
+        "082364ea8040b473480fb2563a1ca1648b2dd12d8770e01811551f58a01bda81",
     ),
     (
         "filament/fdm_filament_common_poly.json",
-        "ea111ac929ad6d131237c25eba3af23f802a61afee3bea099eea6c93212ecbbc",
+        "e2982eef7fea0fb2656d28d5543e81b9bf8305d5edce22075edb796efb0896de",
     ),
     (
         GENERIC_PETG_PATH,
-        "9887427bf889b4364b49b401aa69a1f874ff484e530a09a54be5e77a0bd5ad9b",
+        "67145ddc7f1638d8112d90cab5b2e83d38f05e0c827674d6ac3ea7efda63313a",
     ),
     (
         "filament/Generic PETG @base.json",
-        "e46b5aac9d983eff69a18f6f2453fc2e5a28f1d581370195ef01c9d0d7032e57",
+        "f8ec6c3df3ba632a25e69a7e0e4b4b581496f49634dae2533f865c71e2938d66",
     ),
     (
         "filament/fdm_filament_pet_generic.json",
-        "33f78fc9a87c83976a635d23c0303797bc9468c8a1c27ab2d1ef769ea66ac2d1",
+        "513b0d5839821c6366715d70be9ae15b066712f43918c1125ce5b528dcb0fa4d",
+    ),
+];
+
+// Exact extension used only by the dedicated PVA support contract. It stays
+// separate from the historical GUI qualification evidence so that evidence
+// remains byte-for-byte verifiable instead of being retroactively rewritten.
+const DIRECT_PVA_SUPPORT_PROFILE_BASELINE: &[(&str, &str)] = &[
+    (
+        SNAPMAKER_PVA_PATH,
+        "05179ef3dbd0c8ddb722fef39c8c5e4e851a08b2fca86108984dcf50e23ac5e7",
+    ),
+    (
+        "filament/Snapmaker PVA @U1 base.json",
+        "3041a49ac415fca9af7d9be452c436b70e6da8218f5a55e3e66db73a04a1341b",
+    ),
+    (
+        "filament/fdm_filament_pva.json",
+        "ee8b784ceefc21533d9d162ff8d1568097615f4adc6be54562ce8ad2ca6d92a3",
+    ),
+    (
+        "filament/fdm_filament_common.json",
+        "d01d59fe7ae9b999d78c923725aad1d50238c5556c6664a18c3db09555217ece",
     ),
 ];
 
@@ -215,7 +247,7 @@ const DIRECT_PROFILE_BASELINE: &[(&str, &str)] = &[
 const DIRECT_AUXILIARY_PROFILE_BASELINE: &[(&str, &str)] = &[
     (
         "filament/filament_hot_bed_nozzles.json",
-        "a824576f8d9fc26f0d9c32ad386ecd86f182ed907025aec0aa6df74b0d2c08e7",
+        "1134279e19c59ba02e7887086c5c09909f4e1dca08288b06d59d6c9cfd1ea7cc",
     ),
     (
         "filament/filament_compatibility.json",
@@ -358,6 +390,339 @@ pub struct U1DirectConversionResult {
     pub manifest_path: PathBuf,
     pub artifacts: Vec<PublishedArtifact>,
     pub warnings: Vec<String>,
+}
+
+/// A compact, single-material diagnostic project for qualifying one physical
+/// PVA spool before it is used as a support interface in a long print.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct U1PvaDiagnosticProjectReport {
+    pub adapter_id: String,
+    pub path: PathBuf,
+    pub byte_size: u64,
+    pub sha256: String,
+    pub filament_profile: String,
+    pub toolhead: String,
+    pub nozzle_temperature_c: u16,
+    pub initial_nozzle_temperature_c: u16,
+    pub bed_temperature_c: u16,
+    pub maximum_volumetric_speed_mm3_s: String,
+    pub layer_height_mm: String,
+    pub approximate_footprint_mm: [u16; 2],
+    pub approximate_height_mm: u16,
+    pub diagnostics: Vec<String>,
+}
+
+/// Writes a no-clobber native U1 Project 3MF that uses only Reli3D PVA on T4.
+/// The geometry combines a broad first-layer coupon, four separated stringing
+/// towers, a 0.6 mm wall, and a 10 mm bridge. No support or prime tower is
+/// generated, so every defect comes from this PVA path rather than a material
+/// handoff.
+pub fn write_u1_pva_diagnostic_project(
+    application_path: &Path,
+    destination: &Path,
+) -> Result<U1PvaDiagnosticProjectReport, U1DirectError> {
+    if destination.extension().and_then(|value| value.to_str()) != Some("3mf") {
+        return Err(U1DirectError::Plan(
+            "PVA diagnostic destination must have the .3mf extension".into(),
+        ));
+    }
+    if destination
+        .try_exists()
+        .map_err(|source| U1DirectError::Read {
+            path: destination.to_owned(),
+            source,
+        })?
+    {
+        return Err(U1DirectError::OutputExists(destination.to_owned()));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        U1DirectError::Plan("PVA diagnostic destination has no parent directory".into())
+    })?;
+    if !parent.is_dir() {
+        return Err(U1DirectError::Publish(format!(
+            "PVA diagnostic destination directory does not exist: {}",
+            parent.display()
+        )));
+    }
+
+    let context = adapter_context(application_path)?;
+    if !context.capability.conversion_available {
+        return Err(U1DirectError::Capability(
+            context.capability.issues.join(" "),
+        ));
+    }
+    let profiles = load_verified_profile_store(&context)?;
+    let generic = resolve_physical_profile_with(None, |relative_path| {
+        resolve_verified_profile_chain(&profiles, relative_path)
+    })?;
+    let pva_spool = Spool {
+        id: "pva-diagnostic-reli3d".into(),
+        calibration_id: None,
+        display_name: "Reli3D PVA diagnostic spool".into(),
+        color_name: Some("Natural PVA".into()),
+        material: Material::Pva,
+        nominal_color: RgbColor::new(199, 180, 112),
+        measured_color: None,
+        sku: None,
+        profile_id: Some(RELI3D_PVA_PROFILE_NAME.into()),
+        available: true,
+    };
+    let pva = resolve_physical_profile_with(Some(&pva_spool), |relative_path| {
+        resolve_verified_profile_chain(&profiles, relative_path)
+    })?;
+    let slots = [generic.clone(), generic.clone(), generic, pva];
+    let plates = [ArtifactPlate {
+        source_plate_ids: vec![1],
+        target_plate_id: 1,
+        name: "Reli3D PVA diagnostic".into(),
+        units: Vec::new(),
+        source_identify_ids: BTreeMap::new(),
+        wipe_tower_x: 40.0,
+        wipe_tower_y: 200.0,
+    }];
+    let source_process = ProcessInformation {
+        name: Some(U1_DIRECT_PROCESS_PROFILE.into()),
+        layer_height_mm: Some(0.2),
+        initial_layer_height_mm: Some(0.2),
+        prime_tower_enabled: Some(false),
+        support: SupportInformation {
+            enabled: Some(false),
+            ..SupportInformation::default()
+        },
+        ..ProcessInformation::default()
+    };
+    let project_settings = configure_pva_diagnostic_project_settings(
+        build_project_settings_verified(&profiles, &slots, &plates, &source_process, None)?,
+    )?;
+    let model = pva_diagnostic_model();
+    let object_model = pva_diagnostic_object_model();
+    let model_settings = pva_diagnostic_model_settings();
+
+    let mut content_types = ContentTypesBuilder::project_3mf();
+    content_types
+        .add_override(format!("/{PROJECT_SETTINGS_PATH}"), "application/json")
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+    content_types
+        .add_override(format!("/{MODEL_SETTINGS_PATH}"), "application/xml")
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+    let root_relationships = relationships_xml(&[OpcRelationship::internal(
+        "rel-1",
+        MODEL_RELATIONSHIP_TYPE,
+        format!("/{MAIN_MODEL_PATH}"),
+    )
+    .map_err(|error| U1DirectError::Opc(error.to_string()))?])
+    .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+    let model_relationships = relationships_xml(&[OpcRelationship::internal(
+        "rel-1",
+        MODEL_RELATIONSHIP_TYPE,
+        format!("/{PVA_DIAGNOSTIC_OBJECT_PATH}"),
+    )
+    .map_err(|error| U1DirectError::Opc(error.to_string()))?])
+    .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+    let mut package = OpcPackageWriter::new();
+    package
+        .add_bytes(
+            CONTENT_TYPES_PATH,
+            content_types
+                .to_xml()
+                .map_err(|error| U1DirectError::Opc(error.to_string()))?,
+        )
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(ROOT_RELATIONSHIPS_PATH, root_relationships)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(MAIN_MODEL_PATH, model)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(MAIN_MODEL_RELATIONSHIPS_PATH, model_relationships)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(PVA_DIAGNOSTIC_OBJECT_PATH, object_model)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(MODEL_SETTINGS_PATH, model_settings)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .add_bytes(PROJECT_SETTINGS_PATH, project_settings)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+    let published = package
+        .stage_to(destination)
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?
+        .validate()
+        .map_err(|error| match error {
+            u1_three_mf::StagedPackageValidationError::Blocked { report } => {
+                U1DirectError::Opc(format!(
+                    "PVA diagnostic failed structural validation: {}",
+                    serde_json::to_string(&report.issues)
+                        .unwrap_or_else(|_| "validation report unavailable".into())
+                ))
+            }
+            other => U1DirectError::Opc(other.to_string()),
+        })?
+        .publish()
+        .map_err(|error| U1DirectError::Opc(error.to_string()))?;
+
+    Ok(U1PvaDiagnosticProjectReport {
+        adapter_id: U1_DIRECT_ADAPTER_ID.into(),
+        path: published.destination,
+        byte_size: published.package_bytes,
+        sha256: published.package_sha256,
+        filament_profile: RELI3D_PVA_PROFILE_NAME.into(),
+        toolhead: "T4".into(),
+        nozzle_temperature_c: 210,
+        initial_nozzle_temperature_c: 220,
+        bed_temperature_c: 60,
+        maximum_volumetric_speed_mm3_s: "3".into(),
+        layer_height_mm: "0.20".into(),
+        approximate_footprint_mm: [61, 34],
+        approximate_height_mm: 16,
+        diagnostics: vec![
+            "broad base: first-layer consistency and adhesion".into(),
+            "four separated towers: oozing, stringing, and retraction".into(),
+            "0.6 mm wall: stable low-flow extrusion".into(),
+            "10 mm bridge: cooling and melt control".into(),
+        ],
+    })
+}
+
+#[derive(Clone, Copy)]
+struct PvaDiagnosticCuboid {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+fn pva_diagnostic_model() -> Vec<u8> {
+    b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" unit=\"millimeter\" xml:lang=\"en-US\" requiredextensions=\"p\">\n <metadata name=\"Application\">BambuStudio-2.3.6</metadata>\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <metadata name=\"U1Planner:Generator\">U1 3MF Color Planner</metadata>\n <metadata name=\"U1Planner:Adapter\">snapmaker-orca/2.3.6/u1-0.4-direct</metadata>\n <metadata name=\"Title\">Reli3D PVA diagnostic</metadata>\n <resources>\n  <object id=\"2\" p:UUID=\"00000002-61cb-4c03-9d28-80fed5dfa1dc\" type=\"model\">\n   <components>\n    <component p:path=\"/3D/Objects/pva-diagnostic.model\" objectid=\"1\" p:UUID=\"00010000-b206-40ff-9872-83e8017abed1\"/>\n   </components>\n  </object>\n </resources>\n <build p:UUID=\"2c7c17d8-22b5-4d84-8835-1976022ea369\">\n  <item objectid=\"2\" p:UUID=\"00000002-b1ec-4553-aec9-835e5b724bb4\" printable=\"1\"/>\n </build>\n</model>\n"
+        .to_vec()
+}
+
+fn pva_diagnostic_object_model() -> Vec<u8> {
+    // Geometry is placed near the U1 bed centre. All raised diagnostics touch
+    // the 0.6 mm common base, while the four tower columns remain separate
+    // above it so travel moves expose oozing and wet-filament stringing.
+    let cuboids = [
+        PvaDiagnosticCuboid {
+            min: [105.0, 106.0, 0.0],
+            max: [166.0, 140.0, 0.6],
+        },
+        PvaDiagnosticCuboid {
+            min: [110.0, 111.0, 0.6],
+            max: [113.0, 114.0, 16.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [124.0, 111.0, 0.6],
+            max: [127.0, 114.0, 16.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [110.0, 131.0, 0.6],
+            max: [113.0, 134.0, 16.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [124.0, 131.0, 0.6],
+            max: [127.0, 134.0, 16.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [137.0, 110.0, 0.6],
+            max: [137.6, 136.0, 12.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [146.0, 111.0, 0.6],
+            max: [149.0, 115.0, 8.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [159.0, 111.0, 0.6],
+            max: [162.0, 115.0, 8.0],
+        },
+        PvaDiagnosticCuboid {
+            min: [146.0, 111.0, 8.0],
+            max: [162.0, 115.0, 8.8],
+        },
+        PvaDiagnosticCuboid {
+            min: [146.0, 126.0, 0.6],
+            max: [162.0, 130.0, 1.4],
+        },
+        PvaDiagnosticCuboid {
+            min: [146.0, 131.0, 0.6],
+            max: [162.0, 135.0, 2.6],
+        },
+    ];
+    let mut vertices = Vec::<[f64; 3]>::new();
+    let mut triangles = Vec::<[usize; 3]>::new();
+    for cuboid in cuboids {
+        push_pva_diagnostic_cuboid(&mut vertices, &mut triangles, cuboid);
+    }
+
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" unit=\"millimeter\" xml:lang=\"en-US\" requiredextensions=\"p\">\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n  <object id=\"1\" p:UUID=\"00010000-81cb-4c03-9d28-80fed5dfa1dc\" type=\"model\" name=\"PVA drying and stringing diagnostic\"><mesh>\n   <vertices>\n",
+    );
+    for [x, y, z] in vertices {
+        writeln!(xml, "    <vertex x=\"{x:.3}\" y=\"{y:.3}\" z=\"{z:.3}\"/>")
+            .expect("writing diagnostic XML to a String cannot fail");
+    }
+    xml.push_str("   </vertices>\n   <triangles>\n");
+    for [a, b, c] in triangles {
+        writeln!(xml, "    <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>")
+            .expect("writing diagnostic XML to a String cannot fail");
+    }
+    xml.push_str("   </triangles>\n  </mesh></object>\n </resources>\n <build/>\n</model>\n");
+    xml.into_bytes()
+}
+
+fn push_pva_diagnostic_cuboid(
+    vertices: &mut Vec<[f64; 3]>,
+    triangles: &mut Vec<[usize; 3]>,
+    cuboid: PvaDiagnosticCuboid,
+) {
+    let base = vertices.len();
+    let [min_x, min_y, min_z] = cuboid.min;
+    let [max_x, max_y, max_z] = cuboid.max;
+    vertices.extend([
+        [min_x, min_y, min_z],
+        [max_x, min_y, min_z],
+        [max_x, max_y, min_z],
+        [min_x, max_y, min_z],
+        [min_x, min_y, max_z],
+        [max_x, min_y, max_z],
+        [max_x, max_y, max_z],
+        [min_x, max_y, max_z],
+    ]);
+    for [a, b, c] in [
+        [0, 2, 1],
+        [0, 3, 2],
+        [4, 5, 6],
+        [4, 6, 7],
+        [0, 1, 5],
+        [0, 5, 4],
+        [1, 2, 6],
+        [1, 6, 5],
+        [2, 3, 7],
+        [2, 7, 6],
+        [3, 0, 4],
+        [3, 4, 7],
+    ] {
+        triangles.push([base + a, base + b, base + c]);
+    }
+}
+
+fn pva_diagnostic_model_settings() -> Vec<u8> {
+    b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n <object id=\"2\">\n  <metadata key=\"name\" value=\"PVA drying and stringing diagnostic\"/>\n  <metadata key=\"extruder\" value=\"4\"/>\n  <part id=\"1\" subtype=\"normal_part\">\n   <metadata key=\"name\" value=\"PVA diagnostic coupon\"/>\n   <metadata key=\"matrix\" value=\"1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\"/>\n   <metadata key=\"source_object_id\" value=\"1\"/>\n   <metadata key=\"source_volume_id\" value=\"0\"/>\n   <metadata key=\"source_offset_x\" value=\"0\"/>\n   <metadata key=\"source_offset_y\" value=\"0\"/>\n   <metadata key=\"source_offset_z\" value=\"0\"/>\n   <metadata key=\"extruder\" value=\"4\"/>\n   <mesh_stat face_count=\"132\" edges_fixed=\"0\" degenerate_facets=\"0\" facets_removed=\"0\" facets_reversed=\"0\" backwards_edges=\"0\"/>\n  </part>\n </object>\n <plate>\n  <metadata key=\"plater_id\" value=\"1\"/>\n  <metadata key=\"plater_name\" value=\"Reli3D PVA diagnostic\"/>\n  <metadata key=\"filament_map_mode\" value=\"Auto For Flush\"/>\n  <metadata key=\"filament_maps\" value=\"1 2 3 4\"/>\n  <metadata key=\"filament_volume_maps\" value=\"0 0 0 0\"/>\n  <model_instance>\n   <metadata key=\"object_id\" value=\"2\"/>\n   <metadata key=\"instance_id\" value=\"0\"/>\n   <metadata key=\"identify_id\" value=\"91004001\"/>\n  </model_instance>\n </plate>\n</config>\n"
+        .to_vec()
+}
+
+fn configure_pva_diagnostic_project_settings(
+    project_settings: Vec<u8>,
+) -> Result<Vec<u8>, U1DirectError> {
+    let mut settings = serde_json::from_slice::<BTreeMap<String, Value>>(&project_settings)
+        .map_err(|source| U1DirectError::Json {
+            path: PROJECT_SETTINGS_PATH.into(),
+            source,
+        })?;
+    // A single-material test must not spend PVA on a wipe tower. Keeping the
+    // ordinary qualified process otherwise unchanged makes a before/after
+    // drying comparison meaningful.
+    settings.insert("enable_prime_tower".into(), Value::String("0".into()));
+    let mut bytes = serde_json::to_vec_pretty(&settings).map_err(|source| U1DirectError::Json {
+        path: PROJECT_SETTINGS_PATH.into(),
+        source,
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 /// Evidence produced while building the geometry-and-paint substrate consumed
@@ -908,12 +1273,18 @@ fn adapter_context_with_control(
         &mut issues,
     );
     optional_checkpoint(control)?;
-    let profiles = inspect_profile_baseline(
+    let mut profiles = inspect_profile_baseline(
         &profile_source.profiles_root,
         DIRECT_PROFILE_BASELINE,
         "U1 profile",
         &mut issues,
     );
+    profiles.extend(inspect_profile_baseline(
+        &profile_source.profiles_root,
+        DIRECT_PVA_SUPPORT_PROFILE_BASELINE,
+        "U1 PVA support profile",
+        &mut issues,
+    ));
     optional_checkpoint(control)?;
     let auxiliary_profiles = inspect_profile_baseline(
         &profile_source.profiles_root,
@@ -931,7 +1302,7 @@ fn adapter_context_with_control(
         installation_supported && gui_qualification_record_is_valid(profile_source.kind);
     if installation_supported && !qualified {
         issues.push(
-            "U1 Direct writer is structurally ready, but the Snapmaker Orca 2.3.5 GUI qualification does not match the effective profile source."
+            "U1 Direct writer is structurally ready, but the Snapmaker Orca 2.3.6 GUI qualification does not match the effective profile source."
                 .into(),
         );
     }
@@ -960,7 +1331,7 @@ fn adapter_context_with_control(
 }
 
 /// Resolves the same default macOS data directory used by Snapmaker Orca
-/// 2.3.5. A portable `data_dir` beside the application bundle takes
+/// 2.3.6. A portable `data_dir` beside the application bundle takes
 /// precedence. Otherwise the GUI uses wxWidgets' per-user Application Support
 /// directory. Command-line `--datadir` launches are intentionally outside this
 /// API: callers cannot prove their runtime directory from an application path
@@ -1707,6 +2078,11 @@ fn build_artifact_plans(
                 .map(move |unit| ((scope.id.as_str(), unit.id.as_str()), unit))
         })
         .collect::<BTreeMap<_, _>>();
+    let scopes_by_id = input
+        .scopes
+        .iter()
+        .map(|scope| (scope.id.as_str(), scope))
+        .collect::<BTreeMap<_, _>>();
     let scoped_unit_count = input
         .scopes
         .iter()
@@ -1792,10 +2168,35 @@ fn build_artifact_plans(
         for job in &batch_jobs {
             ensure_direct_u1_job(job)?;
         }
+        let mut dedicated_support: Option<&DedicatedSupportMaterial> = None;
+        let mut support_policy_seen = false;
+        for scope_id in batch_jobs.iter().flat_map(|job| &job.scope_ids) {
+            let scope = scopes_by_id
+                .get(scope_id.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    U1DirectError::Plan(format!("batch references missing scope {scope_id}"))
+                })?;
+            if support_policy_seen && scope.dedicated_support.as_ref() != dedicated_support {
+                return Err(U1DirectError::Plan(
+                    "one U1 batch contains different dedicated-support policies".into(),
+                ));
+            }
+            dedicated_support = scope.dedicated_support.as_ref();
+            support_policy_seen = true;
+        }
         let loadout = match &batch.loadout {
             PrinterLoadout::U1 { loadout } => loadout,
             _ => unreachable!("ensure_direct_u1_batch already checked the loadout"),
         };
+        if let Some(support) = dedicated_support
+            && loadout.spool(support.toolhead) != Some(support.spool_id.as_str())
+        {
+            return Err(U1DirectError::Plan(format!(
+                "dedicated support spool '{}' is not loaded in {:?}",
+                support.spool_id, support.toolhead
+            )));
+        }
         let mut units_by_source_plate = BTreeMap::<u32, Vec<PrintableUnit>>::new();
         let mut planned_target_plates = Vec::<&PlannedPlate>::new();
         let mut target_plate_ids = Vec::new();
@@ -2309,6 +2710,7 @@ fn build_artifact_plans(
             &physical_slots,
             &artifact_plates,
             &analysis.process,
+            dedicated_support,
         )?;
         let prepared_slots = prepared_physical_slots(input, loadout, &physical_slots)?;
         let source_plate_ids = artifact_plates
@@ -3149,7 +3551,7 @@ fn validate_preserved_plate_bounds(
     .all(f64::is_finite)
         || local_min_x < TARGET_MIN_X_MM - TARGET_BOUNDS_TOLERANCE_MM
         || local_min_y < TARGET_MIN_Y_MM - TARGET_BOUNDS_TOLERANCE_MM
-        // Snapmaker Orca 2.3.5 deliberately supports "sinking" objects: its
+        // Snapmaker Orca 2.3.6 deliberately supports "sinking" objects: its
         // build-volume test clips geometry at Z=0 and ignores the part below
         // the bed. Preserve that source intent exactly, but reject geometry
         // that is completely below the printable plane.
@@ -3196,7 +3598,7 @@ fn choose_wipe_tower_position(
             plate.id
         )));
     }
-    // Snapmaker Orca 2.3.5 interprets wipe_tower_x/y as the lower-left
+    // Snapmaker Orca 2.3.6 interprets wipe_tower_x/y as the lower-left
     // unrotated tower-body corner (Print.cpp::first_layer_wipe_tower_corners).
     // The exact U1 Standard profile is unrotated. Reserve a deliberately
     // conservative axis-aligned envelope around that anchor: the profile's
@@ -3287,11 +3689,14 @@ fn conservative_prime_tower_envelope(x: f64, y: f64, tower_height: f64) -> [f64;
 }
 
 fn rectangles_overlap(left: [f64; 4], right: [f64; 4]) -> bool {
-    left[0] < right[2] && left[2] > right[0] && left[1] < right[3] && left[3] > right[1]
+    left[0] < right[2] - RECTANGLE_OVERLAP_EPSILON_MM
+        && left[2] > right[0] + RECTANGLE_OVERLAP_EPSILON_MM
+        && left[1] < right[3] - RECTANGLE_OVERLAP_EPSILON_MM
+        && left[3] > right[1] + RECTANGLE_OVERLAP_EPSILON_MM
 }
 
 fn virtual_plate_origin(index: usize, plate_count: usize, bed_size: f64) -> (f64, f64) {
-    // Snapmaker Orca 2.3.5 PartPlateList uses ceil(sqrt(plate_count)) columns
+    // Snapmaker Orca 2.3.6 PartPlateList uses ceil(sqrt(plate_count)) columns
     // and a 20% logical gap in both axes. The exact adapter/version gate and
     // square-bed precondition above bind this clean-room implementation to
     // that layout contract; GUI round-trip qualification remains mandatory.
@@ -3483,6 +3888,19 @@ fn load_verified_profile_store(
             })?;
         documents.insert((*relative_path).to_owned(), document);
     }
+    for (relative_path, expected_hash) in DIRECT_PVA_SUPPORT_PROFILE_BASELINE {
+        let path = context.profiles_root.join(relative_path);
+        let bytes =
+            read_verified_profile_file(&context.profiles_root, relative_path, expected_hash)?;
+        let document =
+            serde_json::from_slice::<BTreeMap<String, Value>>(&bytes).map_err(|source| {
+                U1DirectError::Json {
+                    path: path.to_string_lossy().into_owned(),
+                    source,
+                }
+            })?;
+        documents.insert((*relative_path).to_owned(), document);
+    }
 
     let manifest_after =
         fs::read(&context.profile_manifest_path).map_err(|source| U1DirectError::Read {
@@ -3638,8 +4056,8 @@ fn resolve_physical_profile_with(
     spool: Option<&Spool>,
     resolve: impl FnOnce(&str) -> Result<BTreeMap<String, Value>, U1DirectError>,
 ) -> Result<PhysicalProfile, U1DirectError> {
-    let (relative_path, expected_name) = match spool {
-        None => (GENERIC_PLA_PATH, "Generic PLA"),
+    let (relative_path, source_expected_name, derived_profile) = match spool {
+        None => (GENERIC_PLA_PATH, "Generic PLA", false),
         Some(spool) => {
             if !spool.available {
                 return Err(U1DirectError::Plan(format!(
@@ -3653,14 +4071,24 @@ fn resolve_physical_profile_with(
                 .map(str::trim)
                 .filter(|v| !v.is_empty());
             match (&spool.material, requested) {
-                (Material::Pla, Some("Generic PLA")) => (GENERIC_PLA_PATH, "Generic PLA"),
-                (Material::Pla, Some("Polymaker General PLA Family @U1")) => {
-                    (POLYMAKER_PLA_PATH, "Polymaker General PLA Family @U1")
+                (Material::Pla, Some("Generic PLA")) => (GENERIC_PLA_PATH, "Generic PLA", false),
+                (Material::Pla, Some("Polymaker General PLA Family @U1")) => (
+                    POLYMAKER_PLA_PATH,
+                    "Polymaker General PLA Family @U1",
+                    false,
+                ),
+                (Material::Petg, Some("Generic PETG")) => {
+                    (GENERIC_PETG_PATH, "Generic PETG", false)
                 }
-                (Material::Petg, Some("Generic PETG")) => (GENERIC_PETG_PATH, "Generic PETG"),
+                (Material::Pva, Some("Snapmaker PVA @U1")) => {
+                    (SNAPMAKER_PVA_PATH, "Snapmaker PVA @U1", false)
+                }
+                (Material::Pva, Some(RELI3D_PVA_PROFILE_NAME)) => {
+                    (SNAPMAKER_PVA_PATH, "Snapmaker PVA @U1", true)
+                }
                 (_, Some(profile)) => {
                     return Err(U1DirectError::Plan(format!(
-                        "physical spool {} requests unqualified U1 profile {profile:?}; choose Generic PLA, Polymaker General PLA Family @U1, or Generic PETG",
+                        "physical spool {} requests unqualified U1 profile {profile:?}; choose Generic PLA, Polymaker General PLA Family @U1, Generic PETG, Snapmaker PVA @U1, or Reli3D PVA @U1",
                         spool.display_name
                     )));
                 }
@@ -3670,10 +4098,20 @@ fn resolve_physical_profile_with(
                         .to_ascii_lowercase()
                         .contains("polymaker") =>
                 {
-                    (POLYMAKER_PLA_PATH, "Polymaker General PLA Family @U1")
+                    (
+                        POLYMAKER_PLA_PATH,
+                        "Polymaker General PLA Family @U1",
+                        false,
+                    )
                 }
-                (Material::Pla, None) => (GENERIC_PLA_PATH, "Generic PLA"),
-                (Material::Petg, None) => (GENERIC_PETG_PATH, "Generic PETG"),
+                (Material::Pla, None) => (GENERIC_PLA_PATH, "Generic PLA", false),
+                (Material::Petg, None) => (GENERIC_PETG_PATH, "Generic PETG", false),
+                (Material::Pva, None) => {
+                    return Err(U1DirectError::Plan(format!(
+                        "physical PVA spool {} has no qualified U1 profile; select Reli3D PVA @U1 or Snapmaker PVA @U1 in Filament Library",
+                        spool.display_name
+                    )));
+                }
                 (material, None) => {
                     return Err(U1DirectError::Plan(format!(
                         "material {material:?} has no qualified Snapmaker U1 Direct profile"
@@ -3682,17 +4120,25 @@ fn resolve_physical_profile_with(
             }
         }
     };
-    let resolved = resolve(relative_path)?;
+    let mut resolved = resolve(relative_path)?;
+    let source_name = resolved
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(source_expected_name)
+        .to_owned();
+    if source_name != source_expected_name {
+        return Err(U1DirectError::Capability(format!(
+            "profile {relative_path} resolved to unexpected name {source_name:?}"
+        )));
+    }
+    if derived_profile {
+        apply_reli3d_pva_profile(&mut resolved);
+    }
     let name = resolved
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or(expected_name)
+        .unwrap_or(source_expected_name)
         .to_owned();
-    if name != expected_name {
-        return Err(U1DirectError::Capability(format!(
-            "profile {relative_path} resolved to unexpected name {name:?}"
-        )));
-    }
     let setting_id = resolved
         .get("setting_id")
         .and_then(Value::as_str)
@@ -3811,7 +4257,7 @@ fn build_project_settings(
 ) -> Result<Vec<u8>, U1DirectError> {
     let machine = resolve_profile_chain(&context.profiles_root, MACHINE_PATH)?;
     let process = resolve_profile_chain(&context.profiles_root, DIRECT_PROCESS_PATH)?;
-    build_project_settings_from_profiles(machine, process, slots, plates, source_process)
+    build_project_settings_from_profiles(machine, process, slots, plates, source_process, None)
 }
 
 fn build_project_settings_verified(
@@ -3819,10 +4265,18 @@ fn build_project_settings_verified(
     slots: &[PhysicalProfile; 4],
     plates: &[ArtifactPlate],
     source_process: &ProcessInformation,
+    dedicated_support: Option<&DedicatedSupportMaterial>,
 ) -> Result<Vec<u8>, U1DirectError> {
     let machine = resolve_verified_profile_chain(profiles, MACHINE_PATH)?;
     let process = resolve_verified_profile_chain(profiles, DIRECT_PROCESS_PATH)?;
-    build_project_settings_from_profiles(machine, process, slots, plates, source_process)
+    build_project_settings_from_profiles(
+        machine,
+        process,
+        slots,
+        plates,
+        source_process,
+        dedicated_support,
+    )
 }
 
 fn build_project_settings_from_profiles(
@@ -3831,15 +4285,22 @@ fn build_project_settings_from_profiles(
     slots: &[PhysicalProfile; 4],
     plates: &[ArtifactPlate],
     source_process: &ProcessInformation,
+    dedicated_support: Option<&DedicatedSupportMaterial>,
 ) -> Result<Vec<u8>, U1DirectError> {
     settings.extend(process);
     apply_target_project_defaults(&mut settings);
     let mut override_keys = BTreeSet::new();
+    let mut effective_support = source_process.support.clone();
+    if dedicated_support.is_some() {
+        effective_support.enabled = Some(true);
+    }
     apply_source_quality_intent(&mut settings, source_process, &mut override_keys)?;
-    apply_source_support_intent(&mut settings, &source_process.support, &mut override_keys);
+    apply_source_support_intent(&mut settings, &effective_support, &mut override_keys);
+    apply_dedicated_support_material(&mut settings, slots, dedicated_support, &mut override_keys)?;
     declare_process_overrides(&mut settings, &override_keys, slots.len());
     validate_source_quality_intent(&settings, source_process)?;
-    validate_source_support_intent(&settings, &source_process.support)?;
+    validate_source_support_intent(&settings, &effective_support, dedicated_support)?;
+    validate_dedicated_support_material(&settings, slots, dedicated_support)?;
     validate_process_override_groups(&settings, &override_keys, slots.len() + 2)?;
     validate_prime_tower_profile_contract(&settings)?;
     validate_target_project_contract(&settings)?;
@@ -4064,6 +4525,83 @@ fn apply_source_support_intent(
     }
 }
 
+fn apply_dedicated_support_material(
+    settings: &mut BTreeMap<String, Value>,
+    slots: &[PhysicalProfile; 4],
+    dedicated_support: Option<&DedicatedSupportMaterial>,
+    override_keys: &mut BTreeSet<&'static str>,
+) -> Result<(), U1DirectError> {
+    let Some(dedicated_support) = dedicated_support else {
+        return Ok(());
+    };
+    let slot_index = dedicated_support.toolhead.index();
+    if slots[slot_index].material != "PVA" {
+        return Err(U1DirectError::Plan(format!(
+            "dedicated support toolhead {:?} does not resolve to a PVA profile",
+            dedicated_support.toolhead
+        )));
+    }
+    let slot = (slot_index + 1).to_string();
+    let body_slot = match dedicated_support.usage {
+        SupportMaterialUsage::BodyAndInterface => slot.clone(),
+        SupportMaterialUsage::InterfaceOnly => "0".into(),
+    };
+    settings.insert("support_filament".into(), Value::String(body_slot));
+    settings.insert("support_interface_filament".into(), Value::String(slot));
+    for (key, value) in [
+        ("support_top_z_distance", "0"),
+        ("support_bottom_z_distance", "0"),
+        ("support_interface_top_layers", "3"),
+        ("support_interface_spacing", "0.2"),
+        ("support_interface_speed", "30"),
+    ] {
+        settings.insert(key.into(), Value::String(value.into()));
+    }
+    for key in [
+        "support_filament",
+        "support_interface_filament",
+        "support_top_z_distance",
+        "support_bottom_z_distance",
+        "support_interface_top_layers",
+        "support_interface_spacing",
+        "support_interface_speed",
+    ] {
+        override_keys.insert(key);
+    }
+    Ok(())
+}
+
+fn validate_dedicated_support_material(
+    settings: &BTreeMap<String, Value>,
+    slots: &[PhysicalProfile; 4],
+    dedicated_support: Option<&DedicatedSupportMaterial>,
+) -> Result<(), U1DirectError> {
+    let Some(dedicated_support) = dedicated_support else {
+        return Ok(());
+    };
+    let slot_index = dedicated_support.toolhead.index();
+    let slot = (slot_index + 1).to_string();
+    let expected_body = match dedicated_support.usage {
+        SupportMaterialUsage::BodyAndInterface => slot.as_str(),
+        SupportMaterialUsage::InterfaceOnly => "0",
+    };
+    if slots[slot_index].material != "PVA"
+        || config_scalar_string(settings, "support_filament") != Some(expected_body)
+        || config_scalar_string(settings, "support_interface_filament") != Some(slot.as_str())
+        || config_scalar_bool(settings, "enable_support") != Some(true)
+        || config_scalar_f64(settings, "support_top_z_distance") != Some(0.0)
+        || config_scalar_f64(settings, "support_bottom_z_distance") != Some(0.0)
+        || config_scalar_f64(settings, "support_interface_top_layers") != Some(3.0)
+        || config_scalar_f64(settings, "support_interface_spacing") != Some(0.2)
+        || config_scalar_f64(settings, "support_interface_speed") != Some(30.0)
+    {
+        return Err(U1DirectError::Capability(
+            "generated U1 project does not preserve the dedicated PVA support contract".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn apply_source_quality_intent(
     settings: &mut BTreeMap<String, Value>,
     process: &ProcessInformation,
@@ -4151,6 +4689,7 @@ fn declare_process_overrides(
 fn validate_source_support_intent(
     settings: &BTreeMap<String, Value>,
     support: &SupportInformation,
+    dedicated_support: Option<&DedicatedSupportMaterial>,
 ) -> Result<(), U1DirectError> {
     let require = |key: &'static str, expected: String| {
         if settings.get(key).and_then(Value::as_str) == Some(expected.as_str()) {
@@ -4177,12 +4716,17 @@ fn validate_source_support_intent(
         )?;
     }
     if support.enabled == Some(true) {
-        let layer_height = config_scalar_f64(settings, "layer_height");
-        if config_scalar_f64(settings, "support_top_z_distance") != layer_height
-            || config_scalar_f64(settings, "support_bottom_z_distance") != layer_height
+        let expected_gap = if dedicated_support.is_some() {
+            Some(0.0)
+        } else {
+            config_scalar_f64(settings, "layer_height")
+        };
+        if config_scalar_f64(settings, "support_top_z_distance") != expected_gap
+            || config_scalar_f64(settings, "support_bottom_z_distance") != expected_gap
         {
             return Err(U1DirectError::Capability(
-                "generated U1 support gaps do not track the selected layer height".into(),
+                "generated U1 support gaps do not match the selected support material contract"
+                    .into(),
             ));
         }
     }
@@ -4669,6 +5213,7 @@ fn material_name(material: &Material) -> &str {
     match material {
         Material::Pla => "PLA",
         Material::Petg => "PETG",
+        Material::Pva => "PVA",
         Material::Abs => "ABS",
         Material::Asa => "ASA",
         Material::Tpu => "TPU",
@@ -6303,10 +6848,10 @@ fn write_generated_model_metadata<W: Write>(
     writer: &mut Writer<W>,
     title: Option<&str>,
 ) -> Result<(), U1DirectError> {
-    // Snapmaker Orca 2.3.5 deliberately serializes the upstream-compatible
-    // `BambuStudio-<version>` Application value in its own 3MF exporter. Keep
-    // that exact dialect marker; the Snapmaker-specific adapter identity is
-    // recorded separately below.
+    // Keep the exact input-dialect marker used by the hash-bound 2.3.6 GUI
+    // qualification candidate. Snapmaker Orca 2.3.6 accepts this legacy
+    // BambuStudio marker and rewrites it to 2.3.6 on its first normal save;
+    // the actual target version and adapter identity are recorded separately.
     let metadata = [
         ("Application", "BambuStudio-2.3.5"),
         ("BambuStudio:3mfVersion", "1"),
@@ -6952,7 +7497,7 @@ fn rewrite_model_settings(
         write_settings_metadata(&mut writer, "plater_id", &plate.target_plate_id.to_string())?;
         write_settings_metadata(&mut writer, "plater_name", &plate.name)?;
         write_settings_metadata(&mut writer, "locked", "false")?;
-        // Snapmaker Orca 2.3.5's own bbs_3mf exporter emits Auto For Flush
+        // Snapmaker Orca 2.3.6's own bbs_3mf exporter emits Auto For Flush
         // and one literal `1` per project filament here (the upstream code
         // labels this as an Orca compatibility hack). Derive the cardinality
         // from the exact T1–T4 target instead of carrying source metadata.
@@ -7247,7 +7792,7 @@ fn validate_u1_direct_candidate(
         .map(str::to_owned)
     {
         return Err(U1DirectError::SemanticValidation(format!(
-            "generated project unexpectedly embeds preset {entry:?}; Stage B uses only exact hash-pinned Snapmaker Orca 2.3.5 system profiles"
+            "generated project unexpectedly embeds preset {entry:?}; Stage B uses only exact hash-pinned Snapmaker Orca 2.3.6 system profiles"
         )));
     }
     let mut project_entry = archive.by_name(PROJECT_SETTINGS_PATH)?;

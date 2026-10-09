@@ -15,6 +15,7 @@ import type {
 import type { PrinterLoadoutProfile } from "../services/printer-loadout";
 import type { PrintingSetup } from "../services/printing-setup";
 import type { PhysicalSpool, ToolheadId } from "../types";
+import { hasQualifiedPvaProfile } from "../services/filament-profiles";
 import { ColorSwatch } from "./ColorSwatch";
 
 interface ProjectSetupControlProps {
@@ -93,6 +94,8 @@ export function ProjectSetupControl({
   const availableA1Mini =
     equipmentSetup === null || equipmentSetup.secondaryPrinter === "a1-mini";
   const activeSpools = availableSpools.filter((spool) => spool.available);
+  const activePvaSpools = activeSpools.filter((spool) => spool.material === "PVA");
+  const qualifiedPvaSpools = activePvaSpools.filter(hasQualifiedPvaProfile);
   const spoolById = new Map(availableSpools.map((spool) => [spool.id, spool]));
   const activeSpoolIds = new Set(activeSpools.map((spool) => spool.id));
   const selectedLoadout = [
@@ -129,6 +132,11 @@ export function ProjectSetupControl({
   const plateLayoutLabel = summaryIntent.allowU1CrossSourceRepacking
     ? "Combine compatible U1 plates"
     : "Preserve source plates";
+  const supportLabel = summaryIntent.dedicatedSupportSpoolId
+    ? summaryIntent.dedicatedSupportUsage === "interface-only"
+      ? "PVA contact interface"
+      : "Entire support in PVA"
+    : "Model-material support";
   const fixedPreviewOverridesA1 =
     isFixedPreview && !intent.a1MiniEnabled && a1PlateCount > 0;
   const resultLabel = fixedPreviewOverridesA1
@@ -149,7 +157,7 @@ export function ProjectSetupControl({
         <span className="project-setup__summary-copy">
           <strong id="project-setup-heading">Project setup</strong>
           <small>
-            {strategyLabel} · {printerLabel} · {plateLayoutLabel}
+            {strategyLabel} · {printerLabel} · {plateLayoutLabel} · {supportLabel}
           </small>
         </span>
         <span
@@ -230,6 +238,17 @@ export function ProjectSetupControl({
                 "Choose an available spool or Unknown for every saved position that is no longer in the physical inventory.",
               );
               loadoutFieldsetRef.current?.focus();
+              return;
+            }
+            if (
+              draft.dedicatedSupportSpoolId &&
+              !qualifiedPvaSpools.some(
+                (spool) => spool.id === draft.dedicatedSupportSpoolId,
+              )
+            ) {
+              setLoadoutError(
+                "Choose an available PVA spool for dedicated support, or disable PVA support.",
+              );
               return;
             }
             setLoadoutError("");
@@ -345,6 +364,142 @@ export function ProjectSetupControl({
                   </span>
                 </label>
               ))}
+            </fieldset>
+
+            <fieldset className="project-setup__group">
+              <legend>Support material</legend>
+              <p>
+                Dedicated PVA uses T4. Interface-only support is recommended:
+                the support body stays in model material and only the contact
+                layers dissolve. The visible palette uses T1–T3.
+              </p>
+              <label className="project-setup__choice">
+                <input
+                  type="radio"
+                  name="support-material"
+                  value="model"
+                  checked={draft.dedicatedSupportSpoolId === null}
+                  disabled={isBusy}
+                  onChange={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      dedicatedSupportSpoolId: null,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Use model material</strong>
+                  <small>Keep the source support-material behavior.</small>
+                </span>
+              </label>
+              <label className="project-setup__choice">
+                <input
+                  type="radio"
+                  name="support-material"
+                  value="pva"
+                  checked={draft.dedicatedSupportSpoolId !== null}
+                  disabled={isBusy || qualifiedPvaSpools.length === 0}
+                  onChange={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      dedicatedSupportSpoolId: qualifiedPvaSpools[0]?.id ?? null,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Dedicated PVA on T4</strong>
+                  <small>Use a qualified PVA profile for soluble support.</small>
+                </span>
+              </label>
+              {draft.dedicatedSupportSpoolId !== null ? (
+                <label className="field">
+                  <span>PVA spool</span>
+                  <select
+                    name="dedicated-support-spool"
+                    value={draft.dedicatedSupportSpoolId}
+                    disabled={isBusy}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        dedicatedSupportSpoolId: event.target.value || null,
+                      }))
+                    }
+                  >
+                    {qualifiedPvaSpools.map((spool) => (
+                      <option key={spool.id} value={spool.id}>
+                        {spool.name} · {spool.colorName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : qualifiedPvaSpools.length === 0 ? (
+                <small>
+                  Add an available PVA spool, or edit the existing spool and
+                  select its qualified profile in Filament Library.
+                </small>
+              ) : null}
+              {draft.dedicatedSupportSpoolId !== null ? (
+                <fieldset
+                  className="project-setup__subgroup"
+                  aria-describedby="dedicated-pva-dryness-note"
+                >
+                  <legend>PVA usage</legend>
+                  <label className="project-setup__choice">
+                    <input
+                      type="radio"
+                      name="dedicated-support-usage"
+                      value="interface-only"
+                      checked={draft.dedicatedSupportUsage === "interface-only"}
+                      disabled={isBusy}
+                      onChange={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          dedicatedSupportUsage: "interface-only",
+                        }))
+                      }
+                    />
+                    <span>
+                      <strong>
+                        Contact interface only <em>Recommended</em>
+                      </strong>
+                      <small>
+                        Print support bodies in model material and only the
+                        contact layers in PVA. This reduces moisture-sensitive
+                        material, strings, purges, and print time.
+                      </small>
+                    </span>
+                  </label>
+                  <label className="project-setup__choice">
+                    <input
+                      type="radio"
+                      name="dedicated-support-usage"
+                      value="body-and-interface"
+                      checked={
+                        draft.dedicatedSupportUsage === "body-and-interface"
+                      }
+                      disabled={isBusy}
+                      onChange={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          dedicatedSupportUsage: "body-and-interface",
+                        }))
+                      }
+                    />
+                    <span>
+                      <strong>Entire support</strong>
+                      <small>
+                        Advanced option for inaccessible support bodies. Uses
+                        much more PVA and is more sensitive to drying and bed
+                        adhesion.
+                      </small>
+                    </span>
+                  </label>
+                  <small id="dedicated-pva-dryness-note">
+                    PVA must be fully dry and remain in a dry box during this
+                    job. The project file cannot verify filament moisture.
+                  </small>
+                </fieldset>
+              ) : null}
             </fieldset>
 
             <fieldset className="project-setup__group project-setup__group--plate-layout">

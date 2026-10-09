@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import { LockKeyhole, Printer, X } from "lucide-react";
 
 import type {
+  CmyxPaletteOption,
+  ColorResolution,
   NewPhysicalSpoolInput,
   PlatePlan,
   PrinterPreference,
@@ -29,6 +31,10 @@ interface PlateInspectorProps {
   onMaterialSubstitutionChange: (
     mappingId: string,
     acknowledged: boolean,
+  ) => void;
+  onSelectCmyxColor?: (
+    resolution: ColorResolution,
+    option: CmyxPaletteOption,
   ) => void;
   a1MiniEnabled: boolean;
   onPrinterPreferenceChange: (preference: PrinterPreference) => void;
@@ -171,6 +177,7 @@ export function PlateInspector({
   onToolheadChange,
   onSpoolChange,
   onMaterialSubstitutionChange,
+  onSelectCmyxColor,
   a1MiniEnabled,
   onPrinterPreferenceChange,
   onAddSpool,
@@ -209,7 +216,11 @@ export function PlateInspector({
         </button>
       </header>
 
-      <SourcePaletteDetails plate={plate} />
+      <SourcePaletteDetails
+        plate={plate}
+        resolutions={plan.colorResolutions}
+        onSelectCmyxColor={onSelectCmyxColor}
+      />
 
       {a1MiniEnabled && plate.sourceUnitIds.length > 0 ? (
         <PrinterChoice

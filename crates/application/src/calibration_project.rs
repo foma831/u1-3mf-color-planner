@@ -611,6 +611,7 @@ fn prepare_project(
         calibration_fingerprint: full_spectrum_loadout_fingerprint.clone(),
         process: process.clone(),
         support: u1_three_mf::SupportInformation::default(),
+        dedicated_support: None,
         recipe_table,
         recipe_calibration_sample_ids: Vec::new(),
         assignments,

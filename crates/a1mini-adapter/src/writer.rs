@@ -4153,6 +4153,7 @@ mod tests {
                     warnings: Vec::new(),
                 },
                 best_effort_cmyx_candidate: None,
+                cmyx_palette_candidates: Vec::new(),
                 direct_candidates: Vec::new(),
             }],
             units: vec![unit],
@@ -4163,6 +4164,7 @@ mod tests {
                 toolhead: None,
                 allow_material_substitution,
             }],
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }
@@ -4293,6 +4295,7 @@ mod tests {
                 source_profile_ids: effective.source_profile_ids.clone(),
                 cmyx_candidate: cmyx.clone(),
                 best_effort_cmyx_candidate: None,
+                cmyx_palette_candidates: Vec::new(),
                 direct_candidates: Vec::new(),
             });
             mappings.push(u1_planner::SourceToActualMapping {
@@ -4348,6 +4351,7 @@ mod tests {
                     allow_material_substitution: false,
                 })
                 .collect(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         };

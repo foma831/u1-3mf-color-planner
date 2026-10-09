@@ -2,18 +2,24 @@ import { useState } from "react";
 import { ArrowRight, CheckCircle2, Plus, TriangleAlert } from "lucide-react";
 
 import type {
+  CmyxPaletteOption,
   ColorResolution,
   NewPhysicalSpoolInput,
   PhysicalSpool,
   SpoolMaterial,
 } from "../types";
 import { ColorSwatch } from "./ColorSwatch";
+import { CmyxPalettePicker } from "./CmyxPalettePicker";
 import { SpoolInventoryForm } from "./SpoolInventoryForm";
 
 interface ColorResolutionPanelProps {
   resolutions: ColorResolution[];
   spools: PhysicalSpool[];
   onAcceptColor: (resolution: ColorResolution) => void;
+  onSelectCmyxColor?: (
+    resolution: ColorResolution,
+    option: CmyxPaletteOption,
+  ) => void;
   onAcceptMaterialSubstitution: (resolution: ColorResolution) => void;
   onAcceptAllSameMaterial: () => void;
   onChooseExistingSpool: (
@@ -33,7 +39,7 @@ function resolutionIsComplete(resolution: ColorResolution) {
 }
 
 function isSpoolMaterial(material: string): material is SpoolMaterial {
-  return material === "PLA" || material === "PETG";
+  return material === "PLA" || material === "PETG" || material === "PVA";
 }
 
 function AlternativeColor({ resolution }: { resolution: ColorResolution }) {
@@ -55,8 +61,8 @@ function AlternativeColor({ resolution }: { resolution: ColorResolution }) {
         </span>
       </div>
       <ArrowRight aria-hidden="true" />
-      <div className="color-resolution__color" aria-label="Nearest CMY+X alternative">
-        <span>Nearest CMY+X alternative</span>
+      <div className="color-resolution__color" aria-label="Selected CMY+X color">
+        <span>Selected CMY+X color</span>
         <span className="color-resolution__swatch-line">
           <ColorSwatch hex={alternativeHex} size="large" />
           <span>
@@ -73,6 +79,7 @@ export function ColorResolutionPanel({
   resolutions,
   spools,
   onAcceptColor,
+  onSelectCmyxColor,
   onAcceptMaterialSubstitution,
   onAcceptAllSameMaterial,
   onChooseExistingSpool,
@@ -232,6 +239,13 @@ export function ColorResolutionPanel({
                   </header>
 
                   <AlternativeColor resolution={resolution} />
+
+                  {onSelectCmyxColor ? (
+                    <CmyxPalettePicker
+                      resolution={resolution}
+                      onSelect={onSelectCmyxColor}
+                    />
+                  ) : null}
 
                   <div className="color-resolution__facts">
                     <span>

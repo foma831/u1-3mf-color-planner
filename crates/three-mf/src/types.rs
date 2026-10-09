@@ -498,7 +498,9 @@ pub struct PlateOrientationOptimizationOptions {
     pub bed_depth_mm: f64,
     pub bed_height_mm: f64,
     /// Per-side space reserved beyond the model footprint for generated
-    /// supports, brims, and other first-layer process geometry.
+    /// supports, brims, and other first-layer process geometry. Every mode
+    /// keeps these envelopes disjoint because Snapmaker Orca 2.3.5 does not
+    /// merge overlapping per-object brim toolpaths safely.
     #[serde(default = "default_support_envelope_mm")]
     pub support_envelope_mm: f64,
     /// Optional first-layer reliability policy. The same policy determines

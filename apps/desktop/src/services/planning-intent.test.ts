@@ -6,7 +6,9 @@ import type { PrintingSetup } from "./printing-setup";
 import {
   constrainPlanningIntentToEquipment,
   createDefaultPlanningIntent,
+  LEGACY_PLANNING_INTENT_V4_STORAGE_KEY,
   LEGACY_PLANNING_INTENT_V2_STORAGE_KEY,
+  LEGACY_PLANNING_INTENT_V3_STORAGE_KEY,
   LEGACY_PLANNING_INTENT_STORAGE_KEY,
   loadLegacyPlanningIntent,
   loadPlanningIntent,
@@ -26,6 +28,8 @@ const intent: PlanningIntent = {
   defaultStrategy: "direct",
   a1MiniEnabled: true,
   allowU1CrossSourceRepacking: true,
+  dedicatedSupportSpoolId: null,
+  dedicatedSupportUsage: "interface-only",
 };
 
 const legacyIntent = {
@@ -44,11 +48,15 @@ describe("planning intent persistence", () => {
       defaultStrategy: "auto",
       a1MiniEnabled: true,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
     });
     expect(createDefaultPlanningIntent(null)).toEqual({
       defaultStrategy: "auto",
       a1MiniEnabled: false,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
     });
   });
 
@@ -74,14 +82,14 @@ describe("planning intent persistence", () => {
     ).toBe(false);
   });
 
-  it("round-trips a strict version-three intent", () => {
+  it("round-trips a strict version-five intent", () => {
     expect(savePlanningIntent(window.localStorage, intent)).toBe(true);
     expect(loadPlanningIntent(window.localStorage)).toEqual(intent);
     expect(
       JSON.parse(
         window.localStorage.getItem(PLANNING_INTENT_STORAGE_KEY) ?? "null",
       ),
-    ).toEqual({ schemaVersion: 3, ...intent });
+    ).toEqual({ schemaVersion: 5, ...intent });
   });
 
   it("refuses to save runtime records with legacy or unknown fields", () => {
@@ -104,6 +112,8 @@ describe("planning intent persistence", () => {
       defaultStrategy: "cmyx",
       a1MiniEnabled: true,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
     });
     expect(loadLegacyPlanningIntent(window.localStorage)).toEqual(legacyIntent);
     expect(window.localStorage.getItem(PLANNING_INTENT_STORAGE_KEY)).toBeNull();
@@ -123,6 +133,49 @@ describe("planning intent persistence", () => {
       defaultStrategy: "direct",
       a1MiniEnabled: true,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
+    });
+  });
+
+  it("migrates a version-three intent without inventing PVA support", () => {
+    window.localStorage.setItem(
+      LEGACY_PLANNING_INTENT_V3_STORAGE_KEY,
+      JSON.stringify({
+        schemaVersion: 3,
+        defaultStrategy: "auto",
+        a1MiniEnabled: false,
+        allowU1CrossSourceRepacking: true,
+      }),
+    );
+
+    expect(loadPlanningIntent(window.localStorage)).toEqual({
+      defaultStrategy: "auto",
+      a1MiniEnabled: false,
+      allowU1CrossSourceRepacking: true,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
+    });
+  });
+
+  it("migrates version-four PVA support to the safer interface-only policy", () => {
+    window.localStorage.setItem(
+      LEGACY_PLANNING_INTENT_V4_STORAGE_KEY,
+      JSON.stringify({
+        schemaVersion: 4,
+        defaultStrategy: "cmyx",
+        a1MiniEnabled: false,
+        allowU1CrossSourceRepacking: true,
+        dedicatedSupportSpoolId: "support-pva",
+      }),
+    );
+
+    expect(loadPlanningIntent(window.localStorage)).toEqual({
+      defaultStrategy: "cmyx",
+      a1MiniEnabled: false,
+      allowU1CrossSourceRepacking: true,
+      dedicatedSupportSpoolId: "support-pva",
+      dedicatedSupportUsage: "interface-only",
     });
   });
 
@@ -155,17 +208,19 @@ describe("planning intent persistence", () => {
   it("rejects corrupt, unknown, and incomplete current records", () => {
     for (const value of [
       "not-json",
-      JSON.stringify({ schemaVersion: 2, ...intent }),
-      JSON.stringify({ schemaVersion: 3, ...intent, extra: true }),
+      JSON.stringify({ schemaVersion: 4, ...intent }),
+      JSON.stringify({ schemaVersion: 5, ...intent, extra: true }),
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 5,
         ...intent,
         defaultStrategy: "sometimes",
       }),
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 5,
         defaultStrategy: "auto",
         a1MiniEnabled: true,
+        allowU1CrossSourceRepacking: false,
+        dedicatedSupportSpoolId: null,
       }),
     ]) {
       window.localStorage.setItem(PLANNING_INTENT_STORAGE_KEY, value);
@@ -215,6 +270,18 @@ describe("planning intent persistence", () => {
       planningIntentEquals(intent, {
         ...intent,
         allowU1CrossSourceRepacking: false,
+      }),
+    ).toBe(false);
+    expect(
+      planningIntentEquals(intent, {
+        ...intent,
+        dedicatedSupportSpoolId: "pva-support",
+      }),
+    ).toBe(false);
+    expect(
+      planningIntentEquals(intent, {
+        ...intent,
+        dedicatedSupportUsage: "body-and-interface",
       }),
     ).toBe(false);
     expect(planningIntentEquals(intent, null)).toBe(false);

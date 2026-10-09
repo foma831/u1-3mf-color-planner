@@ -131,6 +131,7 @@ fn prepared_artifact_with_calibration_sample(
             threshold_angle_degrees: Some(20),
             on_build_plate_only: Some(true),
         },
+        dedicated_support: None,
         recipe_table,
         recipe_calibration_sample_ids: calibration_sample_id.iter().cloned().collect(),
         assignments: vec![U1FullSpectrumPreparedAssignment {
@@ -205,6 +206,104 @@ fn full_spectrum_contract_accepts_a_qualified_solid_polymaker_t4_profile() {
     assert_eq!(
         setting_string_array(&settings, "filament_settings_id").unwrap()[3],
         POLYMAKER_PLA_PROFILE_NAME
+    );
+}
+
+#[test]
+fn dedicated_pva_support_uses_the_qualified_reli3d_interface_contract() {
+    let mut artifact = prepared_artifact();
+    artifact.loadout[3].spool_id = "support-pva".into();
+    artifact.loadout[3].spool_name = "Workshop PVA".into();
+    artifact.loadout[3].material = Material::Pva;
+    artifact.loadout[3].color = rgb(0xf5, 0xf5, 0xe6);
+    artifact.loadout[3].profile = RELI3D_PVA_PROFILE_NAME.into();
+    artifact.loadout[3].setting_id = RELI3D_PVA_SETTING_ID.into();
+    artifact.loadout[3].filament_id = RELI3D_PVA_FILAMENT_ID.into();
+    artifact.calibration_fingerprint = calibration_fingerprint(&artifact.loadout).unwrap();
+    artifact.dedicated_support = Some(DedicatedSupportMaterial {
+        spool_id: "support-pva".into(),
+        usage: SupportMaterialUsage::InterfaceOnly,
+        toolhead: Toolhead::T4,
+    });
+
+    let (settings, _) = project_settings_bytes(&artifact);
+
+    assert_eq!(
+        setting_string_array(&settings, "filament_type").unwrap(),
+        vec!["PLA", "PLA", "PLA", "PVA"]
+    );
+    assert_eq!(settings["enable_support"], Value::String("1".into()));
+    assert_eq!(settings["support_filament"], Value::String("0".into()));
+    assert_eq!(
+        settings["support_interface_filament"],
+        Value::String("4".into())
+    );
+    assert_eq!(
+        settings["support_top_z_distance"],
+        Value::String("0".into())
+    );
+    assert_eq!(
+        settings["support_bottom_z_distance"],
+        Value::String("0".into())
+    );
+    assert_eq!(
+        settings["support_interface_top_layers"],
+        Value::String("3".into())
+    );
+    assert_eq!(
+        settings["support_interface_speed"],
+        Value::String("30".into())
+    );
+    validate_project_settings_map(&settings, Some(&artifact)).unwrap();
+    validate_project_settings_map(&settings, None).unwrap();
+}
+
+#[test]
+fn full_spectrum_pva_requires_an_explicit_qualified_profile() {
+    let spool = |profile_id: Option<&str>| Spool {
+        id: "support-pva".into(),
+        calibration_id: None,
+        display_name: "Reli3D PVA".into(),
+        color_name: Some("Natural".into()),
+        material: Material::Pva,
+        nominal_color: rgb(0xe1, 0xd6, 0x78),
+        measured_color: None,
+        sku: None,
+        profile_id: profile_id.map(str::to_owned),
+        available: true,
+    };
+
+    assert_eq!(
+        full_spectrum_physical_profile(3, &spool(Some(RELI3D_PVA_PROFILE_NAME))).unwrap(),
+        (
+            RELI3D_PVA_PROFILE_NAME,
+            RELI3D_PVA_SETTING_ID,
+            RELI3D_PVA_FILAMENT_ID,
+        )
+    );
+    let error = full_spectrum_physical_profile(3, &spool(None)).unwrap_err();
+    assert!(error.to_string().contains("has no qualified profile"));
+}
+
+#[test]
+fn dedicated_pva_support_is_not_expected_in_model_geometry_assignments() {
+    let mut artifact = prepared_artifact();
+    let geometry_filament_id = artifact.assignments[0].target_filament_id;
+    artifact.assignments.push(U1FullSpectrumPreparedAssignment {
+        scope_id: "generated-support".into(),
+        source_requirement_ids: vec!["generated-pva-support".into()],
+        source_slots: Vec::new(),
+        source_material: Material::Pva,
+        source_color: rgb(0xf5, 0xf5, 0xe6),
+        target_filament_id: 4,
+        recipe_fingerprint: None,
+        calibration_sample_id: None,
+        predicted_color: None,
+    });
+
+    assert_eq!(
+        prepared_geometry_assignment_ids(&artifact),
+        BTreeSet::from([geometry_filament_id])
     );
 }
 
@@ -355,6 +454,31 @@ fn recipe_compilation_is_deterministic_and_native_rows_are_canonical() {
     assert_eq!(parsed[0].virtual_filament_id, 5);
     assert_eq!(parsed[0].stable_id, definition.stable_id);
     assert_eq!(parsed[0].serialized, definition.serialized);
+}
+
+#[test]
+fn recipe_compiler_accepts_pva_only_as_solid_dedicated_t4() {
+    let loadout = physical_loadout();
+    let context = compile_context(&loadout);
+    let pva = U1FullSpectrumRecipeInput {
+        logical_id: "dedicated-pva-support".into(),
+        target_material: Material::Pva,
+        target_color: rgb(0xf5, 0xf5, 0xe6),
+        recipe: CmyxRecipe::DedicatedT4,
+        calibration_sample_id: None,
+        predicted_color: Some(rgb(0xf5, 0xf5, 0xe6)),
+        confidence: ColorConfidence::Measured,
+    };
+
+    let table = compile_u1_full_spectrum_recipes(std::slice::from_ref(&pva), &context).unwrap();
+    assert!(table.definitions.is_empty());
+    assert_eq!(table.targets[0].target_filament_id, 4);
+
+    let mut invalid = pva;
+    invalid.recipe = CmyxRecipe::Solid {
+        toolhead: Toolhead::T1,
+    };
+    assert!(compile_u1_full_spectrum_recipes(&[invalid], &context).is_err());
 }
 
 #[test]

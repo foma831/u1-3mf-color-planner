@@ -55,7 +55,7 @@ const adhesionOptions: Array<{
     value: "reliable",
     label: "Reliable (recommended)",
     description:
-      "Use a risk-sized outer brim and slow the first three layers without a raft.",
+      "Keep every outer brim path separate, use the full U1 bed, and prioritize low, flat orientations when PVA support is active.",
   },
   {
     value: "maximum",
@@ -179,7 +179,7 @@ export function PublishedOrientationPanel({
             Work from the verified project files above and create separate
             support-optimized copies. Published files and bundle checksums stay
             unchanged. The selected adhesion mode also controls the exact
-            first-layer envelope used while packing every model.
+            first-layer clearance policy used while packing every model.
           </p>
         </div>
       </header>

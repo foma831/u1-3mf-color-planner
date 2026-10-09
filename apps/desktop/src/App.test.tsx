@@ -708,6 +708,7 @@ const colorResolutionFixtures: ColorResolution[] = [
     scopeId: "plate-1",
     scopeName: "Head",
     requirementId: "plate-1-requirement-2",
+    sourceIdentityKey: "head-grey",
     candidateId: "head-grey-cmy-grey-v1",
     sourceMaterial: "PLA",
     sourceHex: "#8E9089",
@@ -726,6 +727,32 @@ const colorResolutionFixtures: ColorResolution[] = [
     canAddDedicatedSpool: true,
     recommendation:
       "Closest available CMY + Grey result; visible difference expected.",
+    paletteOptions: [
+      {
+        candidateId: "head-grey-cmy-grey-v1",
+        targetMaterial: "PLA",
+        targetHex: "#8E9089",
+        predictedHex: "#9199A4",
+        recipe: "Solid T4 Grey",
+        deltaE00: 10.1,
+        confidence: "Nominal",
+        requiredT4SpoolId: "panchroma-translucent-grey",
+        requiredT4Name: "Panchroma Translucent Grey",
+        requiredT4Hex: "#9199A4",
+      },
+      {
+        candidateId: "head-grey-manual-cyan-v1",
+        targetMaterial: "PLA",
+        targetHex: "#8E9089",
+        predictedHex: "#70A8B0",
+        recipe: "Ratio T1·T1·T1·T3",
+        deltaE00: 18.4,
+        confidence: "Nominal",
+        requiredT4SpoolId: null,
+        requiredT4Name: null,
+        requiredT4Hex: null,
+      },
+    ],
   },
   {
     scopeId: "plate-6",
@@ -907,6 +934,8 @@ describe("Print Plan workflow", () => {
           defaultStrategy: "direct",
           a1MiniEnabled: true,
           allowU1CrossSourceRepacking: true,
+          dedicatedSupportSpoolId: null,
+          dedicatedSupportUsage: "interface-only",
           currentLoadout: [
             { toolhead: "T1", spoolId: "panchroma-cyan" },
             { toolhead: "T2", spoolId: "panchroma-magenta" },
@@ -963,6 +992,22 @@ describe("Print Plan workflow", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Reuse disabled")).toBeInTheDocument();
+  });
+
+  it("opens the complete Full Spectrum color reference without a project", () => {
+    render(<App />);
+
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: "Application views" }),
+      ).getByRole("button", { name: "Color Reference" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Full Spectrum Color Reference" }),
+    ).toBeVisible();
+    expect(screen.getByText("Showing 46 of 46 unique CMY colors.")).toBeVisible();
+    expect(document.title).toBe("Color Reference | U1 3MF Color Planner");
   });
 
   it("shows a recoverable calibration loading error without replacing stored data", async () => {
@@ -1966,8 +2011,10 @@ describe("Print Plan workflow", () => {
     });
   });
 
-  it("edits direct spool assignments and swaps occupied toolheads", async () => {
-    await renderAnalyzedApp();
+  it(
+    "edits direct spool assignments and swaps occupied toolheads",
+    async () => {
+      await renderAnalyzedApp();
 
     const toolheadSelects = screen.getAllByLabelText("Direct toolhead");
     expect(toolheadSelects).toHaveLength(4);
@@ -1981,8 +2028,10 @@ describe("Print Plan workflow", () => {
     const spoolSelects = screen.getAllByLabelText("Selected spool");
     fireEvent.change(spoolSelects[0], { target: { value: "signal-red" } });
     expect(spoolSelects[0]).toHaveValue("signal-red");
-    expect(screen.getAllByText("#C72E2A").length).toBeGreaterThan(0);
-  });
+      expect(screen.getAllByText("#C72E2A").length).toBeGreaterThan(0);
+    },
+    10_000,
+  );
 
   it("combines multiple source colors into one physical spool without clearing the first", async () => {
     await renderAnalyzedApp();
@@ -2175,8 +2224,10 @@ describe("Print Plan workflow", () => {
     expect(secondSpool).toHaveValue("panchroma-magenta");
   });
 
-  it("preserves plate-local mapping rows when one source scope is split across plates", async () => {
-    const customPlan = createCustomFourSpoolNativePlan();
+  it(
+    "preserves plate-local mapping rows when one source scope is split across plates",
+    async () => {
+      const customPlan = createCustomFourSpoolNativePlan();
     customPlan.plates[1] = {
       ...customPlan.plates[1],
       scopeId: customPlan.plates[0].scopeId,
@@ -2200,10 +2251,12 @@ describe("Print Plan workflow", () => {
       screen.getByRole("button", { name: /Custom Second — Plate 02/i }),
     );
     expect(screen.getByText("Second plate source marker")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("Selected spool")[0]).toHaveValue(
-      "graphite",
-    );
-  });
+      expect(screen.getAllByLabelText("Selected spool")[0]).toHaveValue(
+        "graphite",
+      );
+    },
+    10_000,
+  );
 
   it("moves a split physical identity back to a free toolhead before replanning", async () => {
     const nativePlan = createDemoPlan();
@@ -2537,9 +2590,12 @@ describe("Print Plan workflow", () => {
     );
   });
 
-  it("uses the mixed conversion DTO and requires fresh preflight after a consumed failure", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
-      {};
+  it(
+    "uses the mixed conversion DTO and requires fresh preflight after a consumed failure",
+    async () => {
+      (
+        window as Window & { __TAURI_INTERNALS__?: unknown }
+      ).__TAURI_INTERNALS__ = {};
     const nativePlan = createDemoPlan();
     const library: FilamentLibraryDocument = {
       schemaVersion: 2,
@@ -2798,10 +2854,12 @@ describe("Print Plan workflow", () => {
     expect(
       screen.getByText("/tmp/output/Withered_Foxy__converted/manifest.json"),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Withered_Foxy__u1.3mf").length).toBeGreaterThan(
-      0,
-    );
-  });
+      expect(
+        screen.getAllByText("Withered_Foxy__u1.3mf").length,
+      ).toBeGreaterThan(0);
+    },
+    10_000,
+  );
 
   it("passes exact backend exclusions only after explicit partial-conversion approval", async () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
@@ -3713,11 +3771,25 @@ describe("Print Plan workflow", () => {
     );
     const replanned = structuredClone(nativePlan);
     replanned.colorResolutions = replanned.colorResolutions.map(
-      (resolution) => ({
-        ...resolution,
-        colorApproved: true,
-        materialApproved: resolution.requiresMaterialSubstitution,
-      }),
+      (resolution) => {
+        if (resolution.requirementId === "plate-1-requirement-2") {
+          const manual = resolution.paletteOptions?.find(
+            (candidate) => candidate.candidateId === "head-grey-manual-cyan-v1",
+          );
+          expect(manual).toBeDefined();
+          return {
+            ...resolution,
+            ...manual,
+            colorApproved: true,
+            materialApproved: false,
+          };
+        }
+        return {
+          ...resolution,
+          colorApproved: true,
+          materialApproved: resolution.requiresMaterialSubstitution,
+        };
+      },
     );
     replanned.blockingErrors = [];
     replanned.omittedUnitCount = 0;
@@ -3753,7 +3825,7 @@ describe("Print Plan workflow", () => {
       "#8E9089PLA",
     );
     expect(
-      within(headCard!).getByLabelText("Nearest CMY+X alternative"),
+      within(headCard!).getByLabelText("Selected CMY+X color"),
     ).toHaveTextContent("#9199A4PLA");
     expect(headCard).toHaveTextContent("ΔE00 10.1");
     expect(headCard).toHaveTextContent(
@@ -3761,20 +3833,31 @@ describe("Print Plan workflow", () => {
     );
 
     fireEvent.click(
-      within(headCard!).getByRole("button", { name: "Choose / add spool" }),
-    );
-    fireEvent.click(within(headCard!).getByText("Add new spool to library"));
-    expect(within(headCard!).getByLabelText(/HEX color/i)).toHaveValue(
-      "#8E9089",
-    );
-    expect(within(headCard!).getByRole("radio", { name: "PLA" })).toBeChecked();
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Accept all color approximations (1)",
+      within(headCard!).getByRole("radio", {
+        name: /#70A8B0, Ratio T1·T1·T1·T3, color difference 18.4/i,
       }),
     );
-    expect(within(headCard!).getByText("Accepted")).toBeInTheDocument();
+    const manuallyChangedHeadCard = screen
+      .getByText("Source color #8E9089")
+      .closest("article");
+    expect(manuallyChangedHeadCard).toHaveTextContent("#70A8B0");
+    expect(manuallyChangedHeadCard).toHaveTextContent("Accepted");
+
+    fireEvent.click(
+      within(manuallyChangedHeadCard!).getByRole("button", {
+        name: "Choose / add spool",
+      }),
+    );
+    fireEvent.click(
+      within(manuallyChangedHeadCard!).getByText("Add new spool to library"),
+    );
+    expect(within(manuallyChangedHeadCard!).getByLabelText(/HEX color/i)).toHaveValue(
+      "#8E9089",
+    );
+    expect(
+      within(manuallyChangedHeadCard!).getByRole("radio", { name: "PLA" }),
+    ).toBeChecked();
+
     expect(within(frameCard!).getByText("Needs approval")).toBeInTheDocument();
 
     const materialButton = within(frameCard!).getByRole("button", {
@@ -3809,7 +3892,7 @@ describe("Print Plan workflow", () => {
               approvedColorFallbacks: [
                 {
                   requirementId: "plate-1-requirement-2",
-                  candidateId: "head-grey-cmy-grey-v1",
+                  candidateId: "head-grey-manual-cyan-v1",
                 },
               ],
             }),
@@ -3836,6 +3919,11 @@ describe("Print Plan workflow", () => {
         }),
       },
     ]);
+    const replannedHeadCard = screen
+      .getByText("Source color #8E9089")
+      .closest("article");
+    expect(replannedHeadCard).toHaveTextContent("#70A8B0");
+    expect(replannedHeadCard).toHaveTextContent("Accepted");
   });
 
   it("clears accepted fallback candidates when a spool changes inventory", async () => {

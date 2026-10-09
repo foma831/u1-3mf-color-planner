@@ -21,6 +21,7 @@ impl RgbColor {
 pub enum Material {
     Pla,
     Petg,
+    Pva,
     Abs,
     Asa,
     Tpu,
@@ -34,6 +35,23 @@ pub enum MaterialRole {
     Functional,
     Support,
     Unknown,
+}
+
+/// How a dedicated soluble support spool is consumed by a U1 print scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportMaterialUsage {
+    BodyAndInterface,
+    InterfaceOnly,
+}
+
+/// A physical support-material reservation that is independent of the visible
+/// model palette. The reserved spool still consumes one of the four U1 slots.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DedicatedSupportMaterial {
+    pub spool_id: String,
+    pub usage: SupportMaterialUsage,
+    pub toolhead: Toolhead,
 }
 
 /// The physical U1 toolhead slot.
@@ -249,6 +267,11 @@ pub struct MaterialColorRequirement {
     /// Closest backend-generated candidate that requires explicit approval.
     #[serde(default)]
     pub best_effort_cmyx_candidate: Option<BestEffortCmyxCandidate>,
+    /// Additional printable recipes for an explicit manual palette choice.
+    /// Candidate fingerprints remain requirement-scoped and are validated by
+    /// the planner before the selected recipe can reach an output adapter.
+    #[serde(default)]
+    pub cmyx_palette_candidates: Vec<BestEffortCmyxCandidate>,
     pub direct_candidates: Vec<DirectSpoolCandidate>,
 }
 
@@ -399,6 +422,8 @@ pub struct PrintScope {
     pub units: Vec<PrintableUnit>,
     pub strategy: ScopeStrategy,
     pub direct_assignments: Vec<DirectAssignmentRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedicated_support: Option<DedicatedSupportMaterial>,
     #[serde(default)]
     pub approved_cmyx_fallbacks: Vec<CmyxFallbackApproval>,
     #[serde(default)]

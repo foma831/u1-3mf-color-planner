@@ -14,7 +14,7 @@ export type MaterialStatus =
   "Exact" | "Close" | "Review" | "Poor" | "Material mismatch";
 
 /** Materials that the desktop inventory can currently validate and schedule. */
-export type SpoolMaterial = "PLA" | "PETG";
+export type SpoolMaterial = "PLA" | "PETG" | "PVA";
 
 export interface ProjectSelection {
   fileName: string;
@@ -108,7 +108,7 @@ export interface DirectColorMapping {
   sourceSlot: string;
   sourceName: string;
   sourceHex: string;
-  sourceMaterial: "PLA" | "PETG";
+  sourceMaterial: SpoolMaterial;
   usedBy: string;
   cmyRecipe: string;
   cmyPredictedHex: string | null;
@@ -116,6 +116,8 @@ export interface DirectColorMapping {
   cmyConfidence: Confidence;
   directToolhead: ToolheadId;
   selectedSpoolId: string;
+  /** Project-level PVA support assignment reserved on T4. */
+  dedicatedSupport?: boolean;
   /** Explicit acknowledgement when the selected physical spool changes polymer family. */
   materialSubstitutionAcknowledged?: boolean;
 }
@@ -487,7 +489,8 @@ export interface ConfirmedSpool {
 }
 
 export interface FilamentLibraryDocument {
-  schemaVersion: 2;
+  /** v2 is accepted only as a migration input; new saves always publish v3. */
+  schemaVersion: 2 | 3;
   spools: PhysicalSpool[];
 }
 
@@ -676,10 +679,25 @@ export interface MaterialSubstitutionApproval {
   acknowledged: true;
 }
 
+export interface CmyxPaletteOption {
+  candidateId: string;
+  targetMaterial: SpoolMaterial;
+  targetHex: string;
+  predictedHex: string | null;
+  recipe: string;
+  deltaE00: number | null;
+  confidence: Confidence;
+  requiredT4SpoolId: string | null;
+  requiredT4Name: string | null;
+  requiredT4Hex: string | null;
+}
+
 export interface ColorResolution {
   scopeId: string;
   scopeName: string;
   requirementId: string;
+  /** Stable semantic source identity used to mirror a manual choice across scopes. */
+  sourceIdentityKey?: string;
   candidateId: string;
   sourceMaterial: string;
   sourceHex: string;
@@ -697,6 +715,8 @@ export interface ColorResolution {
   requiresMaterialSubstitution: boolean;
   canAddDedicatedSpool: boolean;
   recommendation: string;
+  /** Backend-authorized recipes that are physically printable by this loadout. */
+  paletteOptions?: CmyxPaletteOption[];
 }
 
 export interface ScopeOverride {
@@ -723,6 +743,8 @@ export interface ReplanRequest {
   allowDirectPaletteReduction: boolean;
   a1MiniEnabled: boolean;
   allowU1CrossSourceRepacking: boolean;
+  dedicatedSupportSpoolId: string | null;
+  dedicatedSupportUsage: "interface-only" | "body-and-interface";
   includedAlternativePlateIds: number[];
 }
 

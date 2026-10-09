@@ -7,8 +7,10 @@ import type {
 } from "../types";
 import { isTauriRuntime } from "./project-analysis";
 
-export const FILAMENT_LIBRARY_SCHEMA_VERSION = 2 as const;
+export const FILAMENT_LIBRARY_SCHEMA_VERSION = 3 as const;
 export const FILAMENT_LIBRARY_STORAGE_KEY =
+  "u1-planner.filament-library.v3";
+export const LEGACY_FILAMENT_LIBRARY_V2_STORAGE_KEY =
   "u1-planner.filament-library.v2";
 export const LEGACY_FILAMENT_LIBRARY_STORAGE_KEY =
   "u1-planner.filament-library.v1";
@@ -20,7 +22,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isMaterial(value: unknown): value is SpoolMaterial {
-  return value === "PLA" || value === "PETG";
+  return value === "PLA" || value === "PETG" || value === "PVA";
 }
 
 function optionalText(value: unknown) {
@@ -95,7 +97,7 @@ function withReconciledCalibrationIdentity(
 
 function normalizeSpool(
   value: unknown,
-  sourceSchemaVersion: 1 | 2,
+  sourceSchemaVersion: 1 | 2 | 3,
 ): PhysicalSpool | null {
   if (!isRecord(value)) return null;
   const minimumTemperature = optionalTemperature(value.minNozzleTemperatureC);
@@ -132,7 +134,7 @@ function normalizeSpool(
     (minimumTemperature !== undefined &&
       maximumTemperature !== undefined &&
       minimumTemperature > maximumTemperature) ||
-    (sourceSchemaVersion === 2 &&
+    (sourceSchemaVersion >= 2 &&
       !validStoredText(value.calibrationIdentity, 1, 128))
   ) {
     return null;
@@ -182,6 +184,7 @@ function normalizeDocument(value: unknown): FilamentLibraryDocument | null {
   if (
     !isRecord(value) ||
     (value.schemaVersion !== 1 &&
+      value.schemaVersion !== 2 &&
       value.schemaVersion !== FILAMENT_LIBRARY_SCHEMA_VERSION) ||
     !Array.isArray(value.spools)
   ) {
@@ -267,10 +270,13 @@ export async function loadFilamentLibrary(
   const currentSerialized = window.localStorage.getItem(
     FILAMENT_LIBRARY_STORAGE_KEY,
   );
+  const legacyV2Serialized = window.localStorage.getItem(
+    LEGACY_FILAMENT_LIBRARY_V2_STORAGE_KEY,
+  );
   const legacySerialized = window.localStorage.getItem(
     LEGACY_FILAMENT_LIBRARY_STORAGE_KEY,
   );
-  const serialized = currentSerialized ?? legacySerialized;
+  const serialized = currentSerialized ?? legacyV2Serialized ?? legacySerialized;
   if (serialized === null) return fallbackDocument(defaults);
 
   let storedValue: unknown;
@@ -292,7 +298,7 @@ export async function loadFilamentLibrary(
     spools: mergeFilamentLibrary(defaults, normalized.spools),
   };
   if (currentSerialized === null) {
-    // Publish v2 before leaving the v1 recovery copy in place.
+    // Publish v3 before leaving the v1/v2 recovery copy in place.
     window.localStorage.setItem(
       FILAMENT_LIBRARY_STORAGE_KEY,
       JSON.stringify(migrated),
@@ -313,7 +319,7 @@ export async function saveFilamentLibrary(
       try {
         previousSpools = normalizeDocument(JSON.parse(serialized))?.spools ?? [];
       } catch {
-        // The write below replaces only v2 after the caller has explicitly
+        // The write below replaces only v3 after the caller has explicitly
         // supplied the complete in-memory catalogue.
       }
     }

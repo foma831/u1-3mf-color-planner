@@ -34,7 +34,7 @@ use u1_orca_adapter::{
 use u1_planner::{
     A1MiniConfig, BestEffortCmyxCandidate, BoundsMm, BuildVolumeMm, CmySetup, CmyxColorCandidate,
     CmyxFallbackApproval, CmyxRecipe, ColorConfidence, CurrentToolheadState,
-    DirectAssignmentRequest, DirectSpoolCandidate, FullSpectrumMode,
+    DedicatedSupportMaterial, DirectAssignmentRequest, DirectSpoolCandidate, FullSpectrumMode,
     FullSpectrumProcessCompatibility, FullSpectrumSubdivisionPolicy, Material,
     MaterialColorRequirement, MaterialRole as PlannerMaterialRole, MaterialSubstitutionApproval,
     PlannerConfig, PlanningInput, PlanningResult, PrintScope, PrintableUnit, PrinterPreference,
@@ -77,6 +77,8 @@ pub enum ApplicationError {
     DuplicateLoadedSpool { spool_id: String },
     #[error("current printer loadout is invalid: {message}")]
     InvalidCurrentPrinterLoadout { message: String },
+    #[error("dedicated support material is invalid: {message}")]
+    InvalidDedicatedSupport { message: String },
     #[error(
         "planning options include plate {plate_id}, which is not an alternative plate candidate"
     )]
@@ -111,6 +113,9 @@ pub struct PreliminaryPlanOptions {
     /// different source plates onto fewer target plates. The source archive
     /// remains immutable; only the generated target layout may change.
     pub allow_u1_cross_source_repacking: bool,
+    /// Optional project-wide PVA reservation. It is applied to every generated
+    /// U1 scope and consumes the specified physical toolhead.
+    pub dedicated_support: Option<DedicatedSupportMaterial>,
     /// Physical spools explicitly confirmed by the user. Project metadata is
     /// never promoted into this collection automatically.
     pub confirmed_spools: Vec<Spool>,
@@ -164,6 +169,7 @@ impl Default for PreliminaryPlanOptions {
             restore_cmy_after_direct: true,
             allow_direct_palette_reduction: false,
             allow_u1_cross_source_repacking: false,
+            dedicated_support: None,
             confirmed_spools: Vec::new(),
             scope_overrides: Vec::new(),
             unit_printer_overrides: Vec::new(),
@@ -342,6 +348,7 @@ pub fn build_planning_input(
 
     let catalog = built_in_material_catalog()?;
     let inventory = build_inventory(&catalog, analysis, &options.confirmed_spools)?;
+    validate_dedicated_support(options.dedicated_support.as_ref(), &inventory)?;
     let calibration_library =
         UserCmyxCalibrationLibrary::from_records(options.confirmed_calibration_samples.clone())?;
     let matcher = CmyxMatcher::new(
@@ -410,6 +417,40 @@ fn validate_current_toolheads(current: &CurrentToolheadState) -> Result<(), Appl
                 spool_id: spool_id.clone(),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_dedicated_support(
+    dedicated_support: Option<&DedicatedSupportMaterial>,
+    inventory: &[Spool],
+) -> Result<(), ApplicationError> {
+    let Some(dedicated_support) = dedicated_support else {
+        return Ok(());
+    };
+    let spool = inventory
+        .iter()
+        .find(|spool| spool.id == dedicated_support.spool_id)
+        .ok_or_else(|| ApplicationError::InvalidDedicatedSupport {
+            message: format!(
+                "spool '{}' is not present in the physical inventory",
+                dedicated_support.spool_id
+            ),
+        })?;
+    if !spool.available {
+        return Err(ApplicationError::InvalidDedicatedSupport {
+            message: format!("spool '{}' is not available", dedicated_support.spool_id),
+        });
+    }
+    if spool.material != Material::Pva {
+        return Err(ApplicationError::InvalidDedicatedSupport {
+            message: format!("spool '{}' is not PVA", dedicated_support.spool_id),
+        });
+    }
+    if dedicated_support.toolhead != Toolhead::T4 {
+        return Err(ApplicationError::InvalidDedicatedSupport {
+            message: "CMY + PVA support currently requires the PVA spool in T4".into(),
+        });
     }
     Ok(())
 }
@@ -597,7 +638,11 @@ fn build_scopes_for_plate(
     matcher: &CmyxMatcher,
     options: &PreliminaryPlanOptions,
 ) -> Vec<PrintScope> {
-    let selected_t4 = matcher.best_loadout_for_sources(&plate.effective_material_colors);
+    let selected_t4 = options
+        .dedicated_support
+        .as_ref()
+        .map(|support| support.spool_id.as_str())
+        .or_else(|| matcher.best_loadout_for_sources(&plate.effective_material_colors));
     let default_scope = build_scope(
         plate,
         objects,
@@ -638,8 +683,11 @@ fn build_scopes_for_plate(
             .map_or(plate.effective_material_colors.as_slice(), |object| {
                 object.effective_material_colors.as_slice()
             });
-        let loadout = matcher
-            .best_loadout_for_sources(object_colors)
+        let loadout = options
+            .dedicated_support
+            .as_ref()
+            .map(|support| support.spool_id.as_str())
+            .or_else(|| matcher.best_loadout_for_sources(object_colors))
             .or(selected_t4)
             .unwrap_or("unresolved")
             .to_owned();
@@ -722,6 +770,11 @@ fn split_plate_by_object_palette(
     matcher: &CmyxMatcher,
     options: &PreliminaryPlanOptions,
 ) -> Option<Vec<PrintScope>> {
+    let maximum_model_pairs = if options.dedicated_support.is_some() {
+        3
+    } else {
+        4
+    };
     type PaletteKey = (
         Option<String>,
         Option<String>,
@@ -752,7 +805,7 @@ fn split_plate_by_object_palette(
             .collect::<BTreeSet<PaletteKey>>()
     };
 
-    if palette_keys(&plate.effective_material_colors).len() <= 4 {
+    if palette_keys(&plate.effective_material_colors).len() <= maximum_model_pairs {
         return None;
     }
     let mut groups = Vec::<(BTreeSet<PaletteKey>, Vec<u1_three_mf::ObjectInstance>)>::new();
@@ -763,12 +816,12 @@ fn split_plate_by_object_palette(
                 object.effective_material_colors.as_slice()
             });
         let object_palette = palette_keys(object_colors);
-        if object_palette.len() > 4 {
+        if object_palette.len() > maximum_model_pairs {
             return None;
         }
         if let Some((group_palette, group_instances)) = groups.last_mut() {
             let union_count = group_palette.union(&object_palette).count();
-            if union_count <= 4 {
+            if union_count <= maximum_model_pairs {
                 group_palette.extend(object_palette);
                 group_instances.push(instance.clone());
                 continue;
@@ -892,7 +945,7 @@ fn build_scope(
     scope_id: String,
     display_name: String,
 ) -> PrintScope {
-    let requirements = plate
+    let mut requirements = plate
         .effective_material_colors
         .iter()
         .enumerate()
@@ -907,7 +960,7 @@ fn build_scope(
         })
         .collect::<Vec<_>>();
 
-    let units = plate
+    let mut units = plate
         .instances
         .iter()
         .enumerate()
@@ -950,7 +1003,39 @@ fn build_scope(
                 },
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+
+    let dedicated_support = options.dedicated_support.clone();
+    if let Some(support) = &dedicated_support {
+        let replaced_support_ids = requirements
+            .iter()
+            .filter(|requirement| requirement.role == PlannerMaterialRole::Support)
+            .map(|requirement| requirement.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut source_slots = requirements
+            .iter()
+            .filter(|requirement| replaced_support_ids.contains(&requirement.id))
+            .flat_map(|requirement| requirement.source_slots.iter().cloned())
+            .collect::<Vec<_>>();
+        source_slots.sort();
+        source_slots.dedup();
+        requirements.retain(|requirement| !replaced_support_ids.contains(&requirement.id));
+        for unit in &mut units {
+            unit.requirement_ids
+                .retain(|requirement_id| !replaced_support_ids.contains(requirement_id));
+        }
+        let support_id = format!("{scope_id}-dedicated-pva-support");
+        requirements.push(build_dedicated_support_requirement(
+            support_id.clone(),
+            support,
+            source_slots,
+            inventory,
+            matcher,
+        ));
+        for unit in &mut units {
+            unit.requirement_ids.push(support_id.clone());
+        }
+    }
 
     let strategy = if options.scope_strategy == ScopeStrategy::Auto
         && requirements.iter().any(|requirement| {
@@ -972,6 +1057,7 @@ fn build_scope(
         units,
         strategy,
         direct_assignments: Vec::new(),
+        dedicated_support,
         approved_cmyx_fallbacks: Vec::new(),
         approved_material_substitutions: Vec::new(),
     }
@@ -1099,7 +1185,7 @@ fn build_requirement(
             .unwrap_or_else(|| manual_cmyx("No compatible CMY+X candidate was found.")),
         None => manual_cmyx("The source color is missing or invalid."),
     };
-    let best_effort_cmyx_candidate = source_color
+    let mut best_effort_candidates = source_color
         .filter(|_| {
             matches!(
                 cmyx_candidate.recipe,
@@ -1107,8 +1193,8 @@ fn build_requirement(
             )
         })
         .and_then(|color| {
-            selected_t4.and_then(|t4| {
-                matcher.best_effort_in_loadout(
+            selected_t4.map(|t4| {
+                matcher.palette_in_loadout(
                     t4,
                     &material,
                     color,
@@ -1116,6 +1202,8 @@ fn build_requirement(
                 )
             })
         })
+        .unwrap_or_default()
+        .into_iter()
         .map(|best_effort| BestEffortCmyxCandidate {
             // Filled only after recursive plate splitting has assigned the
             // final scope and requirement identities.
@@ -1123,7 +1211,31 @@ fn build_requirement(
             target_material: best_effort.target_material,
             target_color: planner_color(best_effort.target),
             candidate: planner_cmyx_unchecked(best_effort.candidate, best_effort.t4_spool_id),
-        });
+        })
+        .collect::<Vec<_>>();
+    let best_effort_cmyx_candidate = if best_effort_candidates.is_empty() {
+        None
+    } else {
+        Some(best_effort_candidates.remove(0))
+    };
+    let mut seen_palette_colors = BTreeSet::new();
+    if let Some(primary) = &best_effort_cmyx_candidate {
+        seen_palette_colors.insert((
+            primary.target_material.clone(),
+            primary.candidate.predicted_color,
+            primary.candidate.required_t4_spool_id.clone(),
+        ));
+    }
+    let cmyx_palette_candidates = best_effort_candidates
+        .into_iter()
+        .filter(|candidate| {
+            seen_palette_colors.insert((
+                candidate.target_material.clone(),
+                candidate.candidate.predicted_color,
+                candidate.candidate.required_t4_spool_id.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
     let source_profile_ids = canonical_source_profile_ids(source);
     let direct_candidates = source_color
         .map(|color| direct_candidates(color, &material, inventory))
@@ -1144,7 +1256,47 @@ fn build_requirement(
         source_profile_ids,
         cmyx_candidate,
         best_effort_cmyx_candidate,
+        cmyx_palette_candidates,
         direct_candidates,
+    }
+}
+
+fn build_dedicated_support_requirement(
+    id: String,
+    support: &DedicatedSupportMaterial,
+    source_slots: Vec<String>,
+    inventory: &[Spool],
+    matcher: &CmyxMatcher,
+) -> MaterialColorRequirement {
+    let spool = inventory
+        .iter()
+        .find(|spool| spool.id == support.spool_id)
+        .expect("dedicated support inventory is validated before scope construction");
+    let source_color = spool.actual_color();
+    let cmyx_candidate = matcher
+        .best_in_loadout(&spool.id, &Material::Pva, engine_color(source_color), true)
+        .unwrap_or_else(|| {
+            manual_cmyx("The dedicated PVA spool has no CMY + PVA solid T4 recipe.")
+        });
+    MaterialColorRequirement {
+        id,
+        material: Material::Pva,
+        role: PlannerMaterialRole::Support,
+        source_color,
+        source_slots,
+        source_profile_ids: vec![format!("dedicated-pva:{}", spool.id)],
+        cmyx_candidate,
+        best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
+        direct_candidates: vec![DirectSpoolCandidate {
+            spool_id: spool.id.clone(),
+            delta_e00: Some(0.0),
+            confidence: if spool.measured_color.is_some() {
+                ColorConfidence::Measured
+            } else {
+                ColorConfidence::Nominal
+            },
+        }],
     }
 }
 
@@ -1166,9 +1318,11 @@ struct CandidateDecisionFingerprint<'a> {
 fn assign_best_effort_candidate_ids(scopes: &mut [PrintScope]) {
     for scope in scopes {
         for requirement in &mut scope.requirements {
-            let Some(fallback) = requirement.best_effort_cmyx_candidate.as_ref() else {
+            if requirement.best_effort_cmyx_candidate.is_none()
+                && requirement.cmyx_palette_candidates.is_empty()
+            {
                 continue;
-            };
+            }
             let mut profiles = requirement.source_profile_ids.clone();
             profiles.sort();
             profiles.dedup();
@@ -1185,31 +1339,36 @@ fn assign_best_effort_candidate_ids(scopes: &mut [PrintScope]) {
                 }
                 ("unknown_profile", discriminator)
             };
-            let payload = CandidateDecisionFingerprint {
-                version: 1,
-                scope_id: &scope.id,
-                source_material: &requirement.material,
-                source_role: requirement.role,
-                source_color: requirement.source_color,
-                source_identity_kind,
-                source_identity,
-                target_material: &fallback.target_material,
-                target_color: fallback.target_color,
-                candidate: &fallback.candidate,
-            };
-            let serialized = serde_json::to_vec(&payload)
-                .expect("candidate fingerprint payload contains only serializable domain data");
-            let digest = Sha256::digest(serialized);
-            let mut candidate_id = String::from("cmyx-fallback-v1-");
-            for byte in digest {
-                write!(&mut candidate_id, "{byte:02x}")
-                    .expect("writing a SHA-256 digest into a String cannot fail");
-            }
-            requirement
+            let source_material = requirement.material.clone();
+            let source_role = requirement.role;
+            let source_color = requirement.source_color;
+            for fallback in requirement
                 .best_effort_cmyx_candidate
-                .as_mut()
-                .expect("fallback was checked above")
-                .candidate_id = candidate_id;
+                .iter_mut()
+                .chain(requirement.cmyx_palette_candidates.iter_mut())
+            {
+                let payload = CandidateDecisionFingerprint {
+                    version: 1,
+                    scope_id: &scope.id,
+                    source_material: &source_material,
+                    source_role,
+                    source_color,
+                    source_identity_kind,
+                    source_identity: source_identity.clone(),
+                    target_material: &fallback.target_material,
+                    target_color: fallback.target_color,
+                    candidate: &fallback.candidate,
+                };
+                let serialized = serde_json::to_vec(&payload)
+                    .expect("candidate fingerprint payload contains only serializable domain data");
+                let digest = Sha256::digest(serialized);
+                let mut candidate_id = String::from("cmyx-fallback-v1-");
+                for byte in digest {
+                    write!(&mut candidate_id, "{byte:02x}")
+                        .expect("writing a SHA-256 digest into a String cannot fail");
+                }
+                fallback.candidate_id = candidate_id;
+            }
         }
     }
 }
@@ -1385,6 +1544,7 @@ fn material_label(material: &Material) -> &str {
     match material {
         Material::Pla => "PLA",
         Material::Petg => "PETG",
+        Material::Pva => "PVA",
         Material::Abs => "ABS",
         Material::Asa => "ASA",
         Material::Tpu => "TPU",
@@ -1578,27 +1738,39 @@ impl CmyxMatcher {
         Some(planner_cmyx(candidate, loadout.t4_spool_id.clone()))
     }
 
-    fn best_effort_in_loadout(
+    fn palette_in_loadout(
         &self,
         t4_spool_id: &str,
         source_material: &Material,
         target: SrgbColor,
         solid_only: bool,
-    ) -> Option<BestEffortMatch> {
+    ) -> Vec<BestEffortMatch> {
         let loadout = self
             .loadouts
             .iter()
-            .find(|loadout| loadout.t4_spool_id == t4_spool_id)?;
-        let candidate = self
-            .match_source(loadout, source_material, target, solid_only)
-            .or_else(|| self.search_loadout(loadout, target, solid_only))?;
-        let target_material = recipe_target_material(&candidate.recipe, loadout)?;
-        Some(BestEffortMatch {
-            candidate,
-            target,
-            target_material,
-            t4_spool_id: loadout.t4_spool_id.clone(),
-        })
+            .find(|loadout| loadout.t4_spool_id == t4_spool_id);
+        let Some(loadout) = loadout else {
+            return Vec::new();
+        };
+        let candidates = if source_material == &Material::Pla {
+            self.search_loadout_matches(loadout, target, solid_only)
+        } else {
+            self.match_source(loadout, source_material, target, solid_only)
+                .map(|candidate| vec![candidate])
+                .unwrap_or_else(|| self.search_loadout_matches(loadout, target, solid_only))
+        };
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let target_material = recipe_target_material(&candidate.recipe, loadout)?;
+                Some(BestEffortMatch {
+                    candidate,
+                    target,
+                    target_material,
+                    t4_spool_id: loadout.t4_spool_id.clone(),
+                })
+            })
+            .collect()
     }
 
     fn match_source(
@@ -1635,6 +1807,17 @@ impl CmyxMatcher {
         target: SrgbColor,
         solid_only: bool,
     ) -> Option<RecipeMatch> {
+        self.search_loadout_matches(loadout, target, solid_only)
+            .into_iter()
+            .next()
+    }
+
+    fn search_loadout_matches(
+        &self,
+        loadout: &MatcherLoadout,
+        target: SrgbColor,
+        solid_only: bool,
+    ) -> Vec<RecipeMatch> {
         let settings = RecipeSearchSettings {
             ratio_denominator: 8,
             include_cycle: true,
@@ -1648,22 +1831,25 @@ impl CmyxMatcher {
             &self.calibration_samples,
             settings,
         )
-        .ok()?;
-        matches.into_iter().find(|candidate| {
-            if solid_only && candidate.recipe.mode != RecipeMode::Solid {
-                return false;
-            }
-            if loadout.t4_material != Material::Pla
-                && candidate
-                    .recipe
-                    .components
-                    .iter()
-                    .any(|component| component.slot == 4)
-            {
-                return false;
-            }
-            t4_recipe_allowed(candidate, loadout.t4_policy)
-        })
+        .unwrap_or_default();
+        matches
+            .into_iter()
+            .filter(|candidate| {
+                if solid_only && candidate.recipe.mode != RecipeMode::Solid {
+                    return false;
+                }
+                if loadout.t4_material != Material::Pla
+                    && candidate
+                        .recipe
+                        .components
+                        .iter()
+                        .any(|component| component.slot == 4)
+                {
+                    return false;
+                }
+                t4_recipe_allowed(candidate, loadout.t4_policy)
+            })
+            .collect()
     }
 }
 
@@ -1916,6 +2102,7 @@ fn parse_material(value: Option<&str>) -> Material {
     match normalized.as_str() {
         "PLA" => Material::Pla,
         "PETG" | "PET" => Material::Petg,
+        "PVA" => Material::Pva,
         "ABS" => Material::Abs,
         "ASA" => Material::Asa,
         "TPU" => Material::Tpu,
@@ -2106,6 +2293,113 @@ mod tests {
         let result = plan(&input);
         assert_eq!(result.scope_options.len(), 1);
         assert!(!result.jobs.is_empty());
+    }
+
+    #[test]
+    fn dedicated_pva_replaces_source_support_and_reserves_t4() {
+        let mut pva = confirmed_spool("support-pva", "#F5F5E6");
+        pva.material = Material::Pva;
+        pva.profile_id = Some("Snapmaker PVA @U1".into());
+        let options = PreliminaryPlanOptions {
+            dedicated_support: Some(DedicatedSupportMaterial {
+                spool_id: pva.id.clone(),
+                usage: u1_planner::SupportMaterialUsage::BodyAndInterface,
+                toolhead: Toolhead::T4,
+            }),
+            confirmed_spools: vec![pva],
+            ..PreliminaryPlanOptions::default()
+        };
+
+        let input = build_planning_input(&minimal_analysis(), &options).unwrap();
+        let scope = &input.scopes[0];
+        let support = scope
+            .requirements
+            .iter()
+            .find(|requirement| requirement.role == PlannerMaterialRole::Support)
+            .expect("the synthetic PVA support requirement is present");
+        assert_eq!(support.material, Material::Pva);
+        assert!(matches!(
+            support.cmyx_candidate.recipe,
+            CmyxRecipe::DedicatedT4
+        ));
+        assert!(scope.units[0].requirement_ids.contains(&support.id));
+
+        let result = plan(&input);
+        assert!(result.errors.is_empty(), "{:#?}", result.errors);
+        let PrinterLoadout::U1 { loadout } = &result.jobs[0].loadout else {
+            panic!("dedicated PVA support must remain on U1");
+        };
+        assert_eq!(loadout.spool(Toolhead::T4), Some("support-pva"));
+    }
+
+    #[test]
+    fn pva_t4_exposes_a_manual_model_palette_without_t4_recipes() {
+        let mut analysis = minimal_analysis();
+        for source in &mut analysis.effective_material_colors {
+            source.color = Some("#354334".to_owned());
+        }
+        for plate in &mut analysis.plates {
+            for source in &mut plate.effective_material_colors {
+                source.color = Some("#354334".to_owned());
+            }
+        }
+        for object in &mut analysis.objects {
+            for source in &mut object.effective_material_colors {
+                source.color = Some("#354334".to_owned());
+            }
+        }
+        let mut pva = confirmed_spool("support-pva", "#F5F5E6");
+        pva.material = Material::Pva;
+        pva.profile_id = Some("Snapmaker PVA @U1".into());
+        let options = PreliminaryPlanOptions {
+            dedicated_support: Some(DedicatedSupportMaterial {
+                spool_id: pva.id.clone(),
+                usage: u1_planner::SupportMaterialUsage::BodyAndInterface,
+                toolhead: Toolhead::T4,
+            }),
+            confirmed_spools: vec![pva],
+            ..PreliminaryPlanOptions::default()
+        };
+
+        let input = build_planning_input(&analysis, &options).unwrap();
+        let model = input.scopes[0]
+            .requirements
+            .iter()
+            .find(|requirement| requirement.role != PlannerMaterialRole::Support)
+            .expect("model requirement must remain present");
+        let primary = model
+            .best_effort_cmyx_candidate
+            .as_ref()
+            .expect("dark source must expose a best-effort candidate");
+        assert!(!model.cmyx_palette_candidates.is_empty());
+        assert!(
+            std::iter::once(primary)
+                .chain(model.cmyx_palette_candidates.iter())
+                .all(|candidate| candidate.candidate.required_t4_spool_id.is_none())
+        );
+        assert!(model.cmyx_palette_candidates.iter().any(|candidate| {
+            candidate
+                .candidate
+                .predicted_color
+                .is_some_and(|color| color.green > color.red || color.blue > color.red)
+        }));
+    }
+
+    #[test]
+    fn dedicated_support_rejects_a_non_pva_spool() {
+        let options = PreliminaryPlanOptions {
+            dedicated_support: Some(DedicatedSupportMaterial {
+                spool_id: CYAN_ID.into(),
+                usage: u1_planner::SupportMaterialUsage::BodyAndInterface,
+                toolhead: Toolhead::T4,
+            }),
+            ..PreliminaryPlanOptions::default()
+        };
+
+        assert!(matches!(
+            build_planning_input(&minimal_analysis(), &options),
+            Err(ApplicationError::InvalidDedicatedSupport { .. })
+        ));
     }
 
     #[test]

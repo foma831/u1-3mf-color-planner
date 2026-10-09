@@ -1,4 +1,4 @@
-//! Strict semantic validation for the Snapmaker Orca 2.3.5 Full Spectrum
+//! Strict semantic validation for the Snapmaker Orca 2.3.6 Full Spectrum
 //! qualification round trip.
 //!
 //! Snapmaker Orca may regenerate a narrowly versioned set of thumbnails and
@@ -24,7 +24,7 @@ use zip::ZipArchive;
 use crate::u1_gui_round_trip::{
     U1GuiRoundTripError, U1SemanticModelSnapshot, embedded_preset_entries, gui_ids_are_valid,
     load_u1_semantic_model_snapshot, u1_semantic_geometry_graphs_equivalent,
-    u1_semantic_placements_equivalent, verify_analysis_identity,
+    verify_analysis_identity,
 };
 use crate::{
     FULL_SPECTRUM_PROCESS_PROFILE_NAME, FULL_SPECTRUM_PROFILE_NAME, FULL_SPECTRUM_SETTING_ID,
@@ -42,6 +42,8 @@ const GUI_CANONICALIZED_DITHERING_KEYS: &[&str] = &[
     "dithering_local_z_whole_objects",
     "dithering_local_z_infill",
 ];
+const GUI_LINEAR_TRANSFORM_TOLERANCE: f64 = 1.0e-8;
+const GUI_PLACEMENT_TOLERANCE_MM: f64 = 1.0e-5;
 
 const PROCESS_GLOBAL_KEYS: &[&str] = &[
     "layer_height",
@@ -249,7 +251,7 @@ pub enum U1FullSpectrumGuiRoundTripError {
 /// the save produced after closing and reopening the first save.
 ///
 /// The writer candidate must satisfy the strict unsliced policy. GUI saves use
-/// the version-scoped 2.3.5 allowlist for regenerated thumbnails and slice
+/// the version-scoped 2.3.6 allowlist for regenerated thumbnails and slice
 /// metadata; G-code, embedded presets, unknown derived entries, and stale
 /// references remain forbidden.
 pub fn validate_u1_full_spectrum_gui_round_trip(
@@ -493,7 +495,11 @@ pub fn validate_u1_full_spectrum_gui_round_trip(
             });
         }
 
-        let objects_stable = all_equal_by(&models, |value| &value.object_multiset);
+        let assignment_snapshots = analyses
+            .iter()
+            .map(full_spectrum_assignment_snapshot)
+            .collect::<Result<Vec<_>, _>>()?;
+        let objects_stable = all_equal_by(&assignment_snapshots, |value| &value.object_multiset);
         checks.virtual_assignments_stable = all_equal(&virtual_ids) && objects_stable;
         if !checks.virtual_assignments_stable {
             issues.push(U1FullSpectrumGuiRoundTripIssue {
@@ -570,9 +576,17 @@ pub fn validate_u1_full_spectrum_gui_round_trip(
             });
         }
 
-        checks.placements_and_plate_membership_stable =
-            u1_semantic_placements_equivalent(&models[0], &models[1])
-                && u1_semantic_placements_equivalent(&models[0], &models[2]);
+        checks.placements_and_plate_membership_stable = full_spectrum_placements_equivalent(
+            &analyses[0],
+            &assignment_snapshots[0],
+            &analyses[1],
+            &assignment_snapshots[1],
+        ) && full_spectrum_placements_equivalent(
+            &analyses[0],
+            &assignment_snapshots[0],
+            &analyses[2],
+            &assignment_snapshots[2],
+        );
         if !checks.placements_and_plate_membership_stable {
             issues.push(U1FullSpectrumGuiRoundTripIssue {
                 code: U1FullSpectrumGuiRoundTripIssueCode::PlacementOrPlateMembershipChanged,
@@ -657,7 +671,7 @@ fn is_expected_gui_save_validation_issue(
         return false;
     }
     match issue.code {
-        // Snapmaker Orca 2.3.5 regenerates these entries after slicing. The
+        // Snapmaker Orca 2.3.6 regenerates these entries after slicing. The
         // structural GUI-save policy still rejects G-code, repair output,
         // embedded presets, and unknown derived entries.
         U1FullSpectrumValidationCode::StaleArtifact => true,
@@ -756,6 +770,186 @@ struct FullSpectrumProjectContract {
     definitions: Vec<U1FullSpectrumNativeDefinition>,
     process_globals: BTreeMap<String, Value>,
     prime_tower: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug)]
+struct FullSpectrumAssignmentSnapshot {
+    object_multiset: BTreeMap<String, usize>,
+    object_signature_by_id: BTreeMap<u32, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FullSpectrumAssignmentObject {
+    name: Option<String>,
+    object_extruder_slot: Option<u16>,
+    effective_slots: Vec<u16>,
+    parts: Vec<FullSpectrumAssignmentPart>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FullSpectrumAssignmentPart {
+    name: Option<String>,
+    volume_type: String,
+    printable: bool,
+    extruder_slot: Option<u16>,
+    inherited_extruder_slot: Option<u16>,
+    painted_slots: Vec<u16>,
+    effective_slots: Vec<u16>,
+}
+
+fn full_spectrum_assignment_snapshot(
+    analysis: &ProjectAnalysis,
+) -> Result<FullSpectrumAssignmentSnapshot, U1FullSpectrumGuiRoundTripError> {
+    let mut object_multiset = BTreeMap::new();
+    let mut object_signature_by_id = BTreeMap::new();
+    for object in &analysis.objects {
+        let mut parts = object
+            .parts
+            .iter()
+            .map(|part| FullSpectrumAssignmentPart {
+                name: part.name.clone(),
+                volume_type: match &part.volume_type {
+                    u1_three_mf::VolumeType::NormalPart => "normal_part".to_owned(),
+                    u1_three_mf::VolumeType::NegativePart => "negative_part".to_owned(),
+                    u1_three_mf::VolumeType::Modifier => "modifier".to_owned(),
+                    u1_three_mf::VolumeType::SupportBlocker => "support_blocker".to_owned(),
+                    u1_three_mf::VolumeType::SupportEnforcer => "support_enforcer".to_owned(),
+                    u1_three_mf::VolumeType::Unknown(value) => format!("unknown:{value}"),
+                },
+                printable: part.printable,
+                extruder_slot: part.extruder_slot,
+                inherited_extruder_slot: part.inherited_extruder_slot,
+                painted_slots: sorted_u16(&part.painted_slots),
+                effective_slots: sorted_u16(&part.effective_slots),
+            })
+            .collect::<Vec<_>>();
+        parts.sort();
+        let signature = digest_serializable(&FullSpectrumAssignmentObject {
+            name: object.name.clone(),
+            object_extruder_slot: object.object_extruder_slot,
+            effective_slots: sorted_u16(&object.effective_slots),
+            parts,
+        })?;
+        *object_multiset.entry(signature.clone()).or_insert(0) += 1;
+        if object_signature_by_id
+            .insert(object.id, signature)
+            .is_some()
+        {
+            return Err(U1FullSpectrumGuiRoundTripError::Semantic {
+                path: PathBuf::from("<semantic-comparison>"),
+                message: format!("analysis contains duplicate object ID {}", object.id),
+            });
+        }
+    }
+    Ok(FullSpectrumAssignmentSnapshot {
+        object_multiset,
+        object_signature_by_id,
+    })
+}
+
+fn full_spectrum_placements_equivalent(
+    left: &ProjectAnalysis,
+    left_assignments: &FullSpectrumAssignmentSnapshot,
+    right: &ProjectAnalysis,
+    right_assignments: &FullSpectrumAssignmentSnapshot,
+) -> bool {
+    if left.plates.len() != right.plates.len() {
+        return false;
+    }
+    left.plates.iter().all(|left_plate| {
+        let Some(right_plate) = right.plates.iter().find(|plate| plate.id == left_plate.id) else {
+            return false;
+        };
+        if left_plate.instances.len() != right_plate.instances.len() {
+            return false;
+        }
+        let mut matched = vec![false; right_plate.instances.len()];
+        left_plate.instances.iter().all(|left_instance| {
+            let Some(left_signature) = left_assignments
+                .object_signature_by_id
+                .get(&left_instance.object_id)
+            else {
+                return false;
+            };
+            let Some(index) =
+                right_plate
+                    .instances
+                    .iter()
+                    .enumerate()
+                    .position(|(index, right_instance)| {
+                        if matched[index]
+                            || right_assignments
+                                .object_signature_by_id
+                                .get(&right_instance.object_id)
+                                != Some(left_signature)
+                            || left_instance.printable != right_instance.printable
+                        {
+                            return false;
+                        }
+                        optional_transform_close(left_instance.transform, right_instance.transform)
+                            && optional_bounds_close(
+                                left_instance.printable_bounds,
+                                right_instance.printable_bounds,
+                            )
+                    })
+            else {
+                return false;
+            };
+            matched[index] = true;
+            true
+        })
+    })
+}
+
+fn optional_transform_close(
+    left: Option<u1_three_mf::Transform3mf>,
+    right: Option<u1_three_mf::Transform3mf>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.values
+                .iter()
+                .zip(right.values)
+                .enumerate()
+                .all(|(index, (left, right))| {
+                    let tolerance = if index < 9 {
+                        GUI_LINEAR_TRANSFORM_TOLERANCE
+                    } else {
+                        GUI_PLACEMENT_TOLERANCE_MM
+                    };
+                    (*left - right).abs() <= tolerance
+                })
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn optional_bounds_close(
+    left: Option<u1_three_mf::AxisAlignedBounds>,
+    right: Option<u1_three_mf::AxisAlignedBounds>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left
+            .min
+            .into_iter()
+            .chain(left.max)
+            .zip(right.min.into_iter().chain(right.max))
+            .all(|(left, right)| (left - right).abs() <= GUI_PLACEMENT_TOLERANCE_MM),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn sorted_u16(values: &[u16]) -> Vec<u16> {
+    values
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 impl FullSpectrumProjectContract {
@@ -1189,7 +1383,7 @@ mod tests {
         for (key, value) in [
             ("name", "project_settings"),
             ("from", "project"),
-            ("version", "2.3.5"),
+            ("version", SUPPORTED_ORCA_VERSION),
             ("printer_model", "Snapmaker U1"),
             ("printer_variant", "0.4"),
             ("printer_settings_id", "Snapmaker U1 (0.4 nozzle)"),
@@ -1284,7 +1478,7 @@ mod tests {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" unit="millimeter">
- <metadata name="Application">Snapmaker Orca 2.3.5</metadata>
+ <metadata name="Application">Snapmaker Orca 2.3.6</metadata>
  <resources>
   <object id="1" type="model"><mesh><vertices>
    <vertex x="0" y="0" z="0"/><vertex x="{vertex_x}" y="0" z="0"/><vertex x="0" y="10" z="0"/>

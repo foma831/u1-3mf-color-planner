@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "adapterId": "snapmaker-orca/2.3.6/u1-0.4-direct",
+  "applicationVersion": "2.3.6",
+  "executableSha256": "553a02a813e031ef2ea49616dc0edb9d0a4f0cc077b99c70fc30d5060dea3658",
+  "profileSource": "installed_system",
+  "profilePackVersion": "02.02.56.02",
+  "profileManifestSha256": "51949563d16ddbb1611d64f991c56b13269399ab15e57c18d3152aa1ec0a6c69",
+  "guiRoundTripPassed": true,
+  "status": "qualified",
+  "evidence": {
+    "fixtureName": "Sailfin Dragon - Articulated Lizard by Raki-Box.3mf",
+    "sourceFixtureSha256": "1b20d6124353d3bc31c4ea554e482ba6f8ef281dd23e2df6bbc0d561b4f6e0d7",
+    "writerCandidateSha256": "57e17c4b3f73d3b59054d2c35cdbeac98a8a9c67160df9e5b233f12181c16be1",
+    "firstGuiSavedSha256": "11379be118a32b23e2efd3271eb9f269d28db1a8172212f0603b495de232633d",
+    "reopenedGuiSavedSha256": "a1163d2a9d6949cea2a6ff8ef006f5981e342d96cd80b682d4d4aef8e09011f9",
+    "qualificationReportSha256": "514f13aad7d1446dae55b88e9625c01221862c6f708b5d8f0c0b5f03deec50db",
+    "opened": true,
+    "sliced": true,
+    "saved": true,
+    "closed": true,
+    "reopened": true,
+    "resliced": true,
+    "resaved": true,
+    "qualifiedAtUtc": "2026-09-07T18:28:16Z"
+  },
+  "note": "Snapmaker Orca 2.3.6 accepted, sliced, saved, reopened, re-sliced, and re-saved the exact hash-bound Sailfin U1 Direct candidate without blocking profile or repair warnings."
+}

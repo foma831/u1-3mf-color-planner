@@ -1,7 +1,11 @@
 import type { PrintingSetup } from "./printing-setup";
 
-export const PLANNING_INTENT_SCHEMA_VERSION = 3 as const;
+export const PLANNING_INTENT_SCHEMA_VERSION = 5 as const;
 export const PLANNING_INTENT_STORAGE_KEY =
+  "u1-planner.project-planning-intent.v5";
+export const LEGACY_PLANNING_INTENT_V4_STORAGE_KEY =
+  "u1-planner.project-planning-intent.v4";
+export const LEGACY_PLANNING_INTENT_V3_STORAGE_KEY =
   "u1-planner.project-planning-intent.v3";
 export const LEGACY_PLANNING_INTENT_V2_STORAGE_KEY =
   "u1-planner.project-planning-intent.v2";
@@ -9,11 +13,16 @@ export const LEGACY_PLANNING_INTENT_STORAGE_KEY =
   "u1-planner.project-planning-intent.v1";
 
 export type DefaultPlanningStrategy = "auto" | "cmyx" | "direct";
+export type DedicatedSupportUsage =
+  | "interface-only"
+  | "body-and-interface";
 
 export interface PlanningIntent {
   defaultStrategy: DefaultPlanningStrategy;
   a1MiniEnabled: boolean;
   allowU1CrossSourceRepacking: boolean;
+  dedicatedSupportSpoolId: string | null;
+  dedicatedSupportUsage: DedicatedSupportUsage;
 }
 
 interface LegacyPlanningIntentValues {
@@ -31,6 +40,17 @@ interface LegacyPlanningIntentV2 extends LegacyPlanningIntentValues {
   schemaVersion: 2;
 }
 
+interface LegacyPlanningIntentV3 extends LegacyPlanningIntentValues {
+  schemaVersion: 3;
+  allowU1CrossSourceRepacking: boolean;
+}
+
+interface LegacyPlanningIntentV4 extends LegacyPlanningIntentValues {
+  schemaVersion: 4;
+  allowU1CrossSourceRepacking: boolean;
+  dedicatedSupportSpoolId: string | null;
+}
+
 interface StoredPlanningIntent extends PlanningIntent {
   schemaVersion: typeof PLANNING_INTENT_SCHEMA_VERSION;
 }
@@ -42,6 +62,8 @@ export function createDefaultPlanningIntent(
     defaultStrategy: "auto",
     a1MiniEnabled: setup?.secondaryPrinter === "a1-mini",
     allowU1CrossSourceRepacking: false,
+    dedicatedSupportSpoolId: null,
+    dedicatedSupportUsage: "interface-only",
   };
 }
 
@@ -91,10 +113,38 @@ export function loadPlanningIntent(
         defaultStrategy: parsed.defaultStrategy,
         a1MiniEnabled: parsed.a1MiniEnabled,
         allowU1CrossSourceRepacking: parsed.allowU1CrossSourceRepacking,
+        dedicatedSupportSpoolId: normalizeOptionalSpoolId(
+          parsed.dedicatedSupportSpoolId,
+        ),
+        dedicatedSupportUsage: parsed.dedicatedSupportUsage,
       };
     }
   } catch {
     return null;
+  }
+
+  const legacyV4 = loadLegacyPlanningIntentV4(storage);
+  if (legacyV4 !== null) {
+    return {
+      defaultStrategy: legacyV4.defaultStrategy,
+      a1MiniEnabled: legacyV4.a1MiniEnabled,
+      allowU1CrossSourceRepacking: legacyV4.allowU1CrossSourceRepacking,
+      dedicatedSupportSpoolId: normalizeOptionalSpoolId(
+        legacyV4.dedicatedSupportSpoolId,
+      ),
+      dedicatedSupportUsage: "interface-only",
+    };
+  }
+
+  const legacyV3 = loadLegacyPlanningIntentV3(storage);
+  if (legacyV3 !== null) {
+    return {
+      defaultStrategy: legacyV3.defaultStrategy,
+      a1MiniEnabled: legacyV3.a1MiniEnabled,
+      allowU1CrossSourceRepacking: legacyV3.allowU1CrossSourceRepacking,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
+    };
   }
 
   const legacyV2 = loadLegacyPlanningIntentV2(storage);
@@ -103,6 +153,8 @@ export function loadPlanningIntent(
       defaultStrategy: legacyV2.defaultStrategy,
       a1MiniEnabled: legacyV2.a1MiniEnabled,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
     };
   }
 
@@ -112,6 +164,8 @@ export function loadPlanningIntent(
         defaultStrategy: legacy.defaultStrategy,
         a1MiniEnabled: legacy.a1MiniEnabled,
         allowU1CrossSourceRepacking: false,
+        dedicatedSupportSpoolId: null,
+        dedicatedSupportUsage: "interface-only",
       }
     : null;
 }
@@ -141,8 +195,31 @@ export function planningIntentEquals(
     left?.defaultStrategy === right?.defaultStrategy &&
     left?.a1MiniEnabled === right?.a1MiniEnabled &&
     left?.allowU1CrossSourceRepacking ===
-      right?.allowU1CrossSourceRepacking
+      right?.allowU1CrossSourceRepacking &&
+    left?.dedicatedSupportSpoolId === right?.dedicatedSupportSpoolId &&
+    left?.dedicatedSupportUsage === right?.dedicatedSupportUsage
   );
+}
+
+function loadLegacyPlanningIntentV4(
+  storage: Storage,
+): LegacyPlanningIntentV4 | null {
+  try {
+    const serialized = storage.getItem(LEGACY_PLANNING_INTENT_V4_STORAGE_KEY);
+    if (serialized === null) return null;
+    const parsed: unknown = JSON.parse(serialized);
+    if (!isRecord(parsed) || !hasExactKeys(parsed, legacyV4IntentKeys)) {
+      return null;
+    }
+    return parsed.schemaVersion === 4 &&
+      hasLegacyPlanningIntentValues(parsed) &&
+      typeof parsed.allowU1CrossSourceRepacking === "boolean" &&
+      isOptionalSpoolId(parsed.dedicatedSupportSpoolId)
+      ? (parsed as unknown as LegacyPlanningIntentV4)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function loadLegacyPlanningIntentV2(
@@ -153,6 +230,26 @@ function loadLegacyPlanningIntentV2(
     if (serialized === null) return null;
     const parsed: unknown = JSON.parse(serialized);
     return isLegacyPlanningIntentV2(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadLegacyPlanningIntentV3(
+  storage: Storage,
+): LegacyPlanningIntentV3 | null {
+  try {
+    const serialized = storage.getItem(LEGACY_PLANNING_INTENT_V3_STORAGE_KEY);
+    if (serialized === null) return null;
+    const parsed: unknown = JSON.parse(serialized);
+    if (!isRecord(parsed) || !hasExactKeys(parsed, legacyV3IntentKeys)) {
+      return null;
+    }
+    return parsed.schemaVersion === 3 &&
+      hasLegacyPlanningIntentValues(parsed) &&
+      typeof parsed.allowU1CrossSourceRepacking === "boolean"
+      ? (parsed as unknown as LegacyPlanningIntentV3)
+      : null;
   } catch {
     return null;
   }
@@ -210,8 +307,16 @@ function hasPlanningIntentValues(
 ): value is Record<string, unknown> & PlanningIntent {
   return (
     hasLegacyPlanningIntentValues(value) &&
-    typeof value.allowU1CrossSourceRepacking === "boolean"
+    typeof value.allowU1CrossSourceRepacking === "boolean" &&
+    isOptionalSpoolId(value.dedicatedSupportSpoolId) &&
+    isDedicatedSupportUsage(value.dedicatedSupportUsage)
   );
+}
+
+function isDedicatedSupportUsage(
+  value: unknown,
+): value is DedicatedSupportUsage {
+  return value === "interface-only" || value === "body-and-interface";
 }
 
 function hasLegacyPlanningIntentValues(
@@ -251,9 +356,28 @@ const storedIntentKeys = [
   "defaultStrategy",
   "a1MiniEnabled",
   "allowU1CrossSourceRepacking",
+  "dedicatedSupportSpoolId",
+  "dedicatedSupportUsage",
 ] as const;
 
 const planningIntentKeys = [
+  "defaultStrategy",
+  "a1MiniEnabled",
+  "allowU1CrossSourceRepacking",
+  "dedicatedSupportSpoolId",
+  "dedicatedSupportUsage",
+] as const;
+
+const legacyV4IntentKeys = [
+  "schemaVersion",
+  "defaultStrategy",
+  "a1MiniEnabled",
+  "allowU1CrossSourceRepacking",
+  "dedicatedSupportSpoolId",
+] as const;
+
+const legacyV3IntentKeys = [
+  "schemaVersion",
   "defaultStrategy",
   "a1MiniEnabled",
   "allowU1CrossSourceRepacking",

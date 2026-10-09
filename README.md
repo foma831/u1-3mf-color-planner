@@ -28,8 +28,8 @@ The repository currently provides:
 2. Bambu/Orca object, part, instance, material, plate, TriangleSelector paint, and transformed AABB analysis;
 3. deterministic U1 planning for CMY+T4 batches, Direct Spools, setup actions, and conservative A1 mini routing;
 4. CIEDE2000 comparison with nominal-versus-measured calibration confidence;
-5. a version and profile fingerprint gate for Snapmaker Orca 2.3.5;
-6. an English Tauri/React UI with separate Print Plan, persistent Filament Library, and guided Print Run views;
+5. a version and profile fingerprint gate for Snapmaker Orca 2.3.6;
+6. an English Tauri/React UI with separate Print Plan, persistent Filament Library, complete CMY/CMYK Color Reference, and guided Print Run views;
 7. actionable source-to-nearest color decisions with candidate-bound approval, dedicated-spool suggestions, and separate material-substitution consent;
 8. explicit A1 mini recalculation with independent U1 and A1 mini plate queues;
 9. native and browser JSON plan export, with native export bound to the latest backend-validated plan;
@@ -48,7 +48,7 @@ The repository currently provides:
 16. a CLI for analysis, planning, Orca compatibility diagnostics, and
     structural validation of unsliced output packages;
 17. a GUI-qualified Stage B writer for unsliced Snapmaker U1 0.4 Direct Spools
-    projects, gated to the exact Snapmaker Orca 2.3.5 executable and effective
+    projects, gated to the exact Snapmaker Orca 2.3.6 executable and effective
     installed profile pack used during qualification;
 18. explicit Stage B U1 process globals, safe per-plate override normalization,
     source `identify_id` preservation, and a printed-height-aware conservative
@@ -68,6 +68,14 @@ The repository currently provides:
 24. an experimental bounded mesh-orientation optimizer that penalizes isolated
     support contacts, writes a no-clobber oriented source copy, and includes a
     reproducible comparison gate against Snapmaker Orca's native auto-orient.
+25. project-wide dedicated PVA support on U1 T4, with a three-spool model
+    palette, qualified `Snapmaker PVA @U1` and `Reli3D PVA @U1` identities,
+    role-bound PLA+PVA compatibility, and interface-only support by default.
+26. a searchable read-only Full Spectrum Color Reference with all 46 unique
+    CMY and 135 theoretical CMYK nominal colors, deduplicated by predicted HEX
+    while retaining equivalent Ratio and Cycle recipes.
+27. a no-clobber, single-material Reli3D PVA diagnostic project for U1 T4 with
+    first-layer, stringing/retraction, thin-wall, and bridge test geometry.
 
 The orientation experiment is available from the CLI:
 
@@ -86,11 +94,13 @@ plates**, select the actual plates found in each published 3MF, and save a
 separate `-support-optimized.3mf` copy. The verified published bundle is never
 modified, so its manifest and checksums remain valid.
 
-Plate packing reserves an 18 mm process envelope on every side of each model
-for generated supports and Auto Brim, in addition to the 2 mm model clearance.
-Consequently, model geometry stays at least 19 mm from the printable-area edge
-and neighboring model footprints stay at least 38 mm apart. A layout that fits
-the meshes but not these process envelopes is rejected.
+Plate packing normally reserves an 18 mm process envelope on every side of
+each model for generated supports and Auto Brim, in addition to the 2 mm model
+clearance. Reliable mode uses the exact generated 5 mm outer brim when a
+dedicated PVA support slot is active. Those PVA layouts therefore keep model
+footprints 12 mm apart: two disjoint 5 mm brims plus 2 mm of clean clearance.
+A layout that fits the meshes but not its selected process envelopes is
+rejected.
 
 The optional desktop step offers Standard, Reliable, and Maximum bed-adhesion
 policies. It records a bounded per-instance adhesion-risk assessment, writes the
@@ -113,15 +123,18 @@ Planner profile is reported as custom and defaults safely to Reliable; external
 Orca profiles are not guessed from similar values.
 
 Orientation changes are strictly opt-in; ordinary analysis, planning, and
-conversion preserve source orientations. The plate command starts with the
-best Pareto-safe candidate for every printable instance, runs one deterministic
-packing pass, and explores at most 50 local repairs involving the failed,
-largest-footprint, or tallest instances. A candidate may not worsen support
-volume, small support-island count, or the combined score relative to that
-instance's source orientation. The apply commands never overwrite their
-destination. They rewrite only approved primary build-item transforms,
+conversion preserve source orientations. For ordinary material support, the
+plate command starts with the best Pareto-safe candidate for every printable
+instance. With dedicated PVA support, it ranks low candidates only after a
+support-volume guard rejects orientations that exceed the source estimate by
+more than 35% plus a small sampling tolerance or add too many isolated
+overhangs. This avoids trading a modest height reduction for a multi-fold
+increase in support and tool changes. The bounded search runs a deterministic
+packing pass and explores at most 50 local repairs involving the failed,
+largest-footprint, or tallest instances. The apply commands never overwrite
+their destination. They rewrite only approved primary build-item transforms,
 re-analyze the staged and published copy, and leave the source hash unchanged.
-The result must still be reviewed and repacked before production conversion.
+The result must still be reviewed in the slicer before printing.
 
 Both analysis and pre-publication validation cap ZIP expansion, XML depth, and
 the size of a single XML lexical token. Package manifests can only be built from
@@ -166,9 +179,9 @@ current release does not provide arbitrary user-created object groups.
 | Stage | Scope | Current status |
 |---|---|---|
 | A | Generic bounded OPC/3MF writer and structural validator | Implemented |
-| B | Snapmaker U1 0.4 Direct Spools | GUI-qualified for the exact Snapmaker Orca 2.3.5 executable and installed profile pack; conversion enabled when the plan is valid |
+| B | Snapmaker U1 0.4 Direct Spools | GUI-qualified for the exact Snapmaker Orca 2.3.6 executable and installed profile pack; conversion enabled when the plan is valid |
 | C | Bambu Lab A1 mini single-spool output | GUI-qualified for independent PLA and PETG round trips in the exact Bambu Studio 02.02.00.85 installation |
-| D | Snapmaker U1 CMY+X Full Spectrum output | GUI-qualified for native project structure and interoperability in exact Snapmaker Orca 2.3.5; physical color accuracy remains per-user calibration/approval evidence |
+| D | Snapmaker U1 CMY+X Full Spectrum output | GUI-qualified for native project structure and interoperability in exact Snapmaker Orca 2.3.6; physical color accuracy remains per-user calibration/approval evidence |
 
 Stage B completed its exact GUI qualification on 3 August 2026. The desktop
 checks the application version, executable SHA-256, effective installed vendor
@@ -266,13 +279,13 @@ compile-time `U1_PLANNER_GIT_IDENTITY` value or the deterministic literal
 `Unknown`. Each physical-slot manifest record keeps `profile`, `settingId`, and
 `filamentId` as separate identities. In project settings, `filament_ids` is
 populated from the leaf system preset's `setting_id`, matching a normal
-Snapmaker Orca 2.3.5 Save Project. The inherited material-family `filament_id`
+Snapmaker Orca 2.3.6 Save Project. The inherited material-family `filament_id`
 remains separate manifest inventory metadata.
 The adapter resolves profiles from the effective application-data
 `system/Snapmaker` vendor pack used by the GUI and pins its manifest, version,
 inheritance closure, and auxiliary compatibility tables; it does not mix those
 bytes with an older bundled seed.
-Each generated plate also uses Snapmaker Orca 2.3.5's exact `Auto For Flush`
+Each generated plate also uses Snapmaker Orca 2.3.6's exact `Auto For Flush`
 compatibility mapping, with one literal `1` derived per T1–T4 project filament;
 the staged output validator checks its mode, cardinality, and plate IDs.
 `conversion-plan.json` stores the canonical backend plan, provenance, and
@@ -332,12 +345,19 @@ storage. Out-of-stock entries remain visible in the catalogue but are excluded
 from CMY+X, Direct Spools, T4, and A1 mini candidates. Changing the library
 invalidates inventory-dependent approvals and requires replanning.
 
-Filament Library schema v2 also stores optional vendor, product line, optical
+Filament Library schema v3 accepts PLA, PETG, and PVA and stores optional vendor, product line, optical
 descriptor, nozzle-temperature range, batch/lot, calibration reference, and
-notes. Native migration publishes a new v2 file atomically while retaining the
-v1 file as a recovery copy. Batch/lot or calibration-reference changes rotate a
+notes. Native migration publishes a new v3 file atomically while retaining the
+v1 or v2 file as a recovery copy. Batch/lot or calibration-reference changes rotate a
 separate physical calibration identity, so measured CMY+X evidence from an old
 lot cannot be reused silently.
+
+PVA is the exception to the otherwise optional profile field: it must use an
+explicit qualified profile. `Reli3D PVA @U1` caps the nozzle range at the
+manufacturer's 190–230 °C, prints at 210 °C (220 °C first layer), uses a 60 °C
+bed, 3 mm³/s maximum volumetric speed, and dedicated retraction values. A blank
+PVA profile is rejected instead of silently inheriting the 240 °C Snapmaker
+preset.
 
 CMY+X Calibration Library schema v2 stores measurement provenance beside the
 exact loadout, qualified process, recipe, and coupon geometry. Every new record
@@ -413,7 +433,7 @@ separate and conflicting spools in the same toolhead never merge.
 
 ## Writer qualification record
 
-Snapmaker Orca 2.3.5 can headlessly slice a plain STL for U1, but its headless
+Snapmaker Orca 2.3.6 can headlessly slice a plain STL for U1, but its headless
 `--export-3mf` output on macOS is not a valid golden project: thumbnail
 relationships are left dangling and reopening the generated project crashes the
 CLI. Production writers therefore require versioned, GUI-saved golden projects
@@ -441,7 +461,7 @@ cargo run -p u1-application --example u1_direct_qualification -- \
   "/Applications/Snapmaker Orca.app"
 ```
 
-For every generated candidate, use the exact accepted Snapmaker Orca 2.3.5
+For every generated candidate, use the exact accepted Snapmaker Orca 2.3.6
 installation and record the following GUI sequence without skipping a step:
 
 1. open the candidate and inspect the printer, plates, T1-T4 mapping, target
@@ -455,8 +475,8 @@ installation and record the following GUI sequence without skipping a step:
 
 Qualification uses two separate, strict typed documents, both now qualified:
 
-- `crates/orca-adapter/qualification/u1-direct-2.3.5.json` is the release gate;
-- `crates/orca-adapter/qualification/u1-direct-2.3.5-report.json` is the detailed
+- `crates/orca-adapter/qualification/u1-direct-2.3.6.json` is the release gate;
+- `crates/orca-adapter/qualification/u1-direct-2.3.6-report.json` is the detailed
   GUI report.
 
 The gate record contains `schemaVersion`, `adapterId`, `applicationVersion`, the
@@ -478,12 +498,12 @@ The hardening-specific report fields are
 `writerCandidateIdentifyIdsPositiveAndUnique`,
 `writerCandidateSourceIdentifyIdsPreserved`, `guiIdentifyIdsUnique`, and
 `instanceIdentityBijectionStable`; all must be `true`. Stock Snapmaker Orca
-2.3.5 may renumber process-local `identify_id` values during a normal GUI save,
+2.3.6 may renumber process-local `identify_id` values during a normal GUI save,
 so the GUI files are compared semantically rather than by those numbers.
 Changing only the top-level boolean cannot unlock production.
 
 Stage B intentionally writes zero process, filament, or machine
-`settings_N.config` entries. The official Snapmaker Orca 2.3.5 exporter writes
+`settings_N.config` entries. The official Snapmaker Orca 2.3.6 exporter writes
 such entries only for presets marked `is_project_embedded`; this adapter instead
 accepts only exact hash-pinned system profiles. The structural validator rejects
 any generated embedded-preset entry. GUI qualification must additionally prove
@@ -507,8 +527,8 @@ calibration/explicit-approval boundary.
 Capture and qualification procedures:
 
 - [Snapmaker U1 baseline capture](docs/U1_BASELINE_CAPTURE.md)
-- [Snapmaker U1 Direct qualification operator notes](crates/orca-adapter/qualification/u1-direct-2.3.5-operator-notes.md)
-- [Snapmaker U1 Full Spectrum qualification operator notes](crates/orca-adapter/qualification/u1-full-spectrum-2.3.5-operator-notes.md)
+- [Historical Snapmaker U1 Direct 2.3.5 qualification operator notes](crates/orca-adapter/qualification/u1-direct-2.3.5-operator-notes.md)
+- [Historical Snapmaker U1 Full Spectrum 2.3.5 qualification operator notes](crates/orca-adapter/qualification/u1-full-spectrum-2.3.5-operator-notes.md)
 - [Bambu Lab A1 mini baseline capture](docs/A1_MINI_BASELINE_CAPTURE.md)
 - [Bambu Lab A1 mini qualification operator notes](crates/a1mini-adapter/qualification/a1mini-02.02.00.85-operator-notes.md)
 - [Native 3MF writer implementation specification (Russian)](docs/NATIVE_3MF_WRITER_IMPLEMENTATION_SPEC_RU.md)

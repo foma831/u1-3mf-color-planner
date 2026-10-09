@@ -10,6 +10,7 @@ import { AlternativePlateSelector } from "./components/AlternativePlateSelector"
 import { BottomActionRail } from "./components/BottomActionRail";
 import { ColorResolutionPanel } from "./components/ColorResolutionPanel";
 import { ColorCalibration } from "./components/ColorCalibration";
+import { CmyxReference } from "./components/CmyxReference";
 import { ConversionDialog } from "./components/ConversionDialog";
 import { FilamentLibrary } from "./components/FilamentLibrary";
 import { GettingStarted } from "./components/GettingStarted";
@@ -79,6 +80,7 @@ import {
 import type {
   ActiveConversionOutputAction,
   AnalysisResult,
+  CmyxPaletteOption,
   ColorResolution,
   CmyxCalibrationLibraryDocument,
   CmyxCalibrationMeasurementInput,
@@ -649,6 +651,7 @@ export default function App() {
       plan: "Print Plan",
       library: "Filament Library",
       calibration: "Color Calibration",
+      reference: "Color Reference",
       run: "Print Run",
     }[activeView];
     document.title = `${viewName} | U1 3MF Color Planner`;
@@ -1424,6 +1427,101 @@ export default function App() {
     );
   };
 
+  const selectCmyxPaletteColor = (
+    selected: ColorResolution,
+    selectedOption: CmyxPaletteOption,
+  ) => {
+    const selectedIdentity =
+      selected.sourceIdentityKey ??
+      JSON.stringify([
+        selected.scopeId,
+        selected.requirementId,
+        selected.sourceMaterial,
+        selected.sourceHex,
+      ]);
+    const replacements = new Map<string, CmyxPaletteOption>();
+    const affectedScopeIds = new Set<string>();
+    for (const resolution of plan.colorResolutions) {
+      const resolutionIdentity =
+        resolution.sourceIdentityKey ??
+        JSON.stringify([
+          resolution.scopeId,
+          resolution.requirementId,
+          resolution.sourceMaterial,
+          resolution.sourceHex,
+        ]);
+      if (resolutionIdentity !== selectedIdentity) continue;
+      const option =
+        resolution.scopeId === selected.scopeId &&
+        resolution.requirementId === selected.requirementId
+          ? selectedOption
+          : resolution.paletteOptions?.find(
+              (candidate) =>
+                candidate.recipe === selectedOption.recipe &&
+                candidate.predictedHex === selectedOption.predictedHex &&
+                candidate.targetMaterial === selectedOption.targetMaterial &&
+                candidate.requiredT4SpoolId === selectedOption.requiredT4SpoolId,
+            );
+      if (!option || option.candidateId === resolution.candidateId) continue;
+      replacements.set(
+        JSON.stringify([resolution.scopeId, resolution.requirementId]),
+        option,
+      );
+      affectedScopeIds.add(resolution.scopeId);
+    }
+    const changedCount = replacements.size;
+    if (changedCount === 0) return;
+    setPlan((current) => {
+      const colorResolutions = current.colorResolutions.map((resolution) => {
+        const option = replacements.get(
+          JSON.stringify([resolution.scopeId, resolution.requirementId]),
+        );
+        if (!option) return resolution;
+        const requiresMaterialSubstitution =
+          resolution.sourceMaterial !== option.targetMaterial;
+        return {
+          ...resolution,
+          candidateId: option.candidateId,
+          targetMaterial: option.targetMaterial,
+          targetHex: option.targetHex,
+          predictedHex: option.predictedHex,
+          recipe: option.recipe,
+          deltaE00: option.deltaE00,
+          confidence: option.confidence,
+          requiredT4SpoolId: option.requiredT4SpoolId,
+          requiredT4Name: option.requiredT4Name,
+          requiredT4Hex: option.requiredT4Hex,
+          // Choosing a palette swatch is already an explicit decision. Keep a
+          // separate approval step only when the choice also changes material.
+          colorApproved: !requiresMaterialSubstitution,
+          materialApproved: false,
+          requiresMaterialSubstitution,
+        };
+      });
+      return {
+        ...current,
+        colorResolutions,
+        plates: current.plates.map((plate) =>
+          plate.printer === "U1" &&
+          (plate.scopeIds?.length ? plate.scopeIds : [plate.scopeId]).some(
+            (scopeId) => affectedScopeIds.has(scopeId),
+          )
+            ? { ...plate, strategy: "cmyx" as const }
+            : plate,
+        ),
+      };
+    });
+    setIsPlanDirty(true);
+    setColorNeedsRecalculation(true);
+    const requiresMaterialSubstitution =
+      selected.sourceMaterial !== selectedOption.targetMaterial;
+    setLiveMessage(
+      requiresMaterialSubstitution
+        ? `${selectedOption.predictedHex ?? selectedOption.targetHex} selected for ${changedCount} linked Full Spectrum ${changedCount === 1 ? "mapping" : "mappings"}. Accept the material change, then recalculate the plan.`
+        : `${selectedOption.predictedHex ?? selectedOption.targetHex} selected and accepted for ${changedCount} linked Full Spectrum ${changedCount === 1 ? "mapping" : "mappings"}. Recalculate the plan to apply this exact CMY recipe.`,
+    );
+  };
+
   const acceptMaterialSubstitution = (resolution: ColorResolution) => {
     updateColorResolution(
       resolution,
@@ -1709,6 +1807,8 @@ export default function App() {
         requestedCustomDirectPalettesEnabled,
         requestedPlanningIntent.defaultStrategy,
         requestedPlanningIntent.allowU1CrossSourceRepacking,
+        requestedPlanningIntent.dedicatedSupportSpoolId,
+        requestedPlanningIntent.dedicatedSupportUsage,
       );
       request.currentLoadout = requestedPrinterLoadout.currentLoadout.map(
         (entry) => ({ ...entry }),
@@ -2343,10 +2443,14 @@ export default function App() {
       a1MiniEnabled,
       allowU1CrossSourceRepacking:
         planningIntent.allowU1CrossSourceRepacking,
+      dedicatedSupportSpoolId: planningIntent.dedicatedSupportSpoolId,
+      dedicatedSupportUsage: planningIntent.dedicatedSupportUsage,
     }),
     [
       a1MiniEnabled,
       planningIntent.allowU1CrossSourceRepacking,
+      planningIntent.dedicatedSupportSpoolId,
+      planningIntent.dedicatedSupportUsage,
       planningIntent.defaultStrategy,
     ],
   );
@@ -2560,7 +2664,9 @@ export default function App() {
           ? "Filament Library opened."
           : view === "calibration"
             ? "Color Calibration opened."
-            : "Print Run opened.",
+            : view === "reference"
+              ? "Color Reference opened."
+              : "Print Run opened.",
     );
   };
 
@@ -2834,6 +2940,7 @@ export default function App() {
                       resolutions={plan.colorResolutions}
                       spools={plan.spools}
                       onAcceptColor={acceptColorApproximation}
+                      onSelectCmyxColor={selectCmyxPaletteColor}
                       onAcceptMaterialSubstitution={acceptMaterialSubstitution}
                       onAcceptAllSameMaterial={
                         acceptAllSameMaterialApproximations
@@ -2936,6 +3043,7 @@ export default function App() {
                 onToolheadChange={changeToolhead}
                 onSpoolChange={changeSpool}
                 onMaterialSubstitutionChange={changeDirectMaterialSubstitution}
+                onSelectCmyxColor={selectCmyxPaletteColor}
                 a1MiniEnabled={a1MiniEnabled}
                 onPrinterPreferenceChange={changePrinterPreference}
                 onAddSpool={addSpool}
@@ -3114,6 +3222,10 @@ export default function App() {
               onSetPlanningGeometry={saveCalibrationPlanningGeometry}
             />
           )}
+        </main>
+      ) : activeView === "reference" ? (
+        <main id="main-content" className="standalone-workspace" tabIndex={-1}>
+          <CmyxReference />
         </main>
       ) : (
         <main id="main-content" className="standalone-workspace" tabIndex={-1}>

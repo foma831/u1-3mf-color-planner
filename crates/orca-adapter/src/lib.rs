@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+mod pva_profile;
 mod u1_direct;
 mod u1_full_spectrum;
 mod u1_full_spectrum_gui_round_trip;
@@ -22,7 +23,7 @@ pub use u1_full_spectrum::*;
 pub use u1_full_spectrum_gui_round_trip::*;
 pub use u1_gui_round_trip::*;
 
-pub const SUPPORTED_ORCA_VERSION: &str = "2.3.5";
+pub const SUPPORTED_ORCA_VERSION: &str = "2.3.6";
 pub const FULL_SPECTRUM_PROFILE_NAME: &str = "Snapmaker PLA Full Spectrum @U1 0.4 nozzle";
 pub const U1_MACHINE_PROFILE_NAME: &str = "Snapmaker U1 (0.4 nozzle)";
 pub const FULL_SPECTRUM_SETTING_ID: &str = "1195313935011";
@@ -30,7 +31,7 @@ pub const FULL_SPECTRUM_PROFILE_SHA256: &str =
     "a69fef730be5386a157ace8e1c50518bb2b308eb5061cdf7f468454e9a4070d6";
 pub const U1_MACHINE_SETTING_ID: &str = "SM_U1";
 pub const U1_MACHINE_PROFILE_SHA256: &str =
-    "67047c9fd6d2e935c1e0b84afaf6a674698e326a7785d7c6febd47f3d7d3e765";
+    "6c14f708c0268ec93867a0f090ec2167616cf9cfc5d1b3546454293ae03f58c7";
 pub const FULL_SPECTRUM_PROCESS_PROFILE_NAME: &str = "0.08 Extra Fine @Snapmaker U1 (0.4 nozzle)";
 pub const FULL_SPECTRUM_PROCESS_SETTING_ID: &str = "GP001";
 pub const FULL_SPECTRUM_PROCESS_PROFILE_SHA256: &str =
@@ -764,7 +765,7 @@ mod tests {
             Path::new("Snapmaker Orca"),
             executable,
             resources,
-            "2.3.6".to_owned(),
+            "2.3.4".to_owned(),
         )
         .unwrap();
         assert_eq!(

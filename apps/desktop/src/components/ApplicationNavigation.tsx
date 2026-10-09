@@ -1,6 +1,11 @@
-import { LibraryBig, ListTree, Pipette, PlayCircle } from "lucide-react";
+import { LibraryBig, ListTree, Palette, Pipette, PlayCircle } from "lucide-react";
 
-export type ApplicationView = "plan" | "library" | "calibration" | "run";
+export type ApplicationView =
+  | "plan"
+  | "library"
+  | "calibration"
+  | "reference"
+  | "run";
 
 interface ApplicationNavigationProps {
   activeView: ApplicationView;
@@ -12,6 +17,7 @@ const items = [
   { id: "plan", label: "Print Plan", icon: ListTree },
   { id: "library", label: "Filament Library", icon: LibraryBig },
   { id: "calibration", label: "Color Calibration", icon: Pipette },
+  { id: "reference", label: "Color Reference", icon: Palette },
   { id: "run", label: "Print Run", icon: PlayCircle },
 ] as const;
 

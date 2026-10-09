@@ -213,10 +213,17 @@ export function DirectSpoolEditor({
                 <div>
                   <strong>{mapping.sourceName}</strong>
                   <span>
-                    {physicalIdentityUseCounts.get(mapping.physicalIdentityId)! > 1
-                      ? "Shared physical identity"
-                      : "Physical identity"}{" "}
-                    {physicalIdentityLabels.get(mapping.physicalIdentityId)} ·{" "}
+                    {mapping.dedicatedSupport
+                      ? "Dedicated support"
+                      : physicalIdentityUseCounts.get(mapping.physicalIdentityId)! >
+                          1
+                        ? "Shared physical identity"
+                        : "Physical identity"}
+                    {mapping.dedicatedSupport ? "" : " "}
+                    {mapping.dedicatedSupport
+                      ? null
+                      : physicalIdentityLabels.get(mapping.physicalIdentityId)}
+                    {mapping.dedicatedSupport ? "" : " · "}
                     {mapping.sourceSlot} · {mapping.sourceMaterial} · {mapping.usedBy}
                   </span>
                 </div>
@@ -245,6 +252,7 @@ export function DirectSpoolEditor({
                     id={toolheadId}
                     name={`toolhead-${mapping.id}`}
                     value={mapping.directToolhead}
+                    disabled={mapping.dedicatedSupport}
                     onChange={(event) =>
                       onToolheadChange(mapping.id, event.target.value as ToolheadId)
                     }
@@ -275,6 +283,7 @@ export function DirectSpoolEditor({
                       id={spoolId}
                       name={`spool-${mapping.id}`}
                       value={spool ? mapping.selectedSpoolId : ""}
+                      disabled={mapping.dedicatedSupport}
                       onChange={(event) =>
                         onSpoolChange(mapping.id, event.target.value)
                       }

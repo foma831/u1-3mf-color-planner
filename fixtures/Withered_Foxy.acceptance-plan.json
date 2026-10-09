@@ -12,7 +12,7 @@
   },
   "planningOptions": {
     "path": "fixtures/full-spectrum-foxy-qualification-options.json",
-    "sha256": "3645770861d81bb21bda95d6ae6e7b7400ae7b74959f089685d5bf7006a112be"
+    "sha256": "1b78a4c8566c71e19f42a11bfe826e5fa39228cdc59dcaf3ba8b460417a567f3"
   },
   "inventory": {
     "catalogPath": "assets/material-catalog.v1.json",
@@ -95,9 +95,9 @@
   },
   "targetInstallations": {
     "SnapmakerOrca": {
-      "version": "2.3.5",
+      "version": "2.3.6",
       "directAdapterStatus": "qualified",
-      "fullSpectrumAdapterStatus": "pending_gui_round_trip_and_physical_coupon"
+      "fullSpectrumAdapterStatus": "qualified_native_project_structure_and_gui_round_trip"
     },
     "BambuStudio": {
       "version": "02.02.00.85",

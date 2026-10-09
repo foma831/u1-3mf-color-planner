@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 2,
+  "adapterId": "snapmaker-orca/2.3.6/u1-0.4-full-spectrum",
+  "applicationVersion": "2.3.6",
+  "executableSha256": "553a02a813e031ef2ea49616dc0edb9d0a4f0cc077b99c70fc30d5060dea3658",
+  "writerQualificationScope": "native_project_structure_and_gui_round_trip",
+  "recipeAccuracyPolicy": "per_user_measured_calibration_or_explicit_color_approval",
+  "status": "qualified",
+  "qualification": {
+    "fixtureName": "Withered_Foxy.3mf",
+    "sourceFixtureSha256": "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81",
+    "writerCandidateSha256": "4ead4a16440b216e7f87d705a88a4a4a0126270ea79297a83e8692ee615c3dbe",
+    "firstGuiSavedSha256": "529cbd868a1d7c10fb07ae82fe7ebb46a34f2cae824f05b16bb3b9cbe2f8042a",
+    "reopenedGuiSavedSha256": "22d22c24a4f7ba2be22f08608e616f381b03368153134c4d71945b154e89b9e2",
+    "opened": true,
+    "sliced": true,
+    "saved": true,
+    "closed": true,
+    "reopened": true,
+    "resliced": true,
+    "resaved": true,
+    "qualifiedAtUtc": "2026-09-07T19:11:28Z",
+    "profiles": [
+      {
+        "relativePath": "filament/Snapmaker PLA Full Spectrum @U1 0.4 nozzle.json",
+        "sha256": "a69fef730be5386a157ace8e1c50518bb2b308eb5061cdf7f468454e9a4070d6"
+      },
+      {
+        "relativePath": "filament/Snapmaker PLA Basic @U1 base.json",
+        "sha256": "2673ec3925d776d2d4228e3d4fd9414a2db40ef36a56d5dd462bf1055a503567"
+      },
+      {
+        "relativePath": "machine/Snapmaker U1 (0.4 nozzle).json",
+        "sha256": "6c14f708c0268ec93867a0f090ec2167616cf9cfc5d1b3546454293ae03f58c7"
+      },
+      {
+        "relativePath": "machine/fdm_U1.json",
+        "sha256": "ff0724000b1436fcc3d77ffa74bb623a9b322474fc20c8a8d5a26ee164077046"
+      },
+      {
+        "relativePath": "machine/fdm_toolchanger.json",
+        "sha256": "b2ee2d2c31a26ddee7b0c8bd84c58934d9c01e84e1b8f7ae45e14acfd1f7b52a"
+      },
+      {
+        "relativePath": "machine/fdm_klipper.json",
+        "sha256": "78dd750211347543368a8a0f136441ef7e23b3a4a09a9e33a370c91dbda273b9"
+      },
+      {
+        "relativePath": "process/0.08 Extra Fine @Snapmaker U1 (0.4 nozzle).json",
+        "sha256": "dfb5bf5ce28e4d0b26f98dbb6b9bd8de72c705e84419ea6166851135ff0181c9"
+      },
+      {
+        "relativePath": "process/fdm_process_U1_0.08.json",
+        "sha256": "018d613040ac01d46e39914ee5638d2a0a42081de540b7d37a44315a6b187737"
+      },
+      {
+        "relativePath": "process/fdm_process_U1_common.json",
+        "sha256": "43fba9fe359864b265ffa8682cf404c2b935d12164ffe3d0048e5dcb0691db74"
+      },
+      {
+        "relativePath": "process/fdm_process_U1.json",
+        "sha256": "66e9e51c4bd04cbbec49fa1a3a043bc3c6e329396c2b38a18db5a66b6e72b4e2"
+      },
+      {
+        "relativePath": "filament/fdm_filament_common_generic.json",
+        "sha256": "f2e3be440a33d2642a84d0b4feb13359c3f27950b28db3288096ea897fa655c4"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pla_generic.json",
+        "sha256": "d3cb6456d9a15923d732d5ba0ceaaa7ebeeb6b569cbe49bb13383fdbf425f90c"
+      },
+      {
+        "relativePath": "filament/Generic PLA @base.json",
+        "sha256": "b429b410382b1b9aff795ccb1c9b38c678cb230145a9a524093be678f2ef12e1"
+      },
+      {
+        "relativePath": "filament/Generic PLA.json",
+        "sha256": "1b67ca20832ec5f72e90d8f5ec76e17bc1c150e45fed1d833412310e8a4378ab"
+      },
+      {
+        "relativePath": "filament/fdm_filament_common_poly.json",
+        "sha256": "e2982eef7fea0fb2656d28d5543e81b9bf8305d5edce22075edb796efb0896de"
+      },
+      {
+        "relativePath": "filament/fdm_filament_pla_poly.json",
+        "sha256": "082364ea8040b473480fb2563a1ca1648b2dd12d8770e01811551f58a01bda81"
+      },
+      {
+        "relativePath": "filament/Polymaker PLA @U1 base.json",
+        "sha256": "c8cfe138966bffcbde9bc881e31b13524aa30f0f08a0a58f1760185c3ca32671"
+      },
+      {
+        "relativePath": "filament/Polymaker General PLA Family @U1.json",
+        "sha256": "32e3cc2b753288acdb5199596e10c0a9e72c5c7aa865c0bfbfcbe59fad8c4ce0"
+      }
+    ],
+    "checks": {
+      "fullSpectrumProfileLoaded": true,
+      "processProfileLoaded": true,
+      "fourPhysicalSlotsVerified": true,
+      "mixedDefinitionsStable": true,
+      "virtualAssignmentsStable": true,
+      "solidT4RegionStable": true,
+      "plateMapsStable": true,
+      "subdivisionContractStable": true,
+      "primeTowerStable": true,
+      "sliceCompletedWithoutRepairWarning": true,
+      "noIncompatibleProfileWarning": true,
+      "noMissingProfileWarning": true,
+      "noCustomProfileWarning": true,
+      "firstGuiSavedStructurallyValid": true,
+      "reopenedGuiSavedStructurallyValid": true,
+      "noEmbeddedPresetsAfterFirstSave": true,
+      "noEmbeddedPresetsAfterReopenedSave": true,
+      "geometryAndPlacementsStable": true
+    }
+  },
+  "note": "The six-plate Full Spectrum candidate completed open, slice-all, save, full close, reopen, a forced representative-plate re-slice after a no-op layer-height round trip, and re-save in the exact Snapmaker Orca 2.3.6 installation. The three-file semantic validator returned isValid=true and confirmed stable virtual assignments, solid T4 regions, geometry, placements, plate membership, and native process contracts. This evidence qualifies native project structure and GUI interoperability only; physical color accuracy still requires per-user measured calibration for the exact CMY+X loadout or an explicit fingerprint-bound color approval."
+}

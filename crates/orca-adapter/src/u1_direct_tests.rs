@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn pva_diagnostic_geometry_covers_each_physical_failure_signal() {
+    let root_model = String::from_utf8(pva_diagnostic_model()).unwrap();
+    assert!(root_model.contains("/3D/Objects/pva-diagnostic.model"));
+    assert!(root_model.contains("BambuStudio-2.3.6"));
+
+    let model = String::from_utf8(pva_diagnostic_object_model()).unwrap();
+    assert_eq!(model.matches("<vertex ").count(), 88);
+    assert_eq!(model.matches("<triangle ").count(), 132);
+    assert!(model.contains("PVA drying and stringing diagnostic"));
+    assert!(model.contains("x=\"166.000\""));
+    assert!(model.contains("z=\"16.000\""));
+
+    let settings = String::from_utf8(pva_diagnostic_model_settings()).unwrap();
+    assert!(settings.contains("key=\"extruder\" value=\"4\""));
+    assert!(settings.contains("<part id=\"1\" subtype=\"normal_part\">"));
+    assert!(settings.contains("key=\"identify_id\" value=\"91004001\""));
+}
+
+#[test]
+fn pva_diagnostic_disables_the_unnecessary_prime_tower() {
+    let settings = serde_json::to_vec(&serde_json::json!({
+        "enable_prime_tower": "1",
+        "layer_height": "0.2"
+    }))
+    .unwrap();
+    let configured = configure_pva_diagnostic_project_settings(settings).unwrap();
+    let configured: serde_json::Value = serde_json::from_slice(&configured).unwrap();
+    assert_eq!(configured["enable_prime_tower"], "0");
+    assert_eq!(configured["layer_height"], "0.2");
+}
+
 use quick_xml::events::BytesStart;
 use serde_json::json;
 use std::io::{Cursor, Read};
@@ -11,6 +43,34 @@ use u1_planner::{
     SourceToActualMapping, ToolheadSlotState, U1Loadout,
 };
 use u1_three_mf::{AxisAlignedBounds, ColorClassification, PaintNode, PlateAnalysis};
+
+#[test]
+fn full_spectrum_footprints_allow_planner_epsilon_at_touching_edges() {
+    // Reproduces the Springtrap cross-source packing boundary: the first
+    // rectangle's calculated right edge differs from the second rectangle's
+    // left edge only by floating-point roundoff (~1.4e-14 mm).
+    let touching = vec![
+        (
+            "source-build-item-18".to_owned(),
+            [86.66644321615406, 1.0, 125.07314407715405, 75.022698845],
+        ),
+        (
+            "source-build-item-20".to_owned(),
+            [125.07314407715404, 1.0, 147.39017595565064, 56.354063076736],
+        ),
+    ];
+
+    validate_full_spectrum_footprints("plate-001", &touching, None)
+        .expect("touching planner envelopes must not be treated as overlapping");
+
+    let overlapping = vec![
+        ("left".to_owned(), [0.0, 0.0, 10.0, 10.0]),
+        ("right".to_owned(), [9.999, 0.0, 20.0, 10.0]),
+    ];
+    let error = validate_full_spectrum_footprints("plate-001", &overlapping, None)
+        .expect_err("a physical overlap beyond the shared epsilon must still fail");
+    assert!(error.to_string().contains("units left and right overlap"));
+}
 
 fn color(red: u8, green: u8, blue: u8) -> RgbColor {
     RgbColor::new(red, green, blue)
@@ -73,6 +133,7 @@ fn planning_input() -> PlanningInput {
             units: Vec::new(),
             strategy: ScopeStrategy::DirectSpools,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -209,6 +270,7 @@ fn canonical_fingerprint_is_stable_and_binds_input_and_result() {
             source_profile_ids: vec!["source-profile".into()],
             cmyx_candidate: manual_review_candidate(),
             best_effort_cmyx_candidate: None,
+            cmyx_palette_candidates: Vec::new(),
             direct_candidates: Vec::new(),
         });
     let without_calibration_fingerprint =
@@ -639,6 +701,7 @@ fn physical_spools_resolve_only_to_qualified_profile_families() {
             "poly-id",
         ),
         ("Generic PETG.json", "Generic PETG", "petg-id"),
+        ("Snapmaker PVA @U1.json", "Snapmaker PVA @U1", "pva-id"),
     ] {
         fs::write(
             directory.join(file),
@@ -697,6 +760,50 @@ fn physical_spools_resolve_only_to_qualified_profile_families() {
     .unwrap();
     assert_eq!(petg.name, "Generic PETG");
     assert_eq!(petg.material, "PETG");
+
+    let reli3d = resolve_physical_profile(
+        &context,
+        Some(&spool(
+            "reli3d-pva",
+            "Reli3D PVA",
+            Material::Pva,
+            color(225, 214, 120),
+            Some(RELI3D_PVA_PROFILE_NAME),
+        )),
+    )
+    .unwrap();
+    assert_eq!(reli3d.name, RELI3D_PVA_PROFILE_NAME);
+    assert_eq!(reli3d.setting_id, crate::pva_profile::RELI3D_PVA_SETTING_ID);
+    assert_eq!(
+        reli3d.filament_id,
+        crate::pva_profile::RELI3D_PVA_FILAMENT_ID
+    );
+    assert_eq!(reli3d.resolved["nozzle_temperature"], json!(["210"]));
+    assert_eq!(
+        reli3d.resolved["nozzle_temperature_range_high"],
+        json!(["230"])
+    );
+    assert_eq!(
+        reli3d.resolved["filament_max_volumetric_speed"],
+        json!(["3"])
+    );
+
+    let unspecified_pva = resolve_physical_profile(
+        &context,
+        Some(&spool(
+            "unknown-pva",
+            "Unknown PVA",
+            Material::Pva,
+            color(225, 214, 120),
+            None,
+        )),
+    )
+    .unwrap_err();
+    assert!(
+        unspecified_pva
+            .to_string()
+            .contains("no qualified U1 profile")
+    );
 
     let unsupported = resolve_physical_profile(
         &context,
@@ -873,6 +980,37 @@ fn project_settings_keep_t1_through_t4_profile_and_color_order() {
             "",
             ""
         ])
+    );
+
+    let mut pva_profiles = profiles.clone();
+    pva_profiles[3].name = "Snapmaker PVA @U1".into();
+    pva_profiles[3].setting_id = "41452139080".into();
+    pva_profiles[3].filament_id = "31046369800".into();
+    pva_profiles[3].material = "PVA".into();
+    let pva_settings = build_project_settings_from_profiles(
+        resolve_profile_chain(temporary.path(), MACHINE_PATH).unwrap(),
+        resolve_profile_chain(temporary.path(), DIRECT_PROCESS_PATH).unwrap(),
+        &pva_profiles,
+        &plates,
+        &source_process,
+        Some(&DedicatedSupportMaterial {
+            spool_id: "support-pva".into(),
+            usage: SupportMaterialUsage::InterfaceOnly,
+            toolhead: Toolhead::T4,
+        }),
+    )
+    .unwrap();
+    let pva_settings: Value = serde_json::from_slice(&pva_settings).unwrap();
+    assert_eq!(pva_settings["enable_support"], json!("1"));
+    assert_eq!(pva_settings["support_filament"], json!("0"));
+    assert_eq!(pva_settings["support_interface_filament"], json!("4"));
+    assert_eq!(pva_settings["support_top_z_distance"], json!("0"));
+    assert_eq!(pva_settings["support_bottom_z_distance"], json!("0"));
+    assert_eq!(pva_settings["support_interface_top_layers"], json!("3"));
+    assert_eq!(pva_settings["support_interface_speed"], json!("30"));
+    assert_eq!(
+        pva_settings["filament_type"],
+        json!(["PLA", "PETG", "PLA", "PVA"])
     );
 
     let mut invalid_gap = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes).unwrap();
@@ -1514,6 +1652,7 @@ fn full_spectrum_substrate_plan_accepts_one_target_from_two_source_plates() {
         calibration_fingerprint: "fixture".into(),
         process: crate::u1_full_spectrum_process_contract(),
         support: u1_three_mf::SupportInformation::default(),
+        dedicated_support: None,
         recipe_table: crate::U1FullSpectrumRecipeTable {
             schema_version: crate::U1_FULL_SPECTRUM_SCHEMA_VERSION,
             physical_filament_count: 4,

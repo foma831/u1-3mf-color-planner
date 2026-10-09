@@ -2,6 +2,10 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 
 import type { NewPhysicalSpoolInput } from "../types";
+import {
+  QUALIFIED_PVA_PROFILES,
+  RELI3D_PVA_PROFILE,
+} from "../services/filament-profiles";
 
 interface SpoolInventoryFormProps {
   idPrefix: string;
@@ -262,7 +266,7 @@ export function SpoolInventoryForm({
                   Material
                   <RequiredMark />
                 </legend>
-                {(["PLA", "PETG"] as const).map((material) => {
+                {(["PLA", "PETG", "PVA"] as const).map((material) => {
                   const materialId = `${idPrefix}-material-${material.toLowerCase()}`;
                   return (
                     <label htmlFor={materialId} key={material}>
@@ -273,13 +277,72 @@ export function SpoolInventoryForm({
                         value={material}
                         checked={draft.material === material}
                         required
-                        onChange={() => updateDraft("material", material)}
+                        onChange={() => {
+                          setDraft((current) => {
+                            const profileIsQualifiedPva =
+                              QUALIFIED_PVA_PROFILES.includes(
+                                current.profile as (typeof QUALIFIED_PVA_PROFILES)[number],
+                              );
+                            return {
+                              ...current,
+                              material,
+                              profile:
+                                material === "PVA"
+                                  ? profileIsQualifiedPva
+                                    ? current.profile
+                                    : ""
+                                  : profileIsQualifiedPva
+                                    ? ""
+                                    : current.profile,
+                            };
+                          });
+                        }}
                       />
                       {material}
                     </label>
                   );
                 })}
               </fieldset>
+              {draft.material === "PVA" ? (
+                <div className="field spool-form-field spool-form-field--wide">
+                  <label htmlFor={profileId}>
+                    Qualified PVA profile
+                    <RequiredMark />
+                  </label>
+                  <select
+                    id={profileId}
+                    name="profile"
+                    value={draft.profile}
+                    required
+                    onChange={(event) => {
+                      const profile = event.target.value;
+                      setDraft((current) => ({
+                        ...current,
+                        profile,
+                        ...(profile === RELI3D_PVA_PROFILE
+                          ? {
+                              vendor: (current.vendor ?? "").trim() || "Reli3D",
+                              minNozzleTemperatureC: 190,
+                              maxNozzleTemperatureC: 230,
+                            }
+                          : {}),
+                      }));
+                    }}
+                  >
+                    <option value="">Choose the filament you own</option>
+                    {QUALIFIED_PVA_PROFILES.map((profile) => (
+                      <option key={profile} value={profile}>
+                        {profile}
+                      </option>
+                    ))}
+                  </select>
+                  <small>
+                    The converter uses this exact temperature and flow
+                    contract. Reli3D is limited to the 190–230 °C range printed
+                    on its packaging.
+                  </small>
+                </div>
+              ) : null}
             </div>
             <details ref={advancedDetailsRef} className="spool-form-advanced">
               <summary>
@@ -298,19 +361,21 @@ export function SpoolInventoryForm({
                     onChange={(event) => updateDraft("sku", event.target.value)}
                   />
                 </div>
-                <div className="field spool-form-field">
-                  <label htmlFor={profileId}>Profile (optional)</label>
-                  <input
-                    id={profileId}
-                    name="profile"
-                    type="text"
-                    value={draft.profile}
-                    maxLength={100}
-                    onChange={(event) =>
-                      updateDraft("profile", event.target.value)
-                    }
-                  />
-                </div>
+                {draft.material !== "PVA" ? (
+                  <div className="field spool-form-field">
+                    <label htmlFor={profileId}>Profile (optional)</label>
+                    <input
+                      id={profileId}
+                      name="profile"
+                      type="text"
+                      value={draft.profile}
+                      maxLength={100}
+                      onChange={(event) =>
+                        updateDraft("profile", event.target.value)
+                      }
+                    />
+                  </div>
+                ) : null}
                 <div className="field spool-form-field">
                   <label htmlFor={vendorId}>Vendor (optional)</label>
                   <input

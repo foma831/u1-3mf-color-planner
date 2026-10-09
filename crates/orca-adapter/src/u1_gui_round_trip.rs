@@ -1,4 +1,4 @@
-//! Semantic validation for the Snapmaker Orca 2.3.5 U1 GUI qualification loop.
+//! Semantic validation for the Snapmaker Orca 2.3.6 U1 GUI qualification loop.
 //!
 //! A normal GUI save is allowed to regenerate a narrowly versioned set of
 //! preview and slice-metadata parts. It is also allowed to renumber Orca's
@@ -29,7 +29,7 @@ const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MODEL_BYTES: u64 = 1024 * 1024 * 1024;
 const TRANSFORM_FLOAT_SCALE: f64 = 1_000_000_000.0;
-// Snapmaker Orca 2.3.5 may rebase an editable text mesh while preserving its
+// Snapmaker Orca 2.3.6 may rebase an editable text mesh while preserving its
 // world-space geometry and may rewrite mesh floats with sub-micrometre noise.
 // Ten-micrometre buckets are still twenty times finer than the qualified
 // 0.20 mm process and keep that representation-only rewrite out of the
@@ -287,7 +287,7 @@ pub fn validate_u1_gui_round_trip(
             issues.push(U1GuiRoundTripIssue {
                 code: U1GuiRoundTripIssueCode::UnsupportedU1ProjectIdentity,
                 artifact: Some(role),
-                message: "Project does not identify the exact Snapmaker Orca 2.3.5 U1 Direct machine/process contract.".to_owned(),
+                message: "Project does not identify the exact Snapmaker Orca 2.3.6 U1 Direct machine/process contract.".to_owned(),
             });
         }
     }
@@ -939,7 +939,6 @@ pub(crate) struct U1SemanticModelSnapshot {
     pub(crate) plate_multiset: SemanticMultiset,
     pub(crate) geometry_resource_count: usize,
     pub(crate) semantic_sha256: String,
-    placements: Vec<PlacementPlate>,
     resources: BTreeMap<ResourceKey, RawResource>,
     resource_fingerprints: BTreeMap<ResourceKey, ResourceFingerprint>,
 }
@@ -958,7 +957,7 @@ pub(crate) fn load_u1_semantic_model_snapshot(
                 multiset
             });
     let (object_multiset, object_signatures) = semantic_objects(path, analysis, &resource_hashes)?;
-    let (plate_multiset, placements) = semantic_plates(path, analysis, &object_signatures)?;
+    let plate_multiset = semantic_plates(path, analysis, &object_signatures)?;
     let semantic_sha256 = digest_serializable(&(
         &geometry_resource_multiset,
         &object_multiset,
@@ -970,7 +969,6 @@ pub(crate) fn load_u1_semantic_model_snapshot(
         plate_multiset,
         geometry_resource_count: resource_hashes.len(),
         semantic_sha256,
-        placements,
         resources,
         resource_fingerprints: resource_hashes,
     })
@@ -2094,7 +2092,13 @@ fn semantic_objects(
                 path: object_path.clone(),
                 id: source_object_id,
             })
-            .map(|fingerprint| fingerprint.semantic_identity.clone())
+            // Use the exact content-derived resource fingerprint for the
+            // object/part bijection. Snapmaker Orca 2.3.6 adds production
+            // UUIDs while splitting a monolithic writer model into object
+            // model parts; those new process-local UUIDs are not geometry.
+            // The UUID-aware semantic identity remains available to the
+            // narrowly bounded text-mesh rebase comparison below.
+            .map(|fingerprint| fingerprint.sha256.clone())
             .ok_or_else(|| U1GuiRoundTripError::Semantic {
                 path: package_path.to_path_buf(),
                 message: format!(
@@ -2115,7 +2119,7 @@ fn semantic_objects(
                         path: part_path.clone(),
                         id: part.id,
                     })
-                    .map(|fingerprint| fingerprint.semantic_identity.clone())
+                    .map(|fingerprint| fingerprint.sha256.clone())
                     .ok_or_else(|| U1GuiRoundTripError::Semantic {
                         path: package_path.to_path_buf(),
                         message: format!(
@@ -2170,6 +2174,7 @@ struct SemanticPlateDescriptor {
     instances: Vec<SemanticInstanceDescriptor>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct PlacementInstance {
     object_sha256: String,
@@ -2178,6 +2183,7 @@ struct PlacementInstance {
     printable_bounds: Option<AxisAlignedBounds>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct PlacementPlate {
     effective_slots: Vec<u16>,
@@ -2188,9 +2194,8 @@ fn semantic_plates(
     package_path: &Path,
     analysis: &ProjectAnalysis,
     object_signatures: &ObjectSignatureById,
-) -> Result<(SemanticMultiset, Vec<PlacementPlate>), U1GuiRoundTripError> {
+) -> Result<SemanticMultiset, U1GuiRoundTripError> {
     let mut multiset = BTreeMap::new();
-    let mut placements = Vec::with_capacity(analysis.plates.len());
     for plate in &analysis.plates {
         let resolved_instances = plate
             .instances
@@ -2207,24 +2212,15 @@ fn semantic_plates(
                         ),
                     })?;
                 let transform = instance.transform.unwrap_or(Transform3mf::IDENTITY);
-                Ok((
-                    SemanticInstanceDescriptor {
-                        object_sha256: object_sha256.clone(),
-                        printable: instance.printable,
-                        transform: quantized_placement_transform(transform),
-                        printable_bounds: instance.printable_bounds.map(quantized_bounds),
-                    },
-                    PlacementInstance {
-                        object_sha256,
-                        printable: instance.printable,
-                        transform,
-                        printable_bounds: instance.printable_bounds,
-                    },
-                ))
+                Ok(SemanticInstanceDescriptor {
+                    object_sha256,
+                    printable: instance.printable,
+                    transform: quantized_placement_transform(transform),
+                    printable_bounds: instance.printable_bounds.map(quantized_bounds),
+                })
             })
             .collect::<Result<Vec<_>, U1GuiRoundTripError>>()?;
-        let (mut instances, placement_instances): (Vec<_>, Vec<_>) =
-            resolved_instances.into_iter().unzip();
+        let mut instances = resolved_instances;
         instances.sort();
         let effective_slots = sorted_unique(&plate.effective_slots);
         let signature = digest_serializable(&SemanticPlateDescriptor {
@@ -2232,24 +2228,16 @@ fn semantic_plates(
             instances,
         })?;
         *multiset.entry(signature).or_insert(0) += 1;
-        placements.push(PlacementPlate {
-            effective_slots,
-            instances: placement_instances,
-        });
     }
-    Ok((multiset, placements))
+    Ok(multiset)
 }
 
+#[cfg(test)]
 const GUI_LINEAR_TRANSFORM_TOLERANCE: f64 = 1.0e-9;
+#[cfg(test)]
 const GUI_PLACEMENT_TOLERANCE_MM: f64 = 1.0e-5;
 
-pub(crate) fn u1_semantic_placements_equivalent(
-    left: &U1SemanticModelSnapshot,
-    right: &U1SemanticModelSnapshot,
-) -> bool {
-    placement_plates_equivalent(&left.placements, &right.placements)
-}
-
+#[cfg(test)]
 fn placement_plates_equivalent(left: &[PlacementPlate], right: &[PlacementPlate]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -2261,6 +2249,7 @@ fn placement_plates_equivalent(left: &[PlacementPlate], right: &[PlacementPlate]
     })
 }
 
+#[cfg(test)]
 fn augment_plate_match(
     left_index: usize,
     left: &[PlacementPlate],
@@ -2285,11 +2274,13 @@ fn augment_plate_match(
     false
 }
 
+#[cfg(test)]
 fn placement_plates_are_compatible(left: &PlacementPlate, right: &PlacementPlate) -> bool {
     left.effective_slots == right.effective_slots
         && placement_instances_equivalent(&left.instances, &right.instances)
 }
 
+#[cfg(test)]
 fn placement_instances_equivalent(left: &[PlacementInstance], right: &[PlacementInstance]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -2301,6 +2292,7 @@ fn placement_instances_equivalent(left: &[PlacementInstance], right: &[Placement
     })
 }
 
+#[cfg(test)]
 fn augment_placement_match(
     left_index: usize,
     left: &[PlacementInstance],
@@ -2325,6 +2317,7 @@ fn augment_placement_match(
     false
 }
 
+#[cfg(test)]
 fn placement_instances_are_compatible(left: &PlacementInstance, right: &PlacementInstance) -> bool {
     left.object_sha256 == right.object_sha256
         && left.printable == right.printable
@@ -2759,7 +2752,7 @@ mod tests {
         };
         format!(
             r##"{{
- "version":"2.3.5",
+ "version":"2.3.6",
  "printer_model":"Snapmaker U1",
  "printer_variant":"0.4",
  "printer_settings_id":"Snapmaker U1 (0.4 nozzle)",

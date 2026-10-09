@@ -66,7 +66,7 @@ describe("filament library persistence", () => {
     const loaded = await loadFilamentLibrary([builtIn]);
 
     expect(loaded).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       spools: [{ ...builtIn, available: false }, userSpool],
     });
     expect(invoke).not.toHaveBeenCalled();
@@ -74,12 +74,12 @@ describe("filament library persistence", () => {
 
   it("uses the supplied catalogue only when browser storage is absent", async () => {
     await expect(loadFilamentLibrary([builtIn])).resolves.toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       spools: [builtIn],
     });
   });
 
-  it("migrates the legacy browser document to v2 without deleting its recovery copy", async () => {
+  it("migrates the legacy browser document to v3 without deleting its recovery copy", async () => {
     const legacyValue = JSON.stringify({
       schemaVersion: 1,
       spools: [
@@ -104,7 +104,7 @@ describe("filament library persistence", () => {
 
     const migrated = await loadFilamentLibrary([builtIn]);
 
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     expect(migrated.spools).toContainEqual({
       ...userSpool,
       calibrationIdentity: userSpool.id,
@@ -273,7 +273,7 @@ describe("filament library persistence", () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
       {};
     const library: FilamentLibraryDocument = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       spools: [builtIn, userSpool],
     };
     vi.mocked(invoke).mockResolvedValue(library);

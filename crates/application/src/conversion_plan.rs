@@ -1183,6 +1183,7 @@ mod tests {
             }],
             strategy: ScopeStrategy::Auto,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         };
@@ -1576,6 +1577,7 @@ mod tests {
             }],
             strategy: ScopeStrategy::Auto,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         });

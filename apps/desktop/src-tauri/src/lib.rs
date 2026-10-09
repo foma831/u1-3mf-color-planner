@@ -1490,6 +1490,7 @@ fn user_approvals_manifest(input: &PlanningInput) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "scopeId": scope.id,
                 "strategy": scope.strategy,
+                "dedicatedSupport": scope.dedicated_support,
                 "directAssignments": scope.direct_assignments,
                 "approvedCmyxFallbacks": scope.approved_cmyx_fallbacks,
                 "approvedMaterialSubstitutions": scope.approved_material_substitutions,
@@ -6929,6 +6930,7 @@ mod tests {
                 units: vec![unit("unit-a", "source-a"), unit("unit-b", "source-b")],
                 strategy: u1_planner::ScopeStrategy::Auto,
                 direct_assignments: Vec::new(),
+                dedicated_support: None,
                 approved_cmyx_fallbacks: Vec::new(),
                 approved_material_substitutions: Vec::new(),
             }],

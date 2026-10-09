@@ -10,8 +10,9 @@ use u1_application::built_in_spool_inventory;
 use u1_planner::{Material, RgbColor, Spool};
 use uuid::Uuid;
 
-pub const FILAMENT_LIBRARY_SCHEMA_VERSION: u32 = 2;
-const FILAMENT_LIBRARY_FILE_NAME: &str = "filament-library-v2.json";
+pub const FILAMENT_LIBRARY_SCHEMA_VERSION: u32 = 3;
+const FILAMENT_LIBRARY_FILE_NAME: &str = "filament-library-v3.json";
+const LEGACY_V2_FILAMENT_LIBRARY_FILE_NAME: &str = "filament-library-v2.json";
 const LEGACY_FILAMENT_LIBRARY_FILE_NAME: &str = "filament-library-v1.json";
 const MAX_LIBRARY_BYTES: usize = 1024 * 1024;
 const MAX_LIBRARY_SPOOLS: usize = 512;
@@ -162,12 +163,17 @@ pub fn load_for_app(app: &tauri::AppHandle) -> Result<FilamentLibraryView, Strin
         return load_from_path(&path);
     }
 
-    let legacy_path = legacy_library_path(app)?;
+    let legacy_v2_path = legacy_v2_library_path(app)?;
+    let legacy_path = if legacy_v2_path.exists() {
+        legacy_v2_path
+    } else {
+        legacy_library_path(app)?
+    };
     if !legacy_path.exists() {
         return load_from_path(&path);
     }
 
-    // Publish the migrated v2 document atomically and leave the v1 file in
+    // Publish the migrated v3 document atomically and leave the legacy file in
     // place as a recovery copy. A failed migration therefore cannot destroy
     // the user's existing catalogue.
     let migrated = load_from_path(&legacy_path)?;
@@ -192,6 +198,13 @@ fn legacy_library_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|directory| directory.join(LEGACY_FILAMENT_LIBRARY_FILE_NAME))
+        .map_err(|error| format!("Failed to resolve the application data directory: {error}"))
+}
+
+fn legacy_v2_library_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(LEGACY_V2_FILAMENT_LIBRARY_FILE_NAME))
         .map_err(|error| format!("Failed to resolve the application data directory: {error}"))
 }
 
@@ -319,9 +332,12 @@ fn sync_parent_directory(_parent: &Path) -> Result<(), String> {
 }
 
 fn normalize_library(library: FilamentLibraryView) -> Result<FilamentLibraryView, String> {
-    if !matches!(library.schema_version, 1 | FILAMENT_LIBRARY_SCHEMA_VERSION) {
+    if !matches!(
+        library.schema_version,
+        1 | 2 | FILAMENT_LIBRARY_SCHEMA_VERSION
+    ) {
         return Err(format!(
-            "Unsupported filament library schema version {}; expected 1 or {}.",
+            "Unsupported filament library schema version {}; expected 1, 2, or {}.",
             library.schema_version, FILAMENT_LIBRARY_SCHEMA_VERSION
         ));
     }
@@ -535,8 +551,9 @@ fn parse_material(value: &str) -> Result<Material, String> {
     match value.trim().to_ascii_uppercase().as_str() {
         "PLA" => Ok(Material::Pla),
         "PETG" => Ok(Material::Petg),
+        "PVA" => Ok(Material::Pva),
         _ => Err(format!(
-            "Unsupported spool material '{value}'; the desktop inventory currently accepts PLA or PETG."
+            "Unsupported spool material '{value}'; the desktop inventory currently accepts PLA, PETG, or PVA."
         )),
     }
 }
@@ -545,6 +562,7 @@ fn material_name(material: &Material) -> Option<&'static str> {
     match material {
         Material::Pla => Some("PLA"),
         Material::Petg => Some("PETG"),
+        Material::Pva => Some("PVA"),
         Material::Abs | Material::Asa | Material::Tpu | Material::Other(_) => None,
     }
 }
@@ -707,7 +725,7 @@ mod tests {
     #[test]
     fn rejects_schema_duplicates_reserved_ids_and_unknown_fields() {
         let invalid_version = normalize_library(FilamentLibraryView {
-            schema_version: 3,
+            schema_version: 4,
             spools: Vec::new(),
         })
         .unwrap_err();
@@ -773,7 +791,7 @@ mod tests {
             .iter()
             .find(|spool| spool.id == "workshop-red")
             .unwrap();
-        assert_eq!(migrated.schema_version, 2);
+        assert_eq!(migrated.schema_version, 3);
         assert_eq!(user.calibration_identity, "workshop-red");
         assert_eq!(user.sku, "RED-01");
         assert_eq!(user.profile, "Generic PETG");
@@ -782,7 +800,7 @@ mod tests {
         save_to_path(&current_path, migrated).unwrap();
         assert_eq!(fs::read(&legacy_path).unwrap(), legacy);
         let published = load_from_path(&current_path).unwrap();
-        assert_eq!(published.schema_version, 2);
+        assert_eq!(published.schema_version, 3);
         assert!(published.spools.iter().any(|spool| {
             spool.id == "workshop-red"
                 && spool.calibration_identity == "workshop-red"

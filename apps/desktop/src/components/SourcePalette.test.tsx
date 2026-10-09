@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createDemoPlan } from "../data/mock-plan";
-import type { PlatePlan, SourceColor } from "../types";
+import type { ColorResolution, PlatePlan, SourceColor } from "../types";
 import { SourcePaletteDetails, SourcePaletteSummary } from "./SourcePalette";
 import { StrategyComparison } from "./StrategyComparison";
 
@@ -180,5 +180,79 @@ describe("source palette presentation", () => {
         /Role-separated source pairs .* share one physical spool/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("changes a Full Spectrum recipe from the centralized source palette", () => {
+    const plate = demoPlate({
+      scopeId: "plate-7",
+      scopeIds: ["plate-7"],
+      sourceColors: [
+        { sourceSlots: ["F4"], sourceMaterial: "PLA", sourceHex: "#354334" },
+      ],
+      logicalColorCount: 1,
+      effectivePairCount: 1,
+    });
+    const cyanOption = {
+      candidateId: "candidate-cyan",
+      targetMaterial: "PLA" as const,
+      targetHex: "#354334",
+      predictedHex: "#08ABFB",
+      recipe: "Solid T1",
+      deltaE00: 31.2,
+      confidence: "Nominal" as const,
+      requiredT4SpoolId: null,
+      requiredT4Name: null,
+      requiredT4Hex: null,
+    };
+    const resolution: ColorResolution = {
+      scopeId: "plate-7",
+      scopeName: "Plate 7",
+      requirementId: "plate-7-requirement-1",
+      sourceIdentityKey: "green-model",
+      candidateId: "candidate-pink",
+      sourceMaterial: "PLA",
+      sourceHex: "#354334",
+      targetMaterial: "PLA",
+      targetHex: "#354334",
+      predictedHex: "#CD54A3",
+      recipe: "Ratio T1·T2·T2",
+      deltaE00: 42.5,
+      confidence: "Nominal",
+      requiredT4SpoolId: null,
+      requiredT4Name: null,
+      requiredT4Hex: null,
+      colorApproved: true,
+      materialApproved: false,
+      requiresMaterialSubstitution: false,
+      canAddDedicatedSpool: true,
+      recommendation: "Review the color.",
+      paletteOptions: [
+        {
+          ...cyanOption,
+          candidateId: "candidate-pink",
+          predictedHex: "#CD54A3",
+          recipe: "Ratio T1·T2·T2",
+          deltaE00: 42.5,
+        },
+        cyanOption,
+      ],
+    };
+    const onSelectCmyxColor = vi.fn();
+
+    render(
+      <SourcePaletteDetails
+        plate={plate}
+        resolutions={[resolution]}
+        onSelectCmyxColor={onSelectCmyxColor}
+      />,
+    );
+
+    expect(screen.getByText("Current Full Spectrum result")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: /#08ABFB, Solid T1, color difference 31.2/i,
+      }),
+    );
+    expect(onSelectCmyxColor).toHaveBeenCalledWith(resolution, cyanOption);
   });
 });

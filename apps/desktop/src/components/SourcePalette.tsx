@@ -1,6 +1,12 @@
 import { Info } from "lucide-react";
 
-import type { PlatePlan, SourceColor } from "../types";
+import type {
+  CmyxPaletteOption,
+  ColorResolution,
+  PlatePlan,
+  SourceColor,
+} from "../types";
+import { CmyxPalettePicker } from "./CmyxPalettePicker";
 import { ColorSwatch } from "./ColorSwatch";
 
 function fallbackSourceColors(plate: PlatePlan): SourceColor[] {
@@ -74,7 +80,20 @@ export function SourcePaletteSummary({ plate }: { plate: PlatePlan }) {
   );
 }
 
-export function SourcePaletteDetails({ plate }: { plate: PlatePlan }) {
+interface SourcePaletteDetailsProps {
+  plate: PlatePlan;
+  resolutions?: ColorResolution[];
+  onSelectCmyxColor?: (
+    resolution: ColorResolution,
+    option: CmyxPaletteOption,
+  ) => void;
+}
+
+export function SourcePaletteDetails({
+  plate,
+  resolutions = [],
+  onSelectCmyxColor,
+}: SourcePaletteDetailsProps) {
   const colors = fallbackSourceColors(plate);
   const { visualColorCount, effectivePairCount, directPairCount } = paletteCounts(
     plate,
@@ -99,16 +118,61 @@ export function SourcePaletteDetails({ plate }: { plate: PlatePlan }) {
 
       {colors.length ? (
         <ul className="source-palette-details__list">
-          {colors.map((color, index) => (
-            <li key={`${color.sourceMaterial}-${color.sourceHex}-${index}`}>
-              <ColorSwatch hex={color.sourceHex} size="large" />
-              <span>
-                <strong>{color.sourceSlots.join(", ") || "Unknown source slot"}</strong>
-                <small>{color.sourceMaterial}</small>
-              </span>
-              <code>{color.sourceHex}</code>
-            </li>
-          ))}
+          {colors.map((color, index) => {
+            const scopeIds = new Set(
+              plate.scopeIds?.length ? plate.scopeIds : [plate.scopeId],
+            );
+            const matching = resolutions.filter(
+              (resolution) =>
+                scopeIds.has(resolution.scopeId) &&
+                resolution.sourceMaterial === color.sourceMaterial &&
+                resolution.sourceHex.toUpperCase() === color.sourceHex.toUpperCase(),
+            );
+            const unique = [
+              ...new Map(
+                matching.map((resolution) => [
+                  resolution.sourceIdentityKey ??
+                    `${resolution.scopeId}:${resolution.requirementId}`,
+                  resolution,
+                ]),
+              ).values(),
+            ];
+            return (
+              <li key={`${color.sourceMaterial}-${color.sourceHex}-${index}`}>
+                <ColorSwatch hex={color.sourceHex} size="large" />
+                <span>
+                  <strong>
+                    {color.sourceSlots.join(", ") || "Unknown source slot"}
+                  </strong>
+                  <small>{color.sourceMaterial}</small>
+                </span>
+                <code>{color.sourceHex}</code>
+                {onSelectCmyxColor
+                  ? unique.map((resolution) => (
+                      <div
+                        className="source-palette-details__cmyx"
+                        key={
+                          resolution.sourceIdentityKey ??
+                          `${resolution.scopeId}:${resolution.requirementId}`
+                        }
+                      >
+                        <span>
+                          <small>Current Full Spectrum result</small>
+                          <strong>
+                            {resolution.predictedHex ?? resolution.targetHex}
+                          </strong>
+                        </span>
+                        <CmyxPalettePicker
+                          compact
+                          resolution={resolution}
+                          onSelect={onSelectCmyxColor}
+                        />
+                      </div>
+                    ))
+                  : null}
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <p className="source-palette-details__empty">

@@ -1,4 +1,4 @@
-//! Clean-room Snapmaker Orca 2.3.5 Full Spectrum metadata adapter.
+//! Clean-room Snapmaker Orca 2.3.6 Full Spectrum metadata adapter.
 //!
 //! This module owns the versioned virtual-filament contract only. Geometry
 //! selection and translation are intentionally supplied by the common 3MF
@@ -17,10 +17,11 @@ use std::io::{self, BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use u1_planner::{
-    CmyxRecipe, ColorConfidence, ColorStrategy, FullSpectrumMode, FullSpectrumProcessCompatibility,
-    FullSpectrumSubdivisionPolicy, Material, PackingStatus, PlannedBatch, PlannedJob, PlannedPlate,
-    PlanningInput, PlanningResult, Printer, PrinterLoadout, RgbColor, ScopedUnitRef,
-    SourceToActualMapping, Spool, Toolhead, ToolheadSlotState, U1Loadout,
+    CmyxRecipe, ColorConfidence, ColorStrategy, DedicatedSupportMaterial, FullSpectrumMode,
+    FullSpectrumProcessCompatibility, FullSpectrumSubdivisionPolicy, Material, PackingStatus,
+    PlannedBatch, PlannedJob, PlannedPlate, PlanningInput, PlanningResult, Printer, PrinterLoadout,
+    RgbColor, ScopedUnitRef, SourceToActualMapping, Spool, SupportMaterialUsage, Toolhead,
+    ToolheadSlotState, U1Loadout,
 };
 use u1_three_mf::{
     AnalysisLimits, ExpectedSourceIdentity, OpcPackageWriter, StagedPackageValidationError,
@@ -29,6 +30,10 @@ use u1_three_mf::{
 };
 use zip::ZipArchive;
 
+use crate::pva_profile::{
+    RELI3D_PVA_FILAMENT_ID, RELI3D_PVA_PROFILE_NAME, RELI3D_PVA_SETTING_ID,
+    apply_reli3d_pva_profile,
+};
 use crate::{
     Compatibility, FULL_SPECTRUM_FILAMENT_BASE_SHA256, FULL_SPECTRUM_PROCESS_BASE_SHA256,
     FULL_SPECTRUM_PROCESS_PROFILE_NAME, FULL_SPECTRUM_PROCESS_PROFILE_SHA256,
@@ -39,7 +44,7 @@ use crate::{
     U1_PROCESS_BASE_SHA256, U1_PROCESS_COMMON_SHA256, inspect_macos_application,
 };
 
-pub const U1_FULL_SPECTRUM_ADAPTER_ID: &str = "snapmaker-orca/2.3.5/u1-0.4-full-spectrum";
+pub const U1_FULL_SPECTRUM_ADAPTER_ID: &str = "snapmaker-orca/2.3.6/u1-0.4-full-spectrum";
 pub const U1_FULL_SPECTRUM_SCHEMA_VERSION: u32 = 1;
 pub const U1_FULL_SPECTRUM_PHYSICAL_COUNT: u8 = 4;
 pub const U1_FULL_SPECTRUM_FIRST_VIRTUAL_ID: u8 = 5;
@@ -48,7 +53,7 @@ pub const U1_FULL_SPECTRUM_CANCELLATION_ERROR_PREFIX: &str =
     "Snapmaker U1 Full Spectrum conversion was cancelled";
 
 const U1_FULL_SPECTRUM_EXECUTABLE_SHA256: &str =
-    "4c30e59cf582dcc4f12e43741fcab2f97045e972065d465481ed3760678d0fbe";
+    "553a02a813e031ef2ea49616dc0edb9d0a4f0cc077b99c70fc30d5060dea3658";
 const U1_FULL_SPECTRUM_QUALIFICATION_FIXTURE: &str = "Withered_Foxy.3mf";
 const U1_FULL_SPECTRUM_QUALIFICATION_FIXTURE_SHA256: &str =
     "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81";
@@ -57,9 +62,9 @@ const U1_FULL_SPECTRUM_WRITER_QUALIFICATION_SCOPE: &str =
 const U1_FULL_SPECTRUM_RECIPE_ACCURACY_POLICY: &str =
     "per_user_measured_calibration_or_explicit_color_approval";
 const U1_FULL_SPECTRUM_QUALIFICATION_RECORD: &[u8] =
-    include_bytes!("../qualification/u1-full-spectrum-2.3.5.json");
+    include_bytes!("../qualification/u1-full-spectrum-2.3.6.json");
 const U1_FULL_SPECTRUM_QUALIFICATION_REPORT: &[u8] =
-    include_bytes!("../qualification/u1-full-spectrum-2.3.5-report.json");
+    include_bytes!("../qualification/u1-full-spectrum-2.3.6-report.json");
 
 const PROJECT_SETTINGS_PATH: &str = "Metadata/project_settings.config";
 const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
@@ -101,18 +106,21 @@ const GENERIC_PLA_FILAMENT_ID: &str = "GFL9922";
 const POLYMAKER_PLA_PROFILE_NAME: &str = "Polymaker General PLA Family @U1";
 const POLYMAKER_PLA_SETTING_ID: &str = "POLY_GENERAL_PLA_U1_001";
 const POLYMAKER_PLA_FILAMENT_ID: &str = "OGFL99";
+const SNAPMAKER_PVA_PROFILE_NAME: &str = "Snapmaker PVA @U1";
+const SNAPMAKER_PVA_SETTING_ID: &str = "41452139080";
+const SNAPMAKER_PVA_FILAMENT_ID: &str = "31046369800";
 const GENERIC_PLA_PROFILE_CHAIN: &[(&str, &str)] = &[
     (
         "filament/fdm_filament_common_generic.json",
-        "24e4920907489bfdeb250ba749b005c97571d7a547416989af10df502896e99d",
+        "f2e3be440a33d2642a84d0b4feb13359c3f27950b28db3288096ea897fa655c4",
     ),
     (
         "filament/fdm_filament_pla_generic.json",
-        "b815ff418638712ac57f740b5d735e231147128fcd13dc16a16c69011d3bd75a",
+        "d3cb6456d9a15923d732d5ba0ceaaa7ebeeb6b569cbe49bb13383fdbf425f90c",
     ),
     (
         "filament/Generic PLA @base.json",
-        "bfee7e83f1d76c862e36680ae3bccba55d45c88bc84bfdc489272f881fad9564",
+        "b429b410382b1b9aff795ccb1c9b38c678cb230145a9a524093be678f2ef12e1",
     ),
     (
         "filament/Generic PLA.json",
@@ -122,19 +130,37 @@ const GENERIC_PLA_PROFILE_CHAIN: &[(&str, &str)] = &[
 const POLYMAKER_PLA_PROFILE_CHAIN: &[(&str, &str)] = &[
     (
         "filament/fdm_filament_common_poly.json",
-        "ea111ac929ad6d131237c25eba3af23f802a61afee3bea099eea6c93212ecbbc",
+        "e2982eef7fea0fb2656d28d5543e81b9bf8305d5edce22075edb796efb0896de",
     ),
     (
         "filament/fdm_filament_pla_poly.json",
-        "b3aa7fda86cec0cb9c6bee3bb600aa44a54f962fc7c8350bfd6e82d1295bc533",
+        "082364ea8040b473480fb2563a1ca1648b2dd12d8770e01811551f58a01bda81",
     ),
     (
         "filament/Polymaker PLA @U1 base.json",
-        "f9770b13c948e0249c09741babda89f8a6b16a0302f1a9f5e86cc2d3e57e3f96",
+        "c8cfe138966bffcbde9bc881e31b13524aa30f0f08a0a58f1760185c3ca32671",
     ),
     (
         "filament/Polymaker General PLA Family @U1.json",
-        "37f61ec15169713050f6ace92da102fc5ad39b05556965f364db941b3a8f9729",
+        "32e3cc2b753288acdb5199596e10c0a9e72c5c7aa865c0bfbfcbe59fad8c4ce0",
+    ),
+];
+const SNAPMAKER_PVA_PROFILE_CHAIN: &[(&str, &str)] = &[
+    (
+        "filament/fdm_filament_common.json",
+        "d01d59fe7ae9b999d78c923725aad1d50238c5556c6664a18c3db09555217ece",
+    ),
+    (
+        "filament/fdm_filament_pva.json",
+        "ee8b784ceefc21533d9d162ff8d1568097615f4adc6be54562ce8ad2ca6d92a3",
+    ),
+    (
+        "filament/Snapmaker PVA @U1 base.json",
+        "3041a49ac415fca9af7d9be452c436b70e6da8218f5a55e3e66db73a04a1341b",
+    ),
+    (
+        "filament/Snapmaker PVA @U1.json",
+        "05179ef3dbd0c8ddb722fef39c8c5e4e851a08b2fca86108984dcf50e23ac5e7",
     ),
 ];
 const MACHINE_PROFILE_PATH: &str = "machine/Snapmaker U1 (0.4 nozzle).json";
@@ -201,7 +227,7 @@ pub fn inspect_u1_full_spectrum_macos_application(
     let qualified = supported && full_spectrum_qualification_bundle_is_valid(&report);
     if supported && !qualified {
         issues.push(
-            "Full Spectrum metadata is structurally implemented, but a dedicated Snapmaker Orca 2.3.5 GUI save/slice/reopen qualification fixture is still required."
+            "Full Spectrum metadata is structurally implemented, but a dedicated Snapmaker Orca 2.3.6 GUI save/slice/reopen qualification fixture is still required."
                 .to_owned(),
         );
     }
@@ -586,7 +612,7 @@ pub struct U1FullSpectrumRecipeTable {
     pub targets: Vec<U1FullSpectrumRecipeTarget>,
 }
 
-/// One active row from Snapmaker Orca 2.3.5's native
+/// One active row from Snapmaker Orca 2.3.6's native
 /// `mixed_filament_definitions` project setting. Virtual filament IDs are
 /// positional in that format and are therefore derived from the active row
 /// order rather than serialized in the row itself.
@@ -687,6 +713,8 @@ pub struct U1FullSpectrumPreparedArtifact {
     pub process: FullSpectrumProcessCompatibility,
     #[serde(default)]
     pub support: SupportInformation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedicated_support: Option<DedicatedSupportMaterial>,
     pub recipe_table: U1FullSpectrumRecipeTable,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recipe_calibration_sample_ids: Vec<String>,
@@ -972,9 +1000,11 @@ fn compile_u1_full_spectrum_recipes_for_purpose(
                 input.logical_id
             )));
         }
-        if input.target_material != Material::Pla {
+        let dedicated_pva = input.target_material == Material::Pva
+            && matches!(input.recipe, CmyxRecipe::DedicatedT4);
+        if input.target_material != Material::Pla && !dedicated_pva {
             return Err(U1FullSpectrumError::Recipe(format!(
-                "recipe {} targets {:?}; the qualified Full Spectrum profile is PLA only",
+                "recipe {} targets {:?}; only PLA color recipes and solid T4 PVA support are qualified",
                 input.logical_id, input.target_material
             )));
         }
@@ -1664,6 +1694,39 @@ fn prepare_full_spectrum_artifact(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let scopes = input
+        .scopes
+        .iter()
+        .map(|scope| (scope.id.as_str(), scope))
+        .collect::<BTreeMap<_, _>>();
+    let mut dedicated_support: Option<DedicatedSupportMaterial> = None;
+    let mut support_policy_seen = false;
+    for scope_id in batch_jobs.iter().flat_map(|job| &job.scope_ids) {
+        let scope = scopes.get(scope_id.as_str()).copied().ok_or_else(|| {
+            U1FullSpectrumError::Plan(format!(
+                "batch {} references missing scope {scope_id}",
+                batch.id
+            ))
+        })?;
+        if support_policy_seen && scope.dedicated_support != dedicated_support {
+            return Err(U1FullSpectrumError::Plan(format!(
+                "batch {} contains different dedicated-support policies",
+                batch.id
+            )));
+        }
+        dedicated_support = scope.dedicated_support.clone();
+        support_policy_seen = true;
+    }
+    if let Some(dedicated) = &dedicated_support
+        && (dedicated.toolhead != Toolhead::T4
+            || loadout[3].spool_id != dedicated.spool_id
+            || loadout[3].material != Material::Pva)
+    {
+        return Err(U1FullSpectrumError::Plan(format!(
+            "batch {} does not reserve its dedicated PVA support spool in T4",
+            batch.id
+        )));
+    }
     for job in &batch_jobs {
         if job.printer != Printer::U1 || job.strategy != ColorStrategy::CmyxFullSpectrum {
             return Err(U1FullSpectrumError::Plan(format!(
@@ -1677,11 +1740,11 @@ fn prepare_full_spectrum_artifact(
                 job.id, batch.id
             )));
         }
-        if job
-            .printable_materials
-            .iter()
-            .any(|material| material != &Material::Pla)
-        {
+        let material_contract_valid = job.printable_materials.iter().all(|material| {
+            material == &Material::Pla
+                || (dedicated_support.is_some() && material == &Material::Pva)
+        });
+        if !material_contract_valid {
             return Err(U1FullSpectrumError::Plan(format!(
                 "job {} contains a non-PLA printable material",
                 job.id
@@ -1780,7 +1843,7 @@ fn prepare_full_spectrum_artifact(
         .iter()
         .map(|target| (target.logical_id.as_str(), target))
         .collect::<BTreeMap<_, _>>();
-    let mut assignments = Vec::new();
+    let mut assignments_by_logical = BTreeMap::new();
     for job in &batch_jobs {
         for mapping in &job.color_mappings {
             let logical_id = mapping_logical_id(job, mapping);
@@ -1799,12 +1862,15 @@ fn prepare_full_spectrum_artifact(
                 .collect::<Result<Vec<_>, _>>()?;
             source_slots.sort();
             source_slots.dedup();
-            if source_slots.is_empty() {
+            let generated_pva_support = mapping.source_material == Material::Pva
+                && matches!(mapping.cmyx_comparison.recipe, CmyxRecipe::DedicatedT4)
+                && dedicated_support.is_some();
+            if source_slots.is_empty() && !generated_pva_support {
                 return Err(U1FullSpectrumError::Plan(format!(
                     "mapping {logical_id} has no source slots"
                 )));
             }
-            assignments.push(U1FullSpectrumPreparedAssignment {
+            let assignment = U1FullSpectrumPreparedAssignment {
                 scope_id: mapping.scope_id.clone(),
                 source_requirement_ids: mapping.source_requirement_ids.clone(),
                 source_slots,
@@ -1814,9 +1880,18 @@ fn prepare_full_spectrum_artifact(
                 recipe_fingerprint: target.recipe_fingerprint.clone(),
                 calibration_sample_id: target.calibration_sample_id.clone(),
                 predicted_color: mapping.cmyx_comparison.predicted_color,
-            });
+            };
+            if assignments_by_logical
+                .insert(logical_id.clone(), assignment)
+                .is_some()
+            {
+                return Err(U1FullSpectrumError::Plan(format!(
+                    "duplicate prepared Full Spectrum assignment {logical_id:?}"
+                )));
+            }
         }
     }
+    let mut assignments = assignments_by_logical.values().cloned().collect::<Vec<_>>();
     assignments.sort_by(|left, right| {
         left.scope_id.cmp(&right.scope_id).then_with(|| {
             left.source_requirement_ids
@@ -1830,31 +1905,10 @@ fn prepare_full_spectrum_artifact(
         .into_iter()
         .collect::<Vec<_>>();
 
-    let prepared_assignment_by_logical = assignments
+    let prepared_assignment_by_logical = assignments_by_logical
         .iter()
-        .map(|assignment| {
-            let job = batch_jobs
-                .iter()
-                .find(|job| {
-                    job.color_mappings.iter().any(|mapping| {
-                        mapping.scope_id == assignment.scope_id
-                            && mapping.source_requirement_ids == assignment.source_requirement_ids
-                    })
-                })
-                .ok_or_else(|| {
-                    U1FullSpectrumError::Plan("prepared assignment lost its source job".into())
-                })?;
-            let mapping = job
-                .color_mappings
-                .iter()
-                .find(|mapping| {
-                    mapping.scope_id == assignment.scope_id
-                        && mapping.source_requirement_ids == assignment.source_requirement_ids
-                })
-                .expect("job found through the same mapping predicate");
-            Ok((mapping_logical_id(job, mapping), assignment))
-        })
-        .collect::<Result<BTreeMap<_, _>, U1FullSpectrumError>>()?;
+        .map(|(logical_id, assignment)| (logical_id.clone(), assignment))
+        .collect::<BTreeMap<_, _>>();
 
     let mut prepared_plates = Vec::new();
     let mut sorted_plate_ids = batch.plate_ids.clone();
@@ -1900,7 +1954,11 @@ fn prepare_full_spectrum_artifact(
         loadout,
         calibration_fingerprint,
         process,
-        support: support.clone(),
+        support: SupportInformation {
+            enabled: dedicated_support.as_ref().map(|_| true).or(support.enabled),
+            ..support.clone()
+        },
+        dedicated_support,
         recipe_table,
         recipe_calibration_sample_ids,
         assignments,
@@ -1981,7 +2039,9 @@ pub fn resolve_u1_full_spectrum_physical_loadout(
                     spool.display_name
                 )));
             }
-            if spool.material != Material::Pla {
+            if spool.material != Material::Pla
+                && !(index == Toolhead::T4.index() && spool.material == Material::Pva)
+            {
                 return Err(U1FullSpectrumError::Plan(format!(
                     "physical spool {} is {:?}; the exact Full Spectrum profile is PLA only",
                     spool.display_name, spool.material
@@ -2015,6 +2075,34 @@ fn full_spectrum_physical_profile(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if spool.material == Material::Pva {
+        if slot_index != 3 {
+            return Err(U1FullSpectrumError::Plan(format!(
+                "physical PVA spool {} may only occupy T4 in Full Spectrum mode",
+                spool.display_name
+            )));
+        }
+        return match requested {
+            Some(SNAPMAKER_PVA_PROFILE_NAME) => Ok((
+                SNAPMAKER_PVA_PROFILE_NAME,
+                SNAPMAKER_PVA_SETTING_ID,
+                SNAPMAKER_PVA_FILAMENT_ID,
+            )),
+            Some(RELI3D_PVA_PROFILE_NAME) => Ok((
+                RELI3D_PVA_PROFILE_NAME,
+                RELI3D_PVA_SETTING_ID,
+                RELI3D_PVA_FILAMENT_ID,
+            )),
+            Some(profile) => Err(U1FullSpectrumError::Plan(format!(
+                "physical T4 PVA spool {} requests unqualified profile {profile:?}; choose Reli3D PVA @U1 or Snapmaker PVA @U1",
+                spool.display_name
+            ))),
+            None => Err(U1FullSpectrumError::Plan(format!(
+                "physical T4 PVA spool {} has no qualified profile; select Reli3D PVA @U1 or Snapmaker PVA @U1 in Filament Library",
+                spool.display_name
+            ))),
+        };
+    }
     if slot_index < 3
         || spool.id == "panchroma-translucent-grey"
         || requested == Some(FULL_SPECTRUM_PROFILE_NAME)
@@ -2503,7 +2591,7 @@ pub fn validate_u1_full_spectrum_recipe_table(
     Ok(())
 }
 
-/// Parses the exact active-row grammar used by Snapmaker Orca 2.3.5. The
+/// Parses the exact active-row grammar used by Snapmaker Orca 2.3.6. The
 /// parser intentionally rejects disabled/deleted rows, legacy token order, and
 /// non-canonical numeric spellings so a candidate cannot silently acquire a
 /// different virtual-ID ordering when reopened by the target slicer.
@@ -3006,7 +3094,36 @@ fn validate_project_settings_map(
     }
     require_setting_string_array(settings, "nozzle_diameter", std::iter::repeat_n("0.4", 4))?;
     validate_full_spectrum_physical_profile_arrays(settings, artifact)?;
-    require_setting_string_array(settings, "filament_type", std::iter::repeat_n("PLA", 4))?;
+    if let Some(artifact) = artifact {
+        require_setting_string_array(
+            settings,
+            "filament_type",
+            artifact.loadout.iter().map(|slot| match slot.material {
+                Material::Pla => "PLA",
+                Material::Pva => "PVA",
+                _ => "unsupported",
+            }),
+        )?;
+    } else {
+        let profiles = setting_string_array(settings, "filament_settings_id")?;
+        let setting_ids = setting_string_array(settings, "filament_ids")?;
+        let t4_material = if matches!(
+            (profiles.get(3).copied(), setting_ids.get(3).copied()),
+            (
+                Some(SNAPMAKER_PVA_PROFILE_NAME),
+                Some(SNAPMAKER_PVA_SETTING_ID)
+            ) | (Some(RELI3D_PVA_PROFILE_NAME), Some(RELI3D_PVA_SETTING_ID))
+        ) {
+            "PVA"
+        } else {
+            "PLA"
+        };
+        require_setting_string_array(
+            settings,
+            "filament_type",
+            ["PLA", "PLA", "PLA", t4_material],
+        )?;
+    }
     for key in ["filament_colour", "default_filament_colour"] {
         let colors = setting_string_array(settings, key)?;
         if colors.iter().any(|color| !is_canonical_rgb_hex(color)) {
@@ -3050,7 +3167,35 @@ fn validate_project_settings_map(
         }
     }
     if let Some(artifact) = artifact {
-        validate_source_support_intent(settings, &artifact.support)?;
+        validate_source_support_intent(
+            settings,
+            &artifact.support,
+            artifact.dedicated_support.as_ref(),
+        )?;
+        if let Some(dedicated_support) = &artifact.dedicated_support {
+            let slot = (dedicated_support.toolhead.index() + 1).to_string();
+            let expected_body = match dedicated_support.usage {
+                SupportMaterialUsage::BodyAndInterface => slot.as_str(),
+                SupportMaterialUsage::InterfaceOnly => "0",
+            };
+            if setting_string(settings, "enable_support")? != "1"
+                || setting_string(settings, "support_filament")? != expected_body
+                || setting_string(settings, "support_interface_filament")? != slot
+            {
+                return Err(U1FullSpectrumError::SemanticValidation(
+                    "project does not preserve the dedicated PVA support contract".into(),
+                ));
+            }
+            for (key, expected) in [
+                ("support_top_z_distance", "0"),
+                ("support_bottom_z_distance", "0"),
+                ("support_interface_top_layers", "3"),
+                ("support_interface_spacing", "0.2"),
+                ("support_interface_speed", "30"),
+            ] {
+                require_setting_string(settings, key, expected)?;
+            }
+        }
         if definitions.len() != artifact.recipe_table.definitions.len()
             || definitions
                 .iter()
@@ -3105,6 +3250,7 @@ fn validate_project_settings_map(
 fn validate_source_support_intent(
     settings: &BTreeMap<String, Value>,
     support: &SupportInformation,
+    dedicated_support: Option<&DedicatedSupportMaterial>,
 ) -> Result<(), U1FullSpectrumError> {
     let mut expected_keys = Vec::new();
     let require = |key: &str, expected: String| {
@@ -3134,6 +3280,17 @@ fn validate_source_support_intent(
             "support_on_build_plate_only",
             if on_build_plate_only { "1" } else { "0" }.into(),
         )?;
+    }
+    if dedicated_support.is_some() {
+        expected_keys.extend([
+            "support_filament",
+            "support_interface_filament",
+            "support_top_z_distance",
+            "support_bottom_z_distance",
+            "support_interface_top_layers",
+            "support_interface_spacing",
+            "support_interface_speed",
+        ]);
     }
     if !expected_keys.is_empty() {
         expected_keys.sort_unstable();
@@ -3193,6 +3350,11 @@ fn validate_full_spectrum_physical_profile_arrays(
                 Some(POLYMAKER_PLA_PROFILE_NAME),
                 Some(POLYMAKER_PLA_SETTING_ID)
             )
+            | (
+                Some(SNAPMAKER_PVA_PROFILE_NAME),
+                Some(SNAPMAKER_PVA_SETTING_ID)
+            )
+            | (Some(RELI3D_PVA_PROFILE_NAME), Some(RELI3D_PVA_SETTING_ID))
     );
     if !fixed_cmy_is_full_spectrum || !t4_is_qualified {
         return Err(U1FullSpectrumError::SemanticValidation(
@@ -3714,11 +3876,7 @@ fn validate_assignment_closure(
         }
     }
     if let Some(artifact) = expected_artifact {
-        let expected = artifact
-            .assignments
-            .iter()
-            .map(|assignment| assignment.target_filament_id)
-            .collect::<BTreeSet<_>>();
+        let expected = prepared_geometry_assignment_ids(artifact);
         if used_ids != &expected {
             push_validation_error(
                 report,
@@ -3730,6 +3888,15 @@ fn validate_assignment_closure(
             );
         }
     }
+}
+
+fn prepared_geometry_assignment_ids(artifact: &U1FullSpectrumPreparedArtifact) -> BTreeSet<u8> {
+    artifact
+        .assignments
+        .iter()
+        .filter(|assignment| !assignment.source_slots.is_empty())
+        .map(|assignment| assignment.target_filament_id)
+        .collect()
 }
 
 fn scan_model_settings_cancellable<C>(
@@ -4562,11 +4729,7 @@ where
             should_cancel,
         )?;
     }
-    let expected_assignments = artifact
-        .assignments
-        .iter()
-        .map(|assignment| assignment.target_filament_id)
-        .collect::<BTreeSet<_>>();
+    let expected_assignments = prepared_geometry_assignment_ids(artifact);
     if model_contract.used_filament_ids != expected_assignments {
         return Err(U1FullSpectrumError::SemanticValidation(format!(
             "normalized substrate assignments {:?} do not match prepared assignments {expected_assignments:?}",
@@ -4942,10 +5105,20 @@ fn exact_full_spectrum_slot_profile(
             expected_sha256,
         )?);
     }
-    let overlay_chain = match (slot.profile.as_str(), slot.setting_id.as_str()) {
-        (FULL_SPECTRUM_PROFILE_NAME, FULL_SPECTRUM_SETTING_ID) => None,
-        (GENERIC_PLA_PROFILE_NAME, GENERIC_PLA_SETTING_ID) => Some(GENERIC_PLA_PROFILE_CHAIN),
-        (POLYMAKER_PLA_PROFILE_NAME, POLYMAKER_PLA_SETTING_ID) => Some(POLYMAKER_PLA_PROFILE_CHAIN),
+    let (overlay_chain, reli3d_pva) = match (slot.profile.as_str(), slot.setting_id.as_str()) {
+        (FULL_SPECTRUM_PROFILE_NAME, FULL_SPECTRUM_SETTING_ID) => (None, false),
+        (GENERIC_PLA_PROFILE_NAME, GENERIC_PLA_SETTING_ID) => {
+            (Some(GENERIC_PLA_PROFILE_CHAIN), false)
+        }
+        (POLYMAKER_PLA_PROFILE_NAME, POLYMAKER_PLA_SETTING_ID) => {
+            (Some(POLYMAKER_PLA_PROFILE_CHAIN), false)
+        }
+        (SNAPMAKER_PVA_PROFILE_NAME, SNAPMAKER_PVA_SETTING_ID) => {
+            (Some(SNAPMAKER_PVA_PROFILE_CHAIN), false)
+        }
+        (RELI3D_PVA_PROFILE_NAME, RELI3D_PVA_SETTING_ID) => {
+            (Some(SNAPMAKER_PVA_PROFILE_CHAIN), true)
+        }
         _ => {
             return Err(U1FullSpectrumError::Plan(format!(
                 "physical slot T{} uses unsupported profile identity {}/{}",
@@ -4965,6 +5138,9 @@ fn exact_full_spectrum_slot_profile(
             )?);
         }
         normalize_heterogeneous_filament_overlay(&mut overlay)?;
+        if reli3d_pva {
+            apply_reli3d_pva_profile(&mut overlay);
+        }
         resolved.extend(overlay);
     }
     Ok(resolved)
@@ -5002,7 +5178,6 @@ pub fn apply_u1_full_spectrum_project_patch(
     }
     for (index, slot) in artifact.loadout.iter().enumerate() {
         if slot.toolhead != Toolhead::ALL[index]
-            || slot.material != Material::Pla
             || !full_spectrum_slot_profile_contract_is_valid(index, slot)
         {
             return Err(U1FullSpectrumError::Plan(format!(
@@ -5060,7 +5235,11 @@ pub fn apply_u1_full_spectrum_project_patch(
     );
     settings.insert(
         "filament_type".into(),
-        string_array(std::iter::repeat_n("PLA", 4)),
+        string_array(artifact.loadout.iter().map(|slot| match slot.material {
+            Material::Pla => "PLA",
+            Material::Pva => "PVA",
+            _ => "unsupported",
+        })),
     );
     let flush_matrix = (0..4)
         .flat_map(|source| (0..4).map(move |target| if source == target { "0" } else { "140" }))
@@ -5115,7 +5294,12 @@ pub fn apply_u1_full_spectrum_project_patch(
         "spiral_mode_max_xy_smoothing".into(),
         Value::String("200%".into()),
     );
-    apply_source_support_intent(settings, &artifact.support, artifact.loadout.len());
+    apply_source_support_intent(
+        settings,
+        &artifact.support,
+        artifact.dedicated_support.as_ref(),
+        artifact.loadout.len(),
+    );
     settings.insert("enable_prime_tower".into(), Value::String("1".into()));
     settings.insert(
         "prime_tower_width".into(),
@@ -5173,6 +5357,7 @@ pub fn apply_u1_full_spectrum_project_patch(
 fn apply_source_support_intent(
     settings: &mut BTreeMap<String, Value>,
     support: &SupportInformation,
+    dedicated_support: Option<&DedicatedSupportMaterial>,
     physical_filament_count: usize,
 ) {
     let mut override_keys = Vec::new();
@@ -5204,6 +5389,29 @@ fn apply_source_support_intent(
             Value::String(if on_build_plate_only { "1" } else { "0" }.into()),
         );
     }
+    if let Some(dedicated_support) = dedicated_support {
+        let slot = (dedicated_support.toolhead.index() + 1).to_string();
+        override_keys.push("support_filament");
+        settings.insert(
+            "support_filament".into(),
+            Value::String(match dedicated_support.usage {
+                SupportMaterialUsage::BodyAndInterface => slot.clone(),
+                SupportMaterialUsage::InterfaceOnly => "0".into(),
+            }),
+        );
+        override_keys.push("support_interface_filament");
+        settings.insert("support_interface_filament".into(), Value::String(slot));
+        for (key, value) in [
+            ("support_top_z_distance", "0"),
+            ("support_bottom_z_distance", "0"),
+            ("support_interface_top_layers", "3"),
+            ("support_interface_spacing", "0.2"),
+            ("support_interface_speed", "30"),
+        ] {
+            override_keys.push(key);
+            settings.insert(key.into(), Value::String(value.into()));
+        }
+    }
     if !override_keys.is_empty() {
         override_keys.sort_unstable();
         let mut groups = vec![Value::String(String::new()); physical_filament_count + 2];
@@ -5226,24 +5434,24 @@ fn full_spectrum_slot_profile_contract_is_valid(
         FULL_SPECTRUM_SETTING_ID,
         "1417031127011",
     );
-    index < 3 && identity == full_spectrum
-        || index == 3
-            && matches!(
-                identity,
-                (
-                    FULL_SPECTRUM_PROFILE_NAME,
-                    FULL_SPECTRUM_SETTING_ID,
-                    "1417031127011"
-                ) | (
-                    GENERIC_PLA_PROFILE_NAME,
-                    GENERIC_PLA_SETTING_ID,
-                    GENERIC_PLA_FILAMENT_ID
-                ) | (
-                    POLYMAKER_PLA_PROFILE_NAME,
-                    POLYMAKER_PLA_SETTING_ID,
-                    POLYMAKER_PLA_FILAMENT_ID
-                )
-            )
+    if index < 3 {
+        return slot.material == Material::Pla && identity == full_spectrum;
+    }
+    if index != 3 {
+        return false;
+    }
+    match identity {
+        (FULL_SPECTRUM_PROFILE_NAME, FULL_SPECTRUM_SETTING_ID, "1417031127011")
+        | (GENERIC_PLA_PROFILE_NAME, GENERIC_PLA_SETTING_ID, GENERIC_PLA_FILAMENT_ID)
+        | (POLYMAKER_PLA_PROFILE_NAME, POLYMAKER_PLA_SETTING_ID, POLYMAKER_PLA_FILAMENT_ID) => {
+            slot.material == Material::Pla
+        }
+        (SNAPMAKER_PVA_PROFILE_NAME, SNAPMAKER_PVA_SETTING_ID, SNAPMAKER_PVA_FILAMENT_ID)
+        | (RELI3D_PVA_PROFILE_NAME, RELI3D_PVA_SETTING_ID, RELI3D_PVA_FILAMENT_ID) => {
+            slot.material == Material::Pva
+        }
+        _ => false,
+    }
 }
 
 fn read_exact_profile(

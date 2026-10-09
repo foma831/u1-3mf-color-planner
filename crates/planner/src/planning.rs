@@ -57,6 +57,7 @@ struct EffectiveRequirement {
     source_profile_ids: Vec<String>,
     cmyx: CmyxColorCandidate,
     best_effort_cmyx: Option<BestEffortCmyxCandidate>,
+    cmyx_palette: Vec<BestEffortCmyxCandidate>,
     approved_color_fallback: bool,
     approved_material_substitution: Option<MaterialSubstitutionApproval>,
     direct_candidates: Vec<DirectSpoolCandidate>,
@@ -628,6 +629,21 @@ fn build_effective_requirements(
                 ),
             });
         }
+        if aliases
+            .iter()
+            .skip(1)
+            .any(|alias| alias.cmyx_palette_candidates != canonical.cmyx_palette_candidates)
+        {
+            errors.push(PlanError {
+                code: ErrorCode::InvalidCmyxRecipe,
+                scope_id: Some(scope.id.clone()),
+                unit_id: None,
+                message: format!(
+                    "Equivalent material-color requirements in scope '{}' have different CMY+X manual palettes.",
+                    scope.id
+                ),
+            });
+        }
 
         let mut ids: Vec<_> = aliases.iter().map(|alias| alias.id.clone()).collect();
         ids.sort();
@@ -660,6 +676,7 @@ fn build_effective_requirements(
             source_profile_ids,
             cmyx,
             best_effort_cmyx: canonical.best_effort_cmyx_candidate.clone(),
+            cmyx_palette: canonical.cmyx_palette_candidates.clone(),
             approved_color_fallback: false,
             approved_material_substitution: None,
             direct_candidates,
@@ -704,23 +721,22 @@ fn apply_cmyx_fallback_approvals(
     for (key, candidate_id) in color_approvals {
         let index = index_by_key[&key];
         let requirement = &mut effective[index];
-        let Some(fallback) = requirement.best_effort_cmyx.as_ref() else {
+        let fallback = requirement
+            .best_effort_cmyx
+            .iter()
+            .chain(requirement.cmyx_palette.iter())
+            .find(|fallback| fallback.candidate_id == candidate_id)
+            .cloned();
+        let Some(fallback) = fallback else {
             errors.push(invalid_fallback_approval(
                 scope,
                 &requirement.ids[0],
-                "Color fallback approval does not match a pending backend candidate.",
+                "Color fallback approval does not match an available backend candidate.",
             ));
             continue;
         };
-        if fallback.candidate_id != candidate_id {
-            errors.push(invalid_fallback_approval(
-                scope,
-                &requirement.ids[0],
-                "Color fallback approval is stale because the backend candidate changed.",
-            ));
-            continue;
-        }
         requirement.cmyx = fallback.candidate.clone();
+        requirement.best_effort_cmyx = Some(fallback);
         requirement.approved_color_fallback = true;
     }
 
@@ -874,6 +890,47 @@ fn direct_eligibility(
     let mut forced_toolheads: Vec<Option<Toolhead>> = vec![None; physical.len()];
     let mut forced_material_substitutions: Vec<Option<bool>> = vec![None; effective.len()];
     let mut requests = scope.direct_assignments.clone();
+    if let Some(dedicated_support) = &scope.dedicated_support {
+        let Some(spool) = context.inventory.get(&dedicated_support.spool_id) else {
+            return invalid_direct(format!(
+                "Dedicated support spool '{}' is not in inventory.",
+                dedicated_support.spool_id
+            ));
+        };
+        if !spool.available {
+            return invalid_direct(format!(
+                "Dedicated support spool '{}' is unavailable.",
+                dedicated_support.spool_id
+            ));
+        }
+        if spool.material != Material::Pva {
+            return invalid_direct(format!(
+                "Dedicated support spool '{}' must use PVA.",
+                dedicated_support.spool_id
+            ));
+        }
+        let support_requirements = effective
+            .iter()
+            .filter(|requirement| {
+                requirement.key.material == Material::Pva
+                    && requirement.key.role == MaterialRole::Support
+            })
+            .flat_map(|requirement| requirement.ids.iter().cloned())
+            .collect::<Vec<_>>();
+        if support_requirements.is_empty() {
+            return invalid_direct(
+                "Dedicated PVA support has no effective support requirement.".into(),
+            );
+        }
+        requests.extend(support_requirements.into_iter().map(|requirement_id| {
+            crate::DirectAssignmentRequest {
+                requirement_id,
+                spool_id: dedicated_support.spool_id.clone(),
+                toolhead: Some(dedicated_support.toolhead),
+                allow_material_substitution: false,
+            }
+        }));
+    }
     requests.sort_by(|left, right| {
         left.requirement_id
             .cmp(&right.requirement_id)
@@ -1635,7 +1692,10 @@ fn plan_direct_unit(
     }
 
     let materials: Vec<_> = materials.into_iter().collect();
-    if materials.len() > 1 && !config.allow_mixed_materials_on_plate {
+    if materials.len() > 1
+        && !config.allow_mixed_materials_on_plate
+        && !dedicated_pva_mix_allowed(scope, requirements, &materials)
+    {
         errors.push(unit_error(
             ErrorCode::MixedPrintableMaterials,
             scope,
@@ -1985,7 +2045,10 @@ fn plan_cmyx_unit(
         }
     }
     let materials: Vec<_> = materials.into_iter().collect();
-    if materials.len() > 1 && !config.allow_mixed_materials_on_plate {
+    if materials.len() > 1
+        && !config.allow_mixed_materials_on_plate
+        && !dedicated_pva_mix_allowed(scope, requirements, &materials)
+    {
         errors.push(unit_error(
             ErrorCode::MixedPrintableMaterials,
             scope,
@@ -2215,6 +2278,31 @@ fn full_spectrum_process_is_valid(process: &FullSpectrumProcessCompatibility) ->
 
 fn all_solid_for(recipe: &CmyxRecipe) -> bool {
     matches!(recipe, CmyxRecipe::Solid { .. } | CmyxRecipe::DedicatedT4)
+}
+
+fn dedicated_pva_mix_allowed(
+    scope: &PrintScope,
+    requirements: &[&EffectiveRequirement],
+    actual_materials: &[Material],
+) -> bool {
+    let Some(dedicated_support) = &scope.dedicated_support else {
+        return false;
+    };
+    let allowed_materials = actual_materials
+        .iter()
+        .all(|material| matches!(material, Material::Pla | Material::Pva));
+    let has_pva_support = requirements.iter().any(|requirement| {
+        requirement.key.material == Material::Pva && requirement.key.role == MaterialRole::Support
+    });
+    let pva_is_support_only = requirements.iter().all(|requirement| {
+        requirement.key.material != Material::Pva || requirement.key.role == MaterialRole::Support
+    });
+    allowed_materials
+        && actual_materials.contains(&Material::Pla)
+        && actual_materials.contains(&Material::Pva)
+        && has_pva_support
+        && pva_is_support_only
+        && !dedicated_support.spool_id.trim().is_empty()
 }
 
 fn common_material<'a>(mut spools: impl Iterator<Item = &'a Spool>) -> Option<Material> {

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "adapterId": "snapmaker-orca/2.3.6/u1-0.4-full-spectrum",
+  "applicationVersion": "2.3.6",
+  "executableSha256": "553a02a813e031ef2ea49616dc0edb9d0a4f0cc077b99c70fc30d5060dea3658",
+  "writerQualificationScope": "native_project_structure_and_gui_round_trip",
+  "recipeAccuracyPolicy": "per_user_measured_calibration_or_explicit_color_approval",
+  "guiRoundTripPassed": true,
+  "status": "qualified",
+  "evidence": {
+    "fixtureName": "Withered_Foxy.3mf",
+    "sourceFixtureSha256": "f0ad280964c0f0a3bdae1c3b8cc187d572da2986010f6e2c08e4e803db846b81",
+    "writerCandidateSha256": "4ead4a16440b216e7f87d705a88a4a4a0126270ea79297a83e8692ee615c3dbe",
+    "firstGuiSavedSha256": "529cbd868a1d7c10fb07ae82fe7ebb46a34f2cae824f05b16bb3b9cbe2f8042a",
+    "reopenedGuiSavedSha256": "22d22c24a4f7ba2be22f08608e616f381b03368153134c4d71945b154e89b9e2",
+    "qualificationReportSha256": "78a00622f0e016203ed3fad03c302ad582ea54bb11bb41fe5d2cbe8ba03ac8ab",
+    "opened": true,
+    "sliced": true,
+    "saved": true,
+    "closed": true,
+    "reopened": true,
+    "resliced": true,
+    "resaved": true,
+    "qualifiedAtUtc": "2026-09-07T19:11:28Z"
+  },
+  "note": "Snapmaker Orca 2.3.6 accepted and sliced all six plates, saved the project, reopened it after a full close, force-resliced a representative plate, and re-saved it. The hash-bound three-file validator passed all native Full Spectrum structure, virtual-assignment, geometry, placement, plate-membership, and process-contract checks."
+}

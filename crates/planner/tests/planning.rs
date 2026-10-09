@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use u1_planner::{
     A1MiniConfig, BestEffortCmyxCandidate, BoundsMm, BuildVolumeMm, CmySetup, CmyxColorCandidate,
     CmyxFallbackApproval, CmyxRecipe, ColorConfidence, ColorStrategy, CurrentToolheadState,
-    DirectIneligibility, DirectSpoolCandidate, DirectSpoolEligibility, ErrorCode, FullSpectrumMode,
-    FullSpectrumProcessCompatibility, FullSpectrumSubdivisionPolicy, MappingStatus, Material,
-    MaterialColorRequirement, MaterialRole, MaterialSubstitutionApproval, PackingStatus,
-    PlannerConfig, PlanningInput, PrintScope, PrintableUnit, Printer, PrinterLoadout,
-    PrinterPreference, RgbColor, ScopeStrategy, SetupActionKind, Spool, Toolhead,
-    ToolheadSlotState, WarningCode, plan,
+    DedicatedSupportMaterial, DirectIneligibility, DirectSpoolCandidate, DirectSpoolEligibility,
+    ErrorCode, FullSpectrumMode, FullSpectrumProcessCompatibility, FullSpectrumSubdivisionPolicy,
+    MappingStatus, Material, MaterialColorRequirement, MaterialRole, MaterialSubstitutionApproval,
+    PackingStatus, PlannerConfig, PlanningInput, PrintScope, PrintableUnit, Printer,
+    PrinterLoadout, PrinterPreference, RgbColor, ScopeStrategy, SetupActionKind, Spool,
+    SupportMaterialUsage, Toolhead, ToolheadSlotState, WarningCode, plan,
 };
 
 fn rgb(red: u8, green: u8, blue: u8) -> RgbColor {
@@ -103,6 +103,7 @@ fn direct_requirement(
         source_profile_ids: vec![format!("profile-{spool_id}")],
         cmyx_candidate: mixed_candidate(color),
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: vec![DirectSpoolCandidate {
             spool_id: spool_id.into(),
             delta_e00: Some(0.0),
@@ -157,6 +158,7 @@ fn direct_input(color_count: usize) -> PlanningInput {
             units: vec![unit("unit", requirement_ids, 40.0)],
             strategy: ScopeStrategy::DirectSpools,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -164,6 +166,48 @@ fn direct_input(color_count: usize) -> PlanningInput {
         current_toolheads: current_cmy(ToolheadSlotState::Loaded("cmy-grey".into())),
         config: config(),
     }
+}
+
+fn direct_input_with_dedicated_pva(model_color_count: usize) -> PlanningInput {
+    let mut input = direct_input(model_color_count);
+    let pva_color = rgb(245, 245, 230);
+    input
+        .inventory
+        .push(spool("support-pva", Material::Pva, pva_color));
+    input.scopes[0].requirements.push(MaterialColorRequirement {
+        id: "dedicated-pva-support".into(),
+        material: Material::Pva,
+        role: MaterialRole::Support,
+        source_color: pva_color,
+        source_slots: Vec::new(),
+        source_profile_ids: vec!["dedicated-pva:support-pva".into()],
+        cmyx_candidate: CmyxColorCandidate {
+            recipe: CmyxRecipe::DedicatedT4,
+            calibration_sample_id: None,
+            process_compatibility: None,
+            required_t4_spool_id: Some("support-pva".into()),
+            predicted_color: Some(pva_color),
+            delta_e00: Some(0.0),
+            confidence: ColorConfidence::Measured,
+            warnings: Vec::new(),
+        },
+        best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
+        direct_candidates: vec![DirectSpoolCandidate {
+            spool_id: "support-pva".into(),
+            delta_e00: Some(0.0),
+            confidence: ColorConfidence::Measured,
+        }],
+    });
+    input.scopes[0].units[0]
+        .requirement_ids
+        .push("dedicated-pva-support".into());
+    input.scopes[0].dedicated_support = Some(DedicatedSupportMaterial {
+        spool_id: "support-pva".into(),
+        usage: SupportMaterialUsage::BodyAndInterface,
+        toolhead: Toolhead::T4,
+    });
+    input
 }
 
 #[test]
@@ -203,6 +247,45 @@ fn direct_spools_accepts_one_through_four_effective_pairs() {
         );
         assert_eq!(result.jobs[0].color_mappings.len(), color_count);
     }
+}
+
+#[test]
+fn three_model_colors_plus_dedicated_pva_fit_the_u1_physical_loadout() {
+    let result = plan(&direct_input_with_dedicated_pva(3));
+
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    let DirectSpoolEligibility::Eligible { assignments } = &result.scope_options[0].direct_spools
+    else {
+        panic!("three model spools plus PVA should be Direct Spool eligible");
+    };
+    assert_eq!(assignments.len(), 4);
+    let pva = assignments
+        .iter()
+        .find(|assignment| assignment.spool_id == "support-pva")
+        .expect("the dedicated support spool is assigned");
+    assert_eq!(pva.toolhead, Toolhead::T4);
+    assert_eq!(result.jobs[0].color_mappings.len(), 4);
+}
+
+#[test]
+fn four_model_colors_plus_dedicated_pva_exceed_the_u1_physical_loadout() {
+    let result = plan(&direct_input_with_dedicated_pva(4));
+
+    assert!(matches!(
+        result.scope_options[0].direct_spools,
+        DirectSpoolEligibility::Ineligible {
+            reason: DirectIneligibility::TooManyEffectivePairs {
+                count: 5,
+                maximum: 4
+            }
+        }
+    ));
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == ErrorCode::RequestedDirectSpoolsUnavailable)
+    );
 }
 
 #[test]
@@ -459,6 +542,7 @@ fn identical_material_colors_with_distinct_profiles_remain_distinct_requirements
             units: vec![unit("unit", vec!["color-0".into(), "color-1".into()], 40.0)],
             strategy: ScopeStrategy::DirectSpools,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -852,6 +936,7 @@ fn unknown_initial_t4_counts_as_a_swap_and_emits_conservative_actions() {
             warnings: Vec::new(),
         },
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: Vec::new(),
     };
     let input = PlanningInput {
@@ -862,6 +947,7 @@ fn unknown_initial_t4_counts_as_a_swap_and_emits_conservative_actions() {
             units: vec![unit("unit", vec!["black".into()], 20.0)],
             strategy: ScopeStrategy::CmyxFullSpectrum,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -910,6 +996,7 @@ fn a1_rejects_a_unit_taller_than_180_mm_and_leaves_it_on_u1() {
             warnings: Vec::new(),
         },
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: Vec::new(),
     };
     let mut planner_config = config();
@@ -933,6 +1020,7 @@ fn a1_rejects_a_unit_taller_than_180_mm_and_leaves_it_on_u1() {
             units: vec![unit("too-tall", vec!["black".into()], 181.0)],
             strategy: ScopeStrategy::CmyxFullSpectrum,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -976,6 +1064,7 @@ fn a1_routes_an_eligible_single_physical_spool_unit() {
             warnings: Vec::new(),
         },
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: Vec::new(),
     };
     let mut planner_config = config();
@@ -988,6 +1077,7 @@ fn a1_routes_an_eligible_single_physical_spool_unit() {
             units: vec![unit("a1-unit", vec!["black".into()], 180.0)],
             strategy: ScopeStrategy::CmyxFullSpectrum,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -1521,6 +1611,7 @@ fn fast_mono_and_full_spectrum_units_are_separate_jobs() {
             warnings: Vec::new(),
         },
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: Vec::new(),
     };
     let mixed = MaterialColorRequirement {
@@ -1544,6 +1635,7 @@ fn fast_mono_and_full_spectrum_units_are_separate_jobs() {
             warnings: Vec::new(),
         },
         best_effort_cmyx_candidate: None,
+        cmyx_palette_candidates: Vec::new(),
         direct_candidates: Vec::new(),
     };
     let input = PlanningInput {
@@ -1557,6 +1649,7 @@ fn fast_mono_and_full_spectrum_units_are_separate_jobs() {
             ],
             strategy: ScopeStrategy::CmyxFullSpectrum,
             direct_assignments: Vec::new(),
+            dedicated_support: None,
             approved_cmyx_fallbacks: Vec::new(),
             approved_material_substitutions: Vec::new(),
         }],
@@ -1878,6 +1971,51 @@ fn best_effort_color_requires_an_exact_candidate_approval() {
             .iter()
             .any(|warning| { warning.code == WarningCode::ApprovedColorFallback })
     );
+}
+
+#[test]
+fn a_fingerprinted_manual_palette_candidate_replaces_the_default_fallback() {
+    let mut input = best_effort_input(Material::Pla, Material::Pla);
+    let requirement = &mut input.scopes[0].requirements[0];
+    let manual_color = rgb(20, 150, 190);
+    requirement
+        .cmyx_palette_candidates
+        .push(BestEffortCmyxCandidate {
+            candidate_id: "candidate-manual-cyan".into(),
+            target_material: Material::Pla,
+            target_color: requirement.source_color,
+            candidate: CmyxColorCandidate {
+                recipe: CmyxRecipe::Solid {
+                    toolhead: Toolhead::T1,
+                },
+                calibration_sample_id: None,
+                process_compatibility: None,
+                required_t4_spool_id: None,
+                predicted_color: Some(manual_color),
+                delta_e00: Some(18.0),
+                confidence: ColorConfidence::Nominal,
+                warnings: vec!["Explicitly selected manual palette color.".into()],
+            },
+        });
+    input.scopes[0].approved_cmyx_fallbacks = vec![CmyxFallbackApproval {
+        requirement_id: "color-0".into(),
+        candidate_id: "candidate-manual-cyan".into(),
+    }];
+
+    let result = plan(&input);
+    assert!(result.errors.is_empty(), "{:#?}", result.errors);
+    assert_eq!(
+        result.jobs[0].color_mappings[0]
+            .cmyx_comparison
+            .predicted_color,
+        Some(manual_color)
+    );
+    assert!(matches!(
+        result.jobs[0].color_mappings[0].cmyx_comparison.recipe,
+        CmyxRecipe::Solid {
+            toolhead: Toolhead::T1
+        }
+    ));
 }
 
 #[test]

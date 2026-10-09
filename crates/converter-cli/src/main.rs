@@ -25,6 +25,7 @@ use u1_orca_adapter::{
     qualified_u1_physical_profiles_root, validate_u1_full_spectrum_candidate,
     validate_u1_full_spectrum_gui_round_trip, validate_u1_gui_round_trip,
     write_u1_full_spectrum_normalized_substrate, write_u1_full_spectrum_qualification_candidate,
+    write_u1_pva_diagnostic_project,
 };
 use u1_three_mf::{
     AdhesionMode, OrientationOptimizationOptions, OutputValidationPolicy,
@@ -281,6 +282,18 @@ enum Command {
         #[arg(long)]
         compact: bool,
     },
+    /// Build a small, single-material Reli3D PVA diagnostic project for Snapmaker U1.
+    BuildPvaDiagnostic {
+        /// New native U1 .3mf destination. Existing files are never overwritten.
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+        /// Path to Snapmaker Orca.app. Conventional locations are searched when omitted.
+        #[arg(long)]
+        orca_app: Option<PathBuf>,
+        /// Write one-line JSON instead of indented JSON.
+        #[arg(long)]
+        compact: bool,
+    },
     /// Validate a numbered CMY+X calibration candidate and its embedded manifest.
     ValidateCalibrationProject {
         input: PathBuf,
@@ -288,7 +301,7 @@ enum Command {
         #[arg(long)]
         compact: bool,
     },
-    /// Compare a U1 writer candidate with two Snapmaker Orca 2.3.5 GUI saves.
+    /// Compare a U1 writer candidate with two Snapmaker Orca 2.3.6 GUI saves.
     ValidateU1GuiRoundTrip {
         /// Immutable source fixture used to prove source identify_id preservation.
         #[arg(long, value_name = "FILE")]
@@ -659,6 +672,23 @@ fn main() -> Result<()> {
                     })?;
             print_json(&report, compact)?;
         }
+        Command::BuildPvaDiagnostic {
+            output,
+            orca_app,
+            compact,
+        } => {
+            let application_path = orca_app
+                .or_else(discover_installation)
+                .context("Snapmaker Orca was not found; pass --orca-app <path>")?;
+            let report =
+                write_u1_pva_diagnostic_project(&application_path, &output).with_context(|| {
+                    format!(
+                        "failed to build Reli3D PVA diagnostic project {}",
+                        output.display()
+                    )
+                })?;
+            print_json(&report, compact)?;
+        }
         Command::ValidateCalibrationProject { input, compact } => {
             let report =
                 validate_cmyx_calibration_project_candidate(&input).with_context(|| {
@@ -688,7 +718,7 @@ fn main() -> Result<()> {
             )
             .with_context(|| {
                 format!(
-                    "failed to validate the Snapmaker Orca 2.3.5 GUI round trip for {}",
+                    "failed to validate the Snapmaker Orca 2.3.6 GUI round trip for {}",
                     writer_candidate.display()
                 )
             })?;
@@ -1164,6 +1194,16 @@ mod tests {
             "--compact",
         ]);
         assert!(build_calibration.is_ok());
+        let build_pva_diagnostic = Cli::try_parse_from([
+            "u1-converter",
+            "build-pva-diagnostic",
+            "--output",
+            "reli3d-pva-diagnostic.3mf",
+            "--orca-app",
+            "/Applications/Snapmaker Orca.app",
+            "--compact",
+        ]);
+        assert!(build_pva_diagnostic.is_ok());
         let validate_calibration = Cli::try_parse_from([
             "u1-converter",
             "validate-calibration-project",

@@ -23,6 +23,8 @@ function defaultProps(
       defaultStrategy: "auto",
       a1MiniEnabled: true,
       allowU1CrossSourceRepacking: false,
+      dedicatedSupportSpoolId: null,
+      dedicatedSupportUsage: "interface-only",
     },
     loadout: {
       schemaVersion: 1,
@@ -95,6 +97,8 @@ describe("ProjectSetupControl", () => {
         defaultStrategy: "direct",
         a1MiniEnabled: true,
         allowU1CrossSourceRepacking: false,
+        dedicatedSupportSpoolId: null,
+        dedicatedSupportUsage: "interface-only",
       },
       {
         schemaVersion: 1,
@@ -126,6 +130,75 @@ describe("ProjectSetupControl", () => {
       expect.objectContaining({ allowU1CrossSourceRepacking: true }),
       expect.any(Object),
     );
+  });
+
+  it("reserves an available PVA spool for support on T4", () => {
+    const onConfirm = vi.fn();
+    const pvaSpool = {
+      id: "support-pva",
+      calibrationIdentity: "support-pva",
+      source: "user" as const,
+      name: "Workshop PVA",
+      colorName: "Natural",
+      hex: "#F5F5E6",
+      material: "PVA" as const,
+      profile: "Snapmaker PVA @U1",
+      colorBasis: "Nominal" as const,
+      available: true,
+    };
+    render(
+      <ProjectSetupControl
+        {...defaultProps({
+          onConfirm,
+          availableSpools: [...createDemoPlan().spools, pvaSpool],
+        })}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Dedicated PVA on T4/i }),
+    );
+    expect(screen.getByLabelText("PVA spool")).toHaveValue("support-pva");
+    expect(
+      screen.getByRole("radio", { name: /Contact interface only/i }),
+    ).toBeChecked();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm project setup" }),
+    );
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dedicatedSupportSpoolId: "support-pva",
+        dedicatedSupportUsage: "interface-only",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("does not offer a PVA spool whose exact slicer profile is unknown", () => {
+    const unknownPva = {
+      id: "unknown-pva",
+      calibrationIdentity: "unknown-pva",
+      source: "user" as const,
+      name: "Unknown PVA",
+      colorName: "Natural",
+      hex: "#F5F5E6",
+      material: "PVA" as const,
+      colorBasis: "Nominal" as const,
+      available: true,
+    };
+    render(
+      <ProjectSetupControl
+        {...defaultProps({
+          availableSpools: [...createDemoPlan().spools, unknownPva],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("radio", { name: /Dedicated PVA on T4/i }),
+    ).toBeDisabled();
+    expect(screen.getByText(/select its qualified profile/i)).toBeVisible();
   });
 
   it("keeps A1 routing unavailable for a saved U1-only equipment profile", () => {

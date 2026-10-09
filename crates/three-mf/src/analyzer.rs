@@ -2240,13 +2240,19 @@ fn u1_support_safety_values_match(root: &Value, interface_layers: u8) -> bool {
     if bool_value(root.get("enable_support")) != Some(true) {
         return true;
     }
-    let one_layer_top_gap_matches = nonnegative_numeric_value(root.get("layer_height"))
-        .zip(nonnegative_numeric_value(
-            root.get("support_top_z_distance"),
-        ))
-        .is_some_and(|(layer_height, top_gap)| {
-            layer_height > 0.0 && approximately_equal(layer_height, top_gap)
-        });
+    let uses_pva = root.as_object().is_some_and(settings_use_pva_support);
+    let top_gap_matches = if uses_pva {
+        nonnegative_numeric_value(root.get("support_top_z_distance"))
+            .is_some_and(|top_gap| approximately_equal(top_gap, 0.0))
+    } else {
+        nonnegative_numeric_value(root.get("layer_height"))
+            .zip(nonnegative_numeric_value(
+                root.get("support_top_z_distance"),
+            ))
+            .is_some_and(|(layer_height, top_gap)| {
+                layer_height > 0.0 && approximately_equal(layer_height, top_gap)
+            })
+    };
     string_value(root.get("support_type")).as_deref() == Some("tree(auto)")
         && string_value(root.get("support_style")).as_deref() == Some("tree_hybrid")
         && bool_value(root.get("support_on_build_plate_only")) == Some(false)
@@ -2259,10 +2265,10 @@ fn u1_support_safety_values_match(root: &Value, interface_layers: u8) -> bool {
         && nonnegative_numeric_value(root.get("support_speed"))
             .is_some_and(|value| approximately_equal(value, 100.0))
         && nonnegative_numeric_value(root.get("support_interface_speed"))
-            .is_some_and(|value| approximately_equal(value, 50.0))
+            .is_some_and(|value| approximately_equal(value, if uses_pva { 30.0 } else { 50.0 }))
         && nonnegative_numeric_value(root.get("tree_support_wall_count"))
             .is_some_and(|value| approximately_equal(value, 2.0))
-        && one_layer_top_gap_matches
+        && top_gap_matches
 }
 
 fn adhesion_values_match(
@@ -3773,6 +3779,16 @@ pub fn optimize_object_orientation(
     instance_id: u32,
     options: OrientationOptimizationOptions,
 ) -> Result<OrientationOptimizationReport, AnalysisError> {
+    optimize_object_orientation_with_goal(path, object_id, instance_id, options, false)
+}
+
+fn optimize_object_orientation_with_goal(
+    path: impl AsRef<Path>,
+    object_id: u32,
+    instance_id: u32,
+    options: OrientationOptimizationOptions,
+    minimize_height: bool,
+) -> Result<OrientationOptimizationReport, AnalysisError> {
     validate_orientation_options(&options)?;
     let path = path.as_ref();
     let analysis = analyze_project_with_limits(path, AnalysisLimits::default())?;
@@ -3964,10 +3980,15 @@ pub fn optimize_object_orientation(
         .map(|direction| {
             let metrics =
                 score_orientation(&triangles, &orientation_points, direction, &options, false);
-            (direction, metrics.score)
+            (direction, metrics)
         })
         .collect();
-    coarse.sort_by(|left, right| left.1.total_cmp(&right.1));
+    coarse.sort_by(|left, right| {
+        compare_orientation_metrics(&left.1, &right.1, minimize_height)
+            .then_with(|| left.0[0].total_cmp(&right.0[0]))
+            .then_with(|| left.0[1].total_cmp(&right.0[1]))
+            .then_with(|| left.0[2].total_cmp(&right.0[2]))
+    });
     coarse.truncate(options.finalist_count.min(coarse.len()));
     let mut finalists: Vec<_> = coarse
         .into_iter()
@@ -3982,7 +4003,12 @@ pub fn optimize_object_orientation(
         })
         .collect();
     finalists.push(source_orientation.clone());
-    finalists.sort_by(|left, right| left.metrics.score.total_cmp(&right.metrics.score));
+    finalists.sort_by(|left, right| {
+        compare_orientation_metrics(&left.metrics, &right.metrics, minimize_height)
+            .then_with(|| left.build_up[0].total_cmp(&right.build_up[0]))
+            .then_with(|| left.build_up[1].total_cmp(&right.build_up[1]))
+            .then_with(|| left.build_up[2].total_cmp(&right.build_up[2]))
+    });
     finalists.dedup_by(|left, right| vector_dot(left.build_up, right.build_up) > 0.999_999);
     let recommendation = finalists
         .first()
@@ -4007,6 +4033,35 @@ pub fn optimize_object_orientation(
         recommendation,
         alternatives,
     })
+}
+
+fn compare_orientation_metrics(
+    left: &OrientationMetrics,
+    right: &OrientationMetrics,
+    minimize_height: bool,
+) -> std::cmp::Ordering {
+    if minimize_height {
+        left.height_mm
+            .total_cmp(&right.height_mm)
+            .then_with(|| left.footprint_area_mm2.total_cmp(&right.footprint_area_mm2))
+            .then_with(|| left.score.total_cmp(&right.score))
+    } else {
+        left.score.total_cmp(&right.score)
+    }
+}
+
+const PVA_ORIENTATION_MAX_SUPPORT_GROWTH_RATIO: f64 = 1.35;
+const PVA_ORIENTATION_SUPPORT_TOLERANCE_MM3: f64 = 50.0;
+
+fn pva_orientation_stays_within_support_budget(
+    candidate: &OrientationMetrics,
+    source: &OrientationMetrics,
+) -> bool {
+    candidate.estimated_support_volume_mm3
+        <= source.estimated_support_volume_mm3 * PVA_ORIENTATION_MAX_SUPPORT_GROWTH_RATIO
+            + PVA_ORIENTATION_SUPPORT_TOLERANCE_MM3
+        && candidate.small_overhang_component_count
+            <= source.small_overhang_component_count.saturating_add(1)
 }
 
 #[derive(Clone)]
@@ -4047,6 +4102,13 @@ pub fn optimize_plate_orientations(
     validate_plate_orientation_options(&options)?;
     let path = path.as_ref();
     let analysis = analyze_project(path)?;
+    let mut options = options;
+    if options.adhesion_mode == AdhesionMode::Reliable && project_uses_pva_support(&analysis) {
+        // A low PVA-supported layout uses the explicit 5 mm outer brim written
+        // below. Packing against that real footprint uses the U1 bed without
+        // recreating overlapping per-object toolpaths.
+        options.support_envelope_mm = 5.0;
+    }
     let plate = analysis
         .plates
         .iter()
@@ -4061,6 +4123,12 @@ pub fn optimize_plate_orientations(
         .iter()
         .filter(|instance| instance.printable)
         .collect();
+    let plate_index = analysis
+        .plates
+        .iter()
+        .position(|candidate| candidate.id == plate_id)
+        .expect("the selected plate came from this analysis");
+    let source_plate_origin = inferred_virtual_plate_origin(&analysis, plate_index, &options);
     let reserve_prime_tower =
         analysis.process.prime_tower_enabled == Some(true) && plate.effective_slots.len() > 1;
     optimize_orientation_instances(
@@ -4068,6 +4136,7 @@ pub fn optimize_plate_orientations(
         &analysis,
         printable,
         plate_id,
+        source_plate_origin,
         reserve_prime_tower,
         options,
     )
@@ -4078,6 +4147,7 @@ fn optimize_orientation_instances(
     analysis: &ProjectAnalysis,
     printable: Vec<&ObjectInstance>,
     plate_id: u32,
+    source_plate_origin: [f64; 2],
     reserve_prime_tower: bool,
     options: PlateOrientationOptimizationOptions,
 ) -> Result<PlateOrientationOptimizationReport, AnalysisError> {
@@ -4089,6 +4159,14 @@ fn optimize_orientation_instances(
         )));
     }
 
+    let minimize_height = project_uses_pva_support(analysis);
+    let mut orientation_options = options.orientation.clone();
+    if minimize_height {
+        orientation_options.alternatives = orientation_options
+            .finalist_count
+            .saturating_sub(1)
+            .max(orientation_options.alternatives);
+    }
     let mut work = Vec::with_capacity(printable.len());
     for instance in printable {
         let build_item_index = instance.source_build_item_index.ok_or_else(|| {
@@ -4103,11 +4181,12 @@ fn optimize_orientation_instances(
                 instance.object_id, instance.instance_id
             ))
         })?;
-        let report = optimize_object_orientation(
+        let report = optimize_object_orientation_with_goal(
             path,
             instance.object_id,
             instance.instance_id,
-            options.orientation.clone(),
+            orientation_options.clone(),
+            minimize_height,
         )?;
         if report.source != analysis.input {
             return Err(AnalysisError::SourceChangedDuringAnalysis(path.to_owned()));
@@ -4116,18 +4195,26 @@ fn optimize_orientation_instances(
         let mut candidates = vec![report.recommendation];
         candidates.extend(report.alternatives);
         candidates.push(source.clone());
-        candidates.retain(|candidate| {
-            vector_dot(candidate.build_up, source.build_up) > 0.999_999
-                || (candidate.metrics.score <= source.metrics.score
-                    && candidate.metrics.estimated_support_volume_mm3
-                        <= source.metrics.estimated_support_volume_mm3
-                    && candidate.metrics.small_overhang_component_count
-                        <= source.metrics.small_overhang_component_count)
-        });
+        if minimize_height {
+            candidates.retain(|candidate| {
+                vector_dot(candidate.build_up, source.build_up) > 0.999_999
+                    || pva_orientation_stays_within_support_budget(
+                        &candidate.metrics,
+                        &source.metrics,
+                    )
+            });
+        } else {
+            candidates.retain(|candidate| {
+                vector_dot(candidate.build_up, source.build_up) > 0.999_999
+                    || (candidate.metrics.score <= source.metrics.score
+                        && candidate.metrics.estimated_support_volume_mm3
+                            <= source.metrics.estimated_support_volume_mm3
+                        && candidate.metrics.small_overhang_component_count
+                            <= source.metrics.small_overhang_component_count)
+            });
+        }
         candidates.sort_by(|left, right| {
-            left.metrics
-                .score
-                .total_cmp(&right.metrics.score)
+            compare_orientation_metrics(&left.metrics, &right.metrics, minimize_height)
                 .then_with(|| left.build_up[0].total_cmp(&right.build_up[0]))
                 .then_with(|| left.build_up[1].total_cmp(&right.build_up[1]))
                 .then_with(|| left.build_up[2].total_cmp(&right.build_up[2]))
@@ -4146,21 +4233,57 @@ fn optimize_orientation_instances(
         });
     }
 
-    let mut frontier = vec![vec![0_usize; work.len()]];
+    let best_state = vec![0_usize; work.len()];
+    let source_state = work
+        .iter()
+        .map(|item| {
+            item.candidates
+                .iter()
+                .position(|candidate| {
+                    vector_dot(candidate.build_up, item.source.build_up) > 0.999_999
+                })
+                .expect("the source orientation is always retained as a candidate")
+        })
+        .collect::<Vec<_>>();
+    let source_layout_failure =
+        pack_plate_orientation_state(&source_state, &work, &options, reserve_prime_tower).err();
+    let mut frontier = vec![best_state.clone()];
+    if source_state != best_state {
+        frontier.push(source_state.clone());
+    }
     let mut visited = BTreeSet::new();
     let mut repair_attempts = 0_usize;
     while !frontier.is_empty() && repair_attempts < options.max_repair_attempts {
-        frontier.sort_by(|left, right| {
-            plate_orientation_state_score(left, &work)
-                .total_cmp(&plate_orientation_state_score(right, &work))
-                .then_with(|| left.cmp(right))
+        let state = if repair_attempts == 1 {
+            frontier
+                .iter()
+                .position(|state| state == &source_state)
+                .map(|index| frontier.remove(index))
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            frontier.sort_by(|left, right| {
+                compare_plate_orientation_states(left, right, &work, minimize_height)
+                    .then_with(|| left.cmp(right))
+            });
+            frontier.remove(0)
         });
-        let state = frontier.remove(0);
         if !visited.insert(state.clone()) {
             continue;
         }
         repair_attempts = repair_attempts.saturating_add(1);
-        match pack_plate_orientation_state(&state, &work, &options, reserve_prime_tower) {
+        let packing = if state == source_state {
+            preserve_source_plate_orientation_state(
+                &work,
+                source_plate_origin,
+                &options,
+                reserve_prime_tower,
+            )
+        } else {
+            pack_plate_orientation_state(&state, &work, &options, reserve_prime_tower)
+        };
+        match packing {
             Ok(placements) => {
                 let source_score = work.iter().map(|item| item.source.metrics.score).sum();
                 let source_support: f64 = work
@@ -4187,8 +4310,10 @@ fn optimize_orientation_instances(
                             item.source_center[0] - selected.metrics.footprint_width_mm / 2.0;
                         let current_min_y =
                             item.source_center[1] - selected.metrics.footprint_depth_mm / 2.0;
-                        selected.target_transform.values[9] += target_min_x_mm - current_min_x;
-                        selected.target_transform.values[10] += target_min_y_mm - current_min_y;
+                        selected.target_transform.values[9] +=
+                            target_min_x_mm + source_plate_origin[0] - current_min_x;
+                        selected.target_transform.values[10] +=
+                            target_min_y_mm + source_plate_origin[1] - current_min_y;
                         let adhesion_risk = adhesion_risk_assessment(&selected.metrics);
                         PlateOrientationInstanceReport {
                             object_id: item.object_id,
@@ -4230,12 +4355,19 @@ fn optimize_orientation_instances(
             }
             Err(failed_index) => {
                 let mut repair_indices = vec![failed_index];
+                let process_padding = orientation_inter_object_padding(&options);
                 let mut priorities: Vec<_> = work
                     .iter()
                     .enumerate()
                     .map(|(index, item)| {
                         let metrics = &item.candidates[state[index]].metrics;
-                        (index, metrics.footprint_area_mm2, metrics.height_mm)
+                        let padded_width = metrics.footprint_width_mm + process_padding;
+                        let padded_depth = metrics.footprint_depth_mm + process_padding;
+                        (
+                            index,
+                            padded_width * padded_depth,
+                            padded_width.max(padded_depth),
+                        )
                     })
                     .collect();
                 priorities.sort_by(|left, right| {
@@ -4260,10 +4392,99 @@ fn optimize_orientation_instances(
             }
         }
     }
+    let source_failure = source_layout_failure.map_or_else(
+        || "the source orientation fit but no selected search state was retained".to_owned(),
+        |index| {
+            let item = &work[index];
+            let metrics = &item.source.metrics;
+            format!(
+                "the source layout first failed at object {}/{} ({:.3} x {:.3} mm mesh footprint)",
+                item.object_id,
+                item.instance_id,
+                metrics.footprint_width_mm,
+                metrics.footprint_depth_mm
+            )
+        },
+    );
     Err(AnalysisError::InvalidStructure(format!(
-        "no support-aware orientation layout fit plate {plate_id} within {} bounded repair attempts",
+        "no support-aware orientation layout fit plate {plate_id} within {} bounded repair attempts; {source_failure}",
         options.max_repair_attempts
     )))
+}
+
+fn project_uses_pva_support(analysis: &ProjectAnalysis) -> bool {
+    analysis.process.support.enabled == Some(true)
+        && analysis.filaments.iter().any(|filament| {
+            filament
+                .material
+                .as_deref()
+                .is_some_and(|material| material.eq_ignore_ascii_case("PVA"))
+        })
+}
+
+fn compare_plate_orientation_states(
+    left: &[usize],
+    right: &[usize],
+    work: &[PlateOrientationWorkItem],
+    minimize_height: bool,
+) -> std::cmp::Ordering {
+    if !minimize_height {
+        return plate_orientation_state_score(left, work)
+            .total_cmp(&plate_orientation_state_score(right, work));
+    }
+    let state_height = |state: &[usize]| {
+        let maximum = state
+            .iter()
+            .enumerate()
+            .map(|(index, rank)| work[index].candidates[*rank].metrics.height_mm)
+            .fold(0.0_f64, f64::max);
+        let total = state
+            .iter()
+            .enumerate()
+            .map(|(index, rank)| work[index].candidates[*rank].metrics.height_mm)
+            .sum::<f64>();
+        (maximum, total)
+    };
+    let (left_maximum, left_total) = state_height(left);
+    let (right_maximum, right_total) = state_height(right);
+    left_maximum
+        .total_cmp(&right_maximum)
+        .then_with(|| left_total.total_cmp(&right_total))
+        .then_with(|| {
+            plate_orientation_state_score(left, work)
+                .total_cmp(&plate_orientation_state_score(right, work))
+        })
+}
+
+fn inferred_virtual_plate_origin(
+    analysis: &ProjectAnalysis,
+    plate_index: usize,
+    options: &PlateOrientationOptimizationOptions,
+) -> [f64; 2] {
+    if analysis.plates.len() <= 1 {
+        return [0.0, 0.0];
+    }
+    let columns = (analysis.plates.len() as f64).sqrt().ceil().max(1.0) as usize;
+    let expected = [
+        (plate_index % columns) as f64 * options.bed_width_mm * 1.2,
+        -((plate_index / columns) as f64) * options.bed_depth_mm * 1.2,
+    ];
+    let Some(bounds) = analysis.plates[plate_index].printable_bounds else {
+        return [0.0, 0.0];
+    };
+    let local_min_x = bounds.min[0] - expected[0];
+    let local_min_y = bounds.min[1] - expected[1];
+    let local_max_x = bounds.max[0] - expected[0];
+    let local_max_y = bounds.max[1] - expected[1];
+    if local_min_x >= options.bed_min_x_mm - 1.0e-6
+        && local_min_y >= options.bed_min_y_mm - 1.0e-6
+        && local_max_x <= options.bed_min_x_mm + options.bed_width_mm + 1.0e-6
+        && local_max_y <= options.bed_min_y_mm + options.bed_depth_mm + 1.0e-6
+    {
+        expected
+    } else {
+        [0.0, 0.0]
+    }
 }
 
 fn adhesion_risk_assessment(metrics: &OrientationMetrics) -> AdhesionRiskAssessment {
@@ -4334,11 +4555,12 @@ fn pack_plate_orientation_state(
     options: &PlateOrientationOptimizationOptions,
     reserve_prime_tower: bool,
 ) -> Result<Vec<(f64, f64)>, usize> {
+    let bed_inset = orientation_bed_inset(options);
     let mut free = vec![OrientationPackRect {
-        x: options.bed_min_x_mm,
-        y: options.bed_min_y_mm,
-        width: options.bed_width_mm,
-        depth: options.bed_depth_mm,
+        x: options.bed_min_x_mm + bed_inset,
+        y: options.bed_min_y_mm + bed_inset,
+        width: options.bed_width_mm - 2.0 * bed_inset,
+        depth: options.bed_depth_mm - 2.0 * bed_inset,
     }];
     if reserve_prime_tower {
         let reserve_extent = 118.2_f64;
@@ -4350,12 +4572,20 @@ fn pack_plate_orientation_state(
         };
         orientation_commit_rect(&mut free, reserve);
     }
+    let process_padding = orientation_inter_object_padding(options);
+    let placement_inset = orientation_placement_inset(options);
     let mut order: Vec<_> = state
         .iter()
         .enumerate()
         .map(|(index, rank)| {
             let metrics = &work[index].candidates[*rank].metrics;
-            (index, metrics.footprint_area_mm2, metrics.height_mm)
+            let padded_width = metrics.footprint_width_mm + process_padding;
+            let padded_depth = metrics.footprint_depth_mm + process_padding;
+            (
+                index,
+                padded_width * padded_depth,
+                padded_width.max(padded_depth),
+            )
         })
         .collect();
     order.sort_by(|left, right| {
@@ -4371,7 +4601,6 @@ fn pack_plate_orientation_state(
         if metrics.height_mm > options.bed_height_mm {
             return Err(index);
         }
-        let process_padding = options.object_clearance_mm + 2.0 * options.support_envelope_mm;
         let padded_width = metrics.footprint_width_mm + process_padding;
         let padded_depth = metrics.footprint_depth_mm + process_padding;
         let Some((free_index, placed)) = free
@@ -4407,13 +4636,93 @@ fn pack_plate_orientation_state(
             return Err(index);
         };
         let _ = free_index;
-        placements[index] = (
-            placed.x + options.object_clearance_mm / 2.0 + options.support_envelope_mm,
-            placed.y + options.object_clearance_mm / 2.0 + options.support_envelope_mm,
-        );
+        placements[index] = (placed.x + placement_inset, placed.y + placement_inset);
         orientation_commit_rect(&mut free, placed);
     }
     Ok(placements)
+}
+
+fn preserve_source_plate_orientation_state(
+    work: &[PlateOrientationWorkItem],
+    source_plate_origin: [f64; 2],
+    options: &PlateOrientationOptimizationOptions,
+    reserve_prime_tower: bool,
+) -> Result<Vec<(f64, f64)>, usize> {
+    let bed_padding = options.support_envelope_mm + options.object_clearance_mm / 2.0;
+    let collision_padding = orientation_placement_inset(options);
+    let bed = OrientationPackRect {
+        x: options.bed_min_x_mm,
+        y: options.bed_min_y_mm,
+        width: options.bed_width_mm,
+        depth: options.bed_depth_mm,
+    };
+    let prime_tower = reserve_prime_tower.then(|| {
+        let reserve_extent = 118.2_f64;
+        OrientationPackRect {
+            x: options.bed_min_x_mm + options.bed_width_mm - reserve_extent,
+            y: options.bed_min_y_mm + options.bed_depth_mm - reserve_extent,
+            width: reserve_extent,
+            depth: reserve_extent,
+        }
+    });
+    let mut reserved = Vec::with_capacity(work.len());
+    let mut placements = Vec::with_capacity(work.len());
+    for (index, item) in work.iter().enumerate() {
+        let metrics = &item.source.metrics;
+        if metrics.height_mm > options.bed_height_mm {
+            return Err(index);
+        }
+        let target_min_x_mm =
+            item.source_center[0] - source_plate_origin[0] - metrics.footprint_width_mm / 2.0;
+        let target_min_y_mm =
+            item.source_center[1] - source_plate_origin[1] - metrics.footprint_depth_mm / 2.0;
+        let bed_envelope = OrientationPackRect {
+            x: target_min_x_mm - bed_padding,
+            y: target_min_y_mm - bed_padding,
+            width: metrics.footprint_width_mm + 2.0 * bed_padding,
+            depth: metrics.footprint_depth_mm + 2.0 * bed_padding,
+        };
+        let collision_envelope = OrientationPackRect {
+            x: target_min_x_mm - collision_padding,
+            y: target_min_y_mm - collision_padding,
+            width: metrics.footprint_width_mm + 2.0 * collision_padding,
+            depth: metrics.footprint_depth_mm + 2.0 * collision_padding,
+        };
+        if bed_envelope.x < bed.x - 1.0e-6
+            || bed_envelope.y < bed.y - 1.0e-6
+            || bed_envelope.right() > bed.right() + 1.0e-6
+            || bed_envelope.top() > bed.top() + 1.0e-6
+            || prime_tower.is_some_and(|tower| orientation_rects_overlap(collision_envelope, tower))
+            || reserved
+                .iter()
+                .any(|other| orientation_rects_overlap(collision_envelope, *other))
+        {
+            return Err(index);
+        }
+        reserved.push(collision_envelope);
+        placements.push((target_min_x_mm, target_min_y_mm));
+    }
+    Ok(placements)
+}
+
+fn orientation_bed_inset(options: &PlateOrientationOptimizationOptions) -> f64 {
+    let _ = options;
+    0.0
+}
+
+fn orientation_inter_object_padding(options: &PlateOrientationOptimizationOptions) -> f64 {
+    options.object_clearance_mm + 2.0 * options.support_envelope_mm
+}
+
+fn orientation_placement_inset(options: &PlateOrientationOptimizationOptions) -> f64 {
+    orientation_inter_object_padding(options) / 2.0
+}
+
+fn orientation_rects_overlap(left: OrientationPackRect, right: OrientationPackRect) -> bool {
+    left.x < right.right() - 1.0e-6
+        && left.right() > right.x + 1.0e-6
+        && left.y < right.top() - 1.0e-6
+        && left.top() > right.y + 1.0e-6
 }
 
 fn orientation_commit_rect(free: &mut Vec<OrientationPackRect>, used: OrientationPackRect) {
@@ -4769,6 +5078,7 @@ fn rewrite_adhesion_project_settings(
         .get("printer_model")
         .and_then(Value::as_str)
         .is_some_and(|model| model == "Snapmaker U1");
+    let uses_pva_support = settings_use_pva_support(settings);
     let (profile_name, brim_type, brim_width, raft_layers, raft_expansion, slow_layers, speed) =
         match mode {
             AdhesionMode::Standard => (
@@ -4783,7 +5093,11 @@ fn rewrite_adhesion_project_settings(
             AdhesionMode::Reliable => (
                 "U1 Planner Reliable Adhesion v2",
                 "outer_only",
-                recommended_brim_width_mm.clamp(5.0, 18.0),
+                if uses_pva_support {
+                    5.0
+                } else {
+                    recommended_brim_width_mm.clamp(5.0, 18.0)
+                },
                 0_u8,
                 0.0,
                 3_u8,
@@ -4805,6 +5119,7 @@ fn rewrite_adhesion_project_settings(
             Value::String(profile_name.into()),
         );
         apply_u1_support_safety_settings(settings, mode);
+        apply_u1_prime_tower_safe_position(settings);
     }
     settings.insert("brim_type".into(), Value::String(brim_type.into()));
     settings.insert(
@@ -4838,6 +5153,64 @@ fn rewrite_adhesion_project_settings(
     Ok(rewritten)
 }
 
+fn settings_use_pva_support(settings: &serde_json::Map<String, Value>) -> bool {
+    if bool_value(settings.get("enable_support")) != Some(true) {
+        return false;
+    }
+    let filament_types = settings
+        .get("filament_type")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    ["support_filament", "support_interface_filament"]
+        .into_iter()
+        .filter_map(|key| string_value(settings.get(key)))
+        .filter_map(|slot| slot.parse::<usize>().ok())
+        .filter(|slot| *slot > 0)
+        .any(|slot| {
+            filament_types
+                .get(slot - 1)
+                .copied()
+                .flatten()
+                .is_some_and(|material| material.eq_ignore_ascii_case("PVA"))
+        })
+}
+
+fn apply_u1_prime_tower_safe_position(settings: &mut serde_json::Map<String, Value>) {
+    if bool_value(settings.get("enable_prime_tower")) != Some(true) {
+        return;
+    }
+
+    // Snapmaker Orca 2.3.5 expands the qualified four-filament ribbed tower
+    // well beyond the nominal 30 mm width. Its generated first-layer tower
+    // brim spans about 95.7 mm from an anchor near its lower-left corner.
+    // These coordinates keep that complete footprint at least 1 mm inside
+    // the U1 printable boundary and inside the packer's reserved tower area.
+    set_plate_coordinate(settings, "wipe_tower_x", "182.4");
+    set_plate_coordinate(settings, "wipe_tower_y", "182");
+}
+
+fn set_plate_coordinate(
+    settings: &mut serde_json::Map<String, Value>,
+    key: &str,
+    coordinate: &str,
+) {
+    if let Some(Value::Array(values)) = settings.get_mut(key)
+        && !values.is_empty()
+    {
+        for value in values {
+            *value = Value::String(coordinate.into());
+        }
+        return;
+    }
+    settings.insert(
+        key.into(),
+        Value::Array(vec![Value::String(coordinate.into())]),
+    );
+}
+
 fn apply_u1_support_safety_settings(
     settings: &mut serde_json::Map<String, Value>,
     mode: AdhesionMode,
@@ -4849,6 +5222,7 @@ fn apply_u1_support_safety_settings(
         AdhesionMode::Standard | AdhesionMode::Reliable => 3,
         AdhesionMode::Maximum => 4,
     };
+    let uses_pva = settings_use_pva_support(settings);
     for (key, value) in [
         ("support_type", "tree(auto)"),
         ("support_style", "tree_hybrid"),
@@ -4856,7 +5230,10 @@ fn apply_u1_support_safety_settings(
         ("support_interface_spacing", "0.2"),
         ("support_interface_pattern", "rectilinear_interlaced"),
         ("support_speed", "100"),
-        ("support_interface_speed", "50"),
+        (
+            "support_interface_speed",
+            if uses_pva { "30" } else { "50" },
+        ),
         ("tree_support_wall_count", "2"),
     ] {
         settings.insert(key.into(), Value::String(value.into()));
@@ -4865,7 +5242,13 @@ fn apply_u1_support_safety_settings(
         "support_interface_top_layers".into(),
         Value::String(interface_layers.to_string()),
     );
-    if let Some(layer_height) = nonnegative_numeric_value(settings.get("layer_height"))
+    if uses_pva {
+        settings.insert("support_top_z_distance".into(), Value::String("0".into()));
+        settings.insert(
+            "support_bottom_z_distance".into(),
+            Value::String("0".into()),
+        );
+    } else if let Some(layer_height) = nonnegative_numeric_value(settings.get("layer_height"))
         && layer_height > 0.0
     {
         settings.insert(
@@ -6139,6 +6522,39 @@ mod tests {
             assert!(placement.0 + width + 19.0 <= 160.0 + 1.0e-6);
             assert!(placement.1 + depth + 19.0 <= 160.0 + 1.0e-6);
         }
+
+        let virtual_origin = [192.0, 0.0];
+        let mut virtual_work = work.clone();
+        for ((item, placement), (width, depth)) in virtual_work
+            .iter_mut()
+            .zip(&placements)
+            .zip([(40.0, 30.0), (30.0, 20.0)])
+        {
+            item.source_center = [
+                placement.0 + virtual_origin[0] + width / 2.0,
+                placement.1 + virtual_origin[1] + depth / 2.0,
+            ];
+        }
+        let preserved =
+            preserve_source_plate_orientation_state(&virtual_work, virtual_origin, &options, false)
+                .unwrap();
+        assert_eq!(preserved, placements);
+
+        let reliable_options = PlateOrientationOptimizationOptions {
+            adhesion_mode: AdhesionMode::Reliable,
+            ..options.clone()
+        };
+        let reliable_placements =
+            pack_plate_orientation_state(&[0, 0], &work, &reliable_options, false).unwrap();
+        assert_eq!(reliable_placements, placements);
+        for (placement, (width, depth)) in
+            reliable_placements.iter().zip([(40.0, 30.0), (30.0, 20.0)])
+        {
+            assert!(placement.0 - 19.0 >= -1.0e-6);
+            assert!(placement.1 - 19.0 >= -1.0e-6);
+            assert!(placement.0 + width + 19.0 <= 160.0 + 1.0e-6);
+            assert!(placement.1 + depth + 19.0 <= 160.0 + 1.0e-6);
+        }
     }
 
     #[test]
@@ -6170,10 +6586,79 @@ mod tests {
     }
 
     #[test]
+    fn height_priority_prefers_a_lower_pva_supported_orientation() {
+        let low = OrientationMetrics {
+            score: 10_000.0,
+            estimated_support_volume_mm3: 5_000.0,
+            overhang_contact_area_mm2: 500.0,
+            overhang_component_count: 3,
+            small_overhang_component_count: 2,
+            bed_contact_area_mm2: 1.0,
+            height_mm: 12.0,
+            footprint_width_mm: 50.0,
+            footprint_depth_mm: 30.0,
+            footprint_area_mm2: 1_500.0,
+        };
+        let tall = OrientationMetrics {
+            score: 100.0,
+            estimated_support_volume_mm3: 10.0,
+            overhang_contact_area_mm2: 10.0,
+            overhang_component_count: 1,
+            small_overhang_component_count: 0,
+            bed_contact_area_mm2: 100.0,
+            height_mm: 40.0,
+            footprint_width_mm: 20.0,
+            footprint_depth_mm: 20.0,
+            footprint_area_mm2: 400.0,
+        };
+
+        assert!(compare_orientation_metrics(&low, &tall, true).is_lt());
+        assert!(compare_orientation_metrics(&low, &tall, false).is_gt());
+        assert!(!pva_orientation_stays_within_support_budget(&low, &tall));
+    }
+
+    #[test]
+    fn pva_height_priority_accepts_only_bounded_support_growth() {
+        let source = OrientationMetrics {
+            score: 500.0,
+            estimated_support_volume_mm3: 1_000.0,
+            overhang_contact_area_mm2: 100.0,
+            overhang_component_count: 2,
+            small_overhang_component_count: 1,
+            bed_contact_area_mm2: 100.0,
+            height_mm: 40.0,
+            footprint_width_mm: 20.0,
+            footprint_depth_mm: 20.0,
+            footprint_area_mm2: 400.0,
+        };
+        let bounded = OrientationMetrics {
+            estimated_support_volume_mm3: 1_350.0,
+            small_overhang_component_count: 2,
+            height_mm: 25.0,
+            ..source.clone()
+        };
+        let excessive = OrientationMetrics {
+            estimated_support_volume_mm3: 1_500.1,
+            height_mm: 20.0,
+            ..source.clone()
+        };
+
+        assert!(pva_orientation_stays_within_support_budget(
+            &bounded, &source
+        ));
+        assert!(!pva_orientation_stays_within_support_budget(
+            &excessive, &source
+        ));
+    }
+
+    #[test]
     fn reliable_adhesion_uses_a_separate_u1_planner_project_profile() {
         let source = br#"{
           "printer_model": "Snapmaker U1",
           "print_settings_id": "0.16 Optimal @Snapmaker U1",
+          "enable_prime_tower": "1",
+          "wipe_tower_x": ["205.9", "40"],
+          "wipe_tower_y": ["198.9", "200"],
           "enable_support": "1",
           "layer_height": "0.12",
           "support_on_build_plate_only": "1"
@@ -6191,6 +6676,11 @@ mod tests {
         assert_eq!(settings["raft_layers"], "0");
         assert_eq!(settings["slow_down_layers"], "3");
         assert_eq!(settings["initial_layer_speed"], "20");
+        assert_eq!(
+            settings["wipe_tower_x"],
+            serde_json::json!(["182.4", "182.4"])
+        );
+        assert_eq!(settings["wipe_tower_y"], serde_json::json!(["182", "182"]));
         assert_eq!(settings["support_type"], "tree(auto)");
         assert_eq!(settings["support_style"], "tree_hybrid");
         assert_eq!(settings["support_on_build_plate_only"], "0");
@@ -6204,6 +6694,41 @@ mod tests {
         assert_eq!(settings["support_interface_speed"], "50");
         assert_eq!(settings["tree_support_wall_count"], "2");
         assert_eq!(settings["support_top_z_distance"], "0.12");
+    }
+
+    #[test]
+    fn pva_supported_reliable_profile_uses_a_disjoint_five_mm_brim() {
+        let source = br#"{
+          "printer_model": "Snapmaker U1",
+          "enable_support": "1",
+          "support_filament": "4",
+          "support_interface_filament": "4",
+          "filament_type": ["PLA", "PLA", "PLA", "PVA"]
+        }"#;
+        let rewritten =
+            rewrite_adhesion_project_settings(source, AdhesionMode::Reliable, 12.0).unwrap();
+        let settings: Value = serde_json::from_slice(&rewritten).unwrap();
+
+        assert_eq!(settings["brim_type"], "outer_only");
+        assert_eq!(settings["brim_width"], "5");
+        assert_eq!(settings["brim_object_gap"], "0");
+        assert_eq!(settings["support_interface_speed"], "30");
+        assert_eq!(settings["support_top_z_distance"], "0");
+        assert_eq!(settings["support_bottom_z_distance"], "0");
+    }
+
+    #[test]
+    fn adhesion_rewrite_does_not_add_a_disabled_prime_tower_position() {
+        let source = br#"{
+          "printer_model": "Snapmaker U1",
+          "enable_prime_tower": "0"
+        }"#;
+        let rewritten =
+            rewrite_adhesion_project_settings(source, AdhesionMode::Reliable, 12.0).unwrap();
+        let settings: Value = serde_json::from_slice(&rewritten).unwrap();
+
+        assert!(settings.get("wipe_tower_x").is_none());
+        assert!(settings.get("wipe_tower_y").is_none());
     }
 
     #[test]
