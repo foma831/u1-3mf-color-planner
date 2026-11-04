@@ -30,7 +30,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
-zip = { version = "4", default-features = false, features = ["deflate", "deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate", "deflate-flate2-zlib-rs"] }
 
 # The 200 MB acceptance project is CPU-bound in XML/mesh traversal. Rust's
 # unoptimized dev profile takes roughly two minutes, while release takes about
